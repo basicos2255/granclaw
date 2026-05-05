@@ -11,6 +11,7 @@
  * FIX 122: OpenClaw Reauthorization Handling
  * FIX 124: Final Execution Status Resolution
  * FIX 125: Pairing Auto-Repair Action Button
+ * FIX 126: Timeout Recovery & Multistep Task Execution
  */
 
 import { useState } from 'react'
@@ -18,14 +19,14 @@ import { api, type OpenClawScopeKey } from '../../services/api'
 import { OutputViewer } from './OutputViewer'
 // FIX 112: normalizeOutput removed - OutputViewer handles normalization internally
 
-// FIX 077 + FEATURE 090 + FIX 111 + FIX 122 + FIX 124: Estados posibles
-export type ResultStatus = 'allowed' | 'blocked' | 'error' | 'unconfirmed' | 'missing_capability' | 'confirmation_required' | 'reauthorization_required' | 'setup_required' | 'executed' | 'partial' | 'pending_confirmation' | 'failed'
+// FIX 077 + FEATURE 090 + FIX 111 + FIX 122 + FIX 124 + FIX 126: Estados posibles
+export type ResultStatus = 'allowed' | 'blocked' | 'error' | 'unconfirmed' | 'missing_capability' | 'confirmation_required' | 'reauthorization_required' | 'setup_required' | 'executed' | 'partial' | 'pending_confirmation' | 'failed' | 'timeout'
 
-// FIX 124: Status resolution from backend
+// FIX 124 + FIX 126: Status resolution from backend
 export interface StatusResolution {
   hubDecision: 'allowed' | 'blocked'
   executionStatus: string
-  finalUiStatus: 'allowed' | 'executed' | 'pending_confirmation' | 'setup_required' | 'reauthorization_required' | 'failed' | 'partial' | 'blocked'
+  finalUiStatus: 'allowed' | 'executed' | 'pending_confirmation' | 'setup_required' | 'reauthorization_required' | 'failed' | 'partial' | 'blocked' | 'timeout'
   executionConfirmed: boolean
   isSuccess: boolean
   severity: 'success' | 'warning' | 'error' | 'info'
@@ -59,6 +60,21 @@ interface RepairInfo {
   error?: string
 }
 
+// FIX 126: Timeout recovery info
+interface TimeoutRecoveryInfo {
+  originalInput: string
+  steps: Array<{
+    id: string
+    order: number
+    description: string
+    input: string
+    status: 'pending' | 'in_progress' | 'completed' | 'failed' | 'skipped'
+    estimatedDuration: 'quick' | 'medium' | 'long'
+  }>
+  isSplittable: boolean
+  reason: string
+}
+
 interface SecurityResultPanelProps {
   allowed: boolean
   result?: string
@@ -82,9 +98,13 @@ interface SecurityResultPanelProps {
   repairInfo?: RepairInfo
   onStartRepair?: (repairInfo: RepairInfo) => void
   onLocalFallback?: () => void
+  // FIX 126: Timeout recovery
+  timeoutRecoveryInfo?: TimeoutRecoveryInfo
+  onExecuteSteps?: (steps: TimeoutRecoveryInfo['steps']) => void
+  onRetryTimeout?: () => void
 }
 
-export function SecurityResultPanel({ allowed, result, rawResult, reason, decisionLog, status, statusResolution, toolProposalInfo, onRetry, osConfirmationInfo, onConfirmOsAction, onCancelOsAction, repairInfo, onStartRepair, onLocalFallback }: SecurityResultPanelProps) {
+export function SecurityResultPanel({ allowed, result, rawResult, reason, decisionLog, status, statusResolution, toolProposalInfo, onRetry, osConfirmationInfo, onConfirmOsAction, onCancelOsAction, repairInfo, onStartRepair, onLocalFallback, timeoutRecoveryInfo, onExecuteSteps, onRetryTimeout }: SecurityResultPanelProps) {
   const [showDetails, setShowDetails] = useState(false)
   // FIX 103: Estados para aprobar inline
   const [approving, setApproving] = useState(false)
@@ -124,6 +144,10 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
   const rose = '#f43f5e'
   const roseBg = '#fff1f2'
   const roseDark = '#9f1239'
+  // FIX 126: Colores para timeout
+  const blue = '#3b82f6'
+  const blueBg = '#eff6ff'
+  const blueDark = '#1e40af'
 
   // FIX 077 + FEATURE 090 + FIX 111 + FIX 122 + FIX 124: Determinar colores según estado
   const getColors = () => {
@@ -148,6 +172,8 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
       case 'reauthorization_required':
       case 'setup_required':  // FIX 124
         return { main: rose, bg: roseBg, dark: roseDark }
+      case 'timeout':  // FIX 126
+        return { main: blue, bg: blueBg, dark: blueDark }
       default:
         return { main: gray, bg: grayBg, dark: grayDark }
     }
@@ -158,7 +184,7 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
   // FIX 077 + FEATURE 090 + FIX 111 + FIX 122 + FIX 124: Textos según estado
   // FIX 124: If statusResolution provided, use its title/message
   const getTexts = () => {
-    // FIX 124: Use statusResolution title/message if available
+    // FIX 124 + FIX 126: Use statusResolution title/message if available
     if (statusResolution) {
       const iconMap: Record<string, string> = {
         'executed': '✓',
@@ -170,7 +196,8 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
         'pending_confirmation': '⚠️',
         'confirmation_required': '⚠️',
         'setup_required': '🔧',
-        'reauthorization_required': '🔐'
+        'reauthorization_required': '🔐',
+        'timeout': '⏱'
       }
       return {
         icon: iconMap[statusResolution.finalUiStatus] || '?',
@@ -203,6 +230,8 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
         return { icon: '🔐', title: 'REAUTORIZACIÓN REQUERIDA', message: 'OpenClaw necesita permisos adicionales para completar esta acción' }
       case 'setup_required':  // FIX 124
         return { icon: '🔧', title: 'CONFIGURACIÓN REQUERIDA', message: 'OpenClaw necesita configuración antes de completar esta acción' }
+      case 'timeout':  // FIX 126
+        return { icon: '⏱', title: 'TAREA INTERRUMPIDA', message: 'La operación excedió el tiempo límite' }
       default:
         return { icon: '?', title: 'DESCONOCIDO', message: 'Estado desconocido' }
     }
@@ -598,6 +627,146 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
                     }}
                   >
                     💻 Ejecutar localmente
+                  </button>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* FIX 126: Timeout recovery section */}
+        {effectiveStatus === 'timeout' && (
+          <>
+            <div style={{ ...resultLabelStyle, color: colors.dark }}>
+              <span style={{ ...dividerStyle, backgroundColor: '#bfdbfe' }} />
+              <span>Tarea interrumpida</span>
+              <span style={{ ...dividerStyle, backgroundColor: '#bfdbfe' }} />
+            </div>
+            <div style={{
+              backgroundColor: blueBg,
+              padding: '20px 24px',
+              borderRadius: '12px',
+              border: `1px solid ${blue}`,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span style={{ fontSize: '28px' }}>⏱</span>
+                <span style={{ fontSize: '15px', fontWeight: '600', color: blueDark }}>
+                  La operación excedió el tiempo límite
+                </span>
+              </div>
+              <div style={{ fontSize: '14px', color: '#374151', lineHeight: '1.6' }}>
+                {timeoutRecoveryInfo?.isSplittable
+                  ? 'Esta tarea se puede dividir en pasos más pequeños para ejecutarla de forma más confiable.'
+                  : 'Puede reintentar la operación directamente.'}
+              </div>
+              {(reason || statusResolution?.reason) && (
+                <div style={{
+                  fontSize: '13px',
+                  color: '#6b7280',
+                  backgroundColor: 'white',
+                  padding: '12px',
+                  borderRadius: '8px',
+                  fontFamily: 'ui-monospace, monospace'
+                }}>
+                  Detalle: {reason || statusResolution?.reason}
+                </div>
+              )}
+              {/* Show steps if available */}
+              {timeoutRecoveryInfo?.steps && timeoutRecoveryInfo.steps.length > 0 && (
+                <div style={{
+                  backgroundColor: 'white',
+                  padding: '16px',
+                  borderRadius: '8px',
+                  border: '1px solid #e2e8f0'
+                }}>
+                  <div style={{ fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '12px' }}>
+                    Pasos sugeridos ({timeoutRecoveryInfo.steps.length}):
+                  </div>
+                  {timeoutRecoveryInfo.steps.map((step, idx) => (
+                    <div
+                      key={step.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '12px',
+                        padding: '8px 0',
+                        borderBottom: idx < timeoutRecoveryInfo.steps.length - 1 ? '1px solid #f1f5f9' : 'none'
+                      }}
+                    >
+                      <span style={{
+                        width: '24px',
+                        height: '24px',
+                        borderRadius: '50%',
+                        backgroundColor: step.status === 'completed' ? '#dcfce7' : step.status === 'failed' ? '#fee2e2' : '#f1f5f9',
+                        color: step.status === 'completed' ? '#16a34a' : step.status === 'failed' ? '#dc2626' : '#64748b',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '12px',
+                        fontWeight: '600'
+                      }}>
+                        {step.status === 'completed' ? '✓' : step.status === 'failed' ? '✕' : step.order}
+                      </span>
+                      <span style={{ fontSize: '14px', color: '#374151', flex: 1 }}>
+                        {step.description}
+                      </span>
+                      <span style={{
+                        fontSize: '11px',
+                        padding: '2px 8px',
+                        borderRadius: '12px',
+                        backgroundColor: step.estimatedDuration === 'long' ? '#fef3c7' : step.estimatedDuration === 'medium' ? '#e0e7ff' : '#f0fdf4',
+                        color: step.estimatedDuration === 'long' ? '#92400e' : step.estimatedDuration === 'medium' ? '#4338ca' : '#166534'
+                      }}>
+                        {step.estimatedDuration === 'long' ? 'Largo' : step.estimatedDuration === 'medium' ? 'Medio' : 'Rápido'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ marginTop: '8px', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                {/* Execute steps button if splittable */}
+                {timeoutRecoveryInfo?.isSplittable && timeoutRecoveryInfo.steps.length > 0 && onExecuteSteps && (
+                  <button
+                    onClick={() => onExecuteSteps(timeoutRecoveryInfo.steps)}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 20px',
+                      backgroundColor: blue,
+                      color: 'white',
+                      borderRadius: '8px',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      border: 'none',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    ▶ Ejecutar paso a paso
+                  </button>
+                )}
+                {/* Retry button */}
+                {onRetryTimeout && (
+                  <button
+                    onClick={onRetryTimeout}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 20px',
+                      backgroundColor: timeoutRecoveryInfo?.isSplittable ? '#f3f4f6' : blue,
+                      color: timeoutRecoveryInfo?.isSplittable ? '#374151' : 'white',
+                      borderRadius: '8px',
+                      fontSize: '14px',
+                      fontWeight: timeoutRecoveryInfo?.isSplittable ? '500' : '600',
+                      border: timeoutRecoveryInfo?.isSplittable ? '1px solid #d1d5db' : 'none',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    🔄 Reintentar completo
                   </button>
                 )}
               </div>

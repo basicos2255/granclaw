@@ -5,3 +5,5 @@ export * from './routes'
 export * from './output-normalizer'
 // FIX 122: Reauthorization detector for OpenClaw permission errors
 export * from './reauth-detector'
+// FIX 126: Timeout recovery for multistep tasks
+export * from './timeout-recovery'

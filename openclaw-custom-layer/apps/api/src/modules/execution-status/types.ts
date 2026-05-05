@@ -23,6 +23,7 @@ export type ExecutionStatus =
   | 'failed'
   | 'partial'
   | 'skipped'
+  | 'timeout'  // FIX 126: Timeout Recovery
 
 /**
  * Final UI status - what to show to the user
@@ -36,6 +37,7 @@ export type FinalUiStatus =
   | 'failed'
   | 'partial'
   | 'blocked'
+  | 'timeout'  // FIX 126: Timeout Recovery
 
 /**
  * Severity level for UI display

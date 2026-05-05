@@ -63,6 +63,11 @@ const STATUS_LABELS: Record<FinalUiStatus, { title: string; defaultMessage: stri
   allowed: {
     title: 'PERMITIDO',
     defaultMessage: 'La acción fue permitida por la política.'
+  },
+  // FIX 126: Timeout Recovery
+  timeout: {
+    title: 'TAREA INTERRUMPIDA',
+    defaultMessage: 'La operación excedió el tiempo límite. Puede reintentar la acción.'
   }
 }
 
@@ -77,7 +82,8 @@ const STATUS_SEVERITY: Record<FinalUiStatus, StatusSeverity> = {
   failed: 'error',
   partial: 'warning',
   executed: 'success',
-  allowed: 'success'
+  allowed: 'success',
+  timeout: 'warning'  // FIX 126: Timeout Recovery
 }
 
 /**
@@ -114,6 +120,39 @@ function checkReauthRequired(input: StatusResolverInput): boolean {
   // Check result for reauth markers
   const result = input.result as Record<string, unknown> | undefined
   if (result?.requiresReauth) return true
+
+  return false
+}
+
+/**
+ * FIX 126: Check if execution timed out
+ */
+function checkTimeout(input: StatusResolverInput): boolean {
+  const errorText = (input.error || '').toLowerCase()
+  const debugError = (input.debugSnapshot?.error || '').toLowerCase()
+
+  const timeoutPatterns = [
+    'timeout',
+    'request timeout',
+    'timed out',
+    'etimedout',
+    'connection timeout',
+    'socket timeout',
+    'operation timed out',
+    'deadline exceeded'
+  ]
+
+  for (const pattern of timeoutPatterns) {
+    if (errorText.includes(pattern) || debugError.includes(pattern)) {
+      return true
+    }
+  }
+
+  // Check result for timeout markers
+  const result = input.result as Record<string, unknown> | undefined
+  if (result?.timeout === true || result?.error === 'timeout') {
+    return true
+  }
 
   return false
 }
@@ -265,6 +304,21 @@ export function resolveFinalExecutionStatus(input: StatusResolverInput): Resolve
       title: STATUS_LABELS.reauthorization_required.title,
       message: input.error || STATUS_LABELS.reauthorization_required.defaultMessage,
       reason: 'OpenClaw reauthorization required'
+    }
+  }
+
+  // Priority 4.5: FIX 126 - Timeout detection
+  if (checkTimeout(input)) {
+    return {
+      hubDecision,
+      executionStatus: 'timeout',
+      finalUiStatus: 'timeout',
+      executionConfirmed: false,
+      isSuccess: false,
+      severity: 'warning',
+      title: STATUS_LABELS.timeout.title,
+      message: input.error || STATUS_LABELS.timeout.defaultMessage,
+      reason: 'Operation timed out'
     }
   }
 

@@ -4862,3 +4862,113 @@ El usuario no tenía una forma clara de resolver el problema y reintentar la acc
 - ✅ Retry después de verificación exitosa
 - ✅ npm run check sin errores
 - ✅ npm run build exitoso
+
+---
+
+## FIX 126 - Timeout Recovery & Multistep Task Execution
+
+**Fecha**: 2026-05-05
+**Estado**: Completado
+
+### Problema
+
+Cuando una tarea excedía el tiempo límite (timeout), el usuario no tenía forma de:
+1. Saber que fue un timeout (no un error genérico)
+2. Dividir tareas complejas en pasos más pequeños
+3. Reintentar de forma inteligente
+
+Ejemplos: "descarga vlc y instálalo" podría fallar por timeout en la descarga.
+
+### Solución
+
+1. **Detección de timeout** (execution-status/status-resolver.ts):
+   - Patrones detectados: "timeout", "Request timeout", "timed out", "ETIMEDOUT", "connection timeout", "socket timeout", "operation timed out", "deadline exceeded"
+   - Nueva función `checkTimeout()` que analiza error messages
+   - Nuevo estado `timeout` en ExecutionStatus y FinalUiStatus
+
+2. **Módulo task-planner** (nuevo):
+   - `types.ts`: TaskStep, SplitTaskResult, TimeoutRecoveryInfo
+   - `task-splitter.ts`: Divide tareas complejas en pasos ejecutables
+   - Detecta conectores: "y", "e", "luego", "después", "then", "and then"
+   - Estimación de duración por verbo (quick/medium/long)
+
+3. **Timeout recovery** (orchestrator/timeout-recovery.ts):
+   - `isTimeoutError()`: Detecta si error es timeout
+   - `generateTimeoutRecovery()`: Genera estrategia de recuperación
+   - Si es divisible → pasos sugeridos
+   - Si no → simple retry
+
+4. **Endpoint /tasks/execute-steps** (POST):
+   - Ejecuta pasos secuencialmente
+   - Respeta dependencias entre pasos
+   - Reporta progreso por paso (completed/failed/skipped)
+
+5. **UI para timeout** (SecurityResultPanel):
+   - Estado `timeout` con colores azules
+   - Muestra pasos sugeridos con duración estimada
+   - Botón "Ejecutar paso a paso" si divisible
+   - Botón "Reintentar completo"
+
+6. **Types actualizados**:
+   - ExecutionStatus: +timeout
+   - FinalUiStatus: +timeout
+   - RecoveryType: timeout_recovery | retry | skip | none
+   - TimeoutRecoveryResult con pasos e info de recovery
+
+### Archivos creados
+
+| Archivo | Descripción |
+|---------|-------------|
+| apps/api/src/modules/task-planner/types.ts | Tipos para task splitting |
+| apps/api/src/modules/task-planner/task-splitter.ts | Lógica de división de tareas |
+| apps/api/src/modules/task-planner/index.ts | Exports del módulo |
+| apps/api/src/modules/orchestrator/timeout-recovery.ts | Generación de estrategia de recovery |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/modules/execution-status/types.ts | +timeout en ExecutionStatus y FinalUiStatus |
+| apps/api/src/modules/execution-status/status-resolver.ts | +checkTimeout(), +STATUS_LABELS.timeout, +STATUS_SEVERITY.timeout |
+| apps/api/src/modules/orchestrator/types.ts | +RecoveryType, +TaskStepInfo, +TimeoutRecoveryResult, +ExecuteStepsInput, +ExecuteStepsResult |
+| apps/api/src/modules/orchestrator/index.ts | +export timeout-recovery |
+| apps/api/src/modules/tasks/routes.ts | +handleExecuteSteps para paso a paso |
+| apps/api/src/modules/tasks/index.ts | +export handleExecuteSteps |
+| apps/api/src/index.ts | +ruta POST /tasks/execute-steps |
+| apps/web/src/components/control/SecurityResultPanel.tsx | +timeout status, +TimeoutRecoveryInfo, +UI para pasos |
+
+### Patrones de timeout detectados
+
+| Patrón | Ejemplo |
+|--------|---------|
+| timeout | "Operation timeout" |
+| request timeout | "Request timeout after 30s" |
+| timed out | "Connection timed out" |
+| etimedout | "Error: ETIMEDOUT" |
+| connection timeout | "Connection timeout" |
+| socket timeout | "Socket timeout" |
+| operation timed out | "The operation timed out" |
+| deadline exceeded | "Deadline exceeded" |
+
+### Conectores de multistep detectados
+
+| Conector | Ejemplo |
+|----------|---------|
+| y | "descarga vlc y instálalo" |
+| e | "abre chrome e inicia sesión" |
+| luego | "descarga archivo luego ábrelo" |
+| después | "instala app después configúrala" |
+| then | "download file then open it" |
+| and then | "install app and then run it" |
+
+### Verificaciones
+
+- ✅ Timeout detectado correctamente en status-resolver
+- ✅ Nuevo estado timeout en types
+- ✅ Task-planner divide tareas complejas en pasos
+- ✅ Timeout-recovery genera estrategia con pasos
+- ✅ UI muestra estado timeout con colores azules
+- ✅ Botones "Ejecutar paso a paso" y "Reintentar completo"
+- ✅ Endpoint /tasks/execute-steps ejecuta secuencialmente
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso

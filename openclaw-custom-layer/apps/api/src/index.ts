@@ -47,7 +47,7 @@ import { handleUsers } from './modules/users'
 import { handlePresets, handleCreatePreset } from './modules/presets'
 import { handleAgents, handleCreateAgent } from './modules/agents'
 import { handleListSessions, handleGetSession, handleCreateSession, handleAddMessage } from './modules/sessions'
-import { handleTasks, handleGetTaskById } from './modules/tasks'
+import { handleTasks, handleGetTaskById, handleExecuteSteps } from './modules/tasks'
 import { handleGetToolProposals, handleGetToolProposalById, handleApproveToolProposal, handleRejectToolProposal, handleArchiveToolProposal } from './modules/tool-proposals'
 import { handleGetCapabilities, handleGetCapabilityById, handleEnableCapability, handleDisableCapability, handleDeleteCapability } from './modules/capabilities'
 // FIX 113: OS Tools routes
@@ -166,7 +166,9 @@ const postRoutes: Record<string, RouteHandler> = {
   '/system/consume-pending-action': handleConsumePendingAction,
   '/system/mark-openclaw-ready': handleMarkOpenClawReady,
   // FIX 125: OpenClaw Repair routes
-  '/openclaw/repair/start': handleStartRepair
+  '/openclaw/repair/start': handleStartRepair,
+  // FIX 126: Execute steps for timeout recovery
+  '/tasks/execute-steps': handleExecuteSteps
 }
 
 // Rutas dinámicas con parámetros

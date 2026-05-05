@@ -4592,3 +4592,80 @@ No debe mostrarse "PERMITIDO" si statusResolution indica:
 - ✅ DebugPanel muestra statusResolution
 - ✅ npm run check sin errores
 - ✅ npm run build exitoso
+
+---
+
+## FIX 124.2 - Consistent Setup Blocking & Requirement Synchronization
+
+**Fecha**: 2026-05-05
+**Estado**: Completado
+
+### Problema
+
+Para inputs como "abre la aplicación vscode" se observaba:
+1. Una ejecución abre VS Code correctamente
+2. La siguiente aparece BLOQUEADA / setup-required
+3. Otra aparece ERROR / openclaw-reauth
+
+El comportamiento era no determinístico porque había dos caminos no sincronizados:
+- Bloqueo preventivo por systemState
+- Fallo posterior de OpenClaw que registra requirement
+
+### Principio
+
+Antes de cualquier llamada a OpenClaw:
+1. Resolver intent/capability/scope de forma **consistente**
+2. Consultar systemState **fresco** (reload desde disco)
+3. Si existe requirement activo aplicable → NO llamar OpenClaw
+4. Si no existe → llamar OpenClaw, si falla registrar requirement **inmediatamente**
+5. La siguiente llamada equivalente debe bloquear preventivamente
+
+### Solución
+
+1. **resolveExecutionScope** (reauth-detector.ts):
+   - Normaliza scope desde múltiples fuentes: capabilityKey, intent, message patterns
+   - "abre vscode", "abre la aplicación vscode", "abre Visual Studio Code" → mismo scope: `os:open_app`
+   - Prioridad: capability > intent > message > error > default
+
+2. **checkSetupBlockBeforeExecution** (reauth-detector.ts):
+   - Recarga systemState desde disco (evita caché viejo)
+   - Llama resolveExecutionScope para scope consistente
+   - Busca requirement activo que aplique al scope resuelto
+   - Devuelve blocked/requirement/scopeKey/reason/source
+
+3. **Orchestrator actualizado** (routes.ts):
+   - Antes de OpenClaw: checkSetupBlockBeforeExecution()
+   - Si blocked: devuelve setup_required con statusResolution
+   - Si no blocked: continúa con OpenClaw
+   - Si OpenClaw falla con reauth: detectAndMarkReauthRequired registra requirement inmediatamente
+
+4. **Deduplicación mejorada** (system-state/service.ts):
+   - addSetupRequirement busca primero por scopeKey (no solo capabilityKey)
+   - Evita crear múltiples requirements para mismo scope
+
+5. **Success scoped** (system-state/service.ts):
+   - recordSuccessfulExecution solo resuelve requirements del scope ejecutado
+   - No limpia requirements no relacionados
+
+6. **statusResolution en todas las respuestas**:
+   - setup_required incluye statusResolution
+   - reauthorization_required incluye statusResolution
+   - success normal incluye statusResolution
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/modules/orchestrator/reauth-detector.ts | resolveExecutionScope, checkSetupBlockBeforeExecution, MESSAGE_SCOPE_PATTERNS |
+| apps/api/src/modules/orchestrator/routes.ts | Usa checkSetupBlockBeforeExecution, statusResolution en todas las respuestas OpenClaw |
+| apps/api/src/modules/system-state/service.ts | Deduplicación por scope, success scoped |
+
+### Verificaciones
+
+- ✅ Mismo input repetido → mismo comportamiento (determinístico)
+- ✅ "abre vscode" y "abre la aplicación vscode" → mismo scope
+- ✅ Bloqueo preventivo tras primer fallo de reauth
+- ✅ Requirements no se duplican
+- ✅ Success limpia solo scope compatible
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso

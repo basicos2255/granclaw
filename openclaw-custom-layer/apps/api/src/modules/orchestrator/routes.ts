@@ -18,6 +18,7 @@ import { ok, badRequest, unauthorized } from '../../shared/response'
 import { runSimpleAgentTask, runStreamingTask, getAdapterStatus } from './service'
 // FIX 122: Reauthorization detection for OpenClaw responses
 // FIX 123 + 123.1: Setup required blocking with granular scopes
+// FIX 124.2: Consistent Setup Blocking & Requirement Synchronization
 import {
   detectReauthRequired,
   createReauthRequiredResponse,
@@ -26,7 +27,10 @@ import {
   recordOpenClawSuccess,
   createSetupRequiredResponse,
   getBlockingRequirement,
-  getScopeFromCapability
+  getScopeFromCapability,
+  checkSetupBlockBeforeExecution,
+  resolveExecutionScope,
+  type SetupBlockResult
 } from './reauth-detector'
 import { storePendingAction, getSystemState, getActiveRequirements } from '../system-state'
 import type { RunTaskInput, StreamTaskInput } from './types'
@@ -246,14 +250,40 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
       if (routeDecision.provider === 'openclaw') {
         console.log(`[GranClaw] Delegating to OpenClaw: ${routeDecision.reason}`)
 
-        // FIX 123.1: Check if OpenClaw requires setup (granular by scope/capability)
-        // Don't block simple queries that don't need OS permissions
-        const scopeKey = getScopeFromCapability(capabilityKey)
+        // FIX 124.2: Use checkSetupBlockBeforeExecution for consistent scope resolution
+        // This ensures "abre vscode", "abre la aplicación vscode", "abre Visual Studio Code"
+        // all map to the same scope and block consistently
         const isSimpleQuery = intent.kind === 'simple_question' || intent.kind === 'analysis_task'
 
-        if (shouldBlockForSetup({ scopeKey, capabilityKey, isSimpleQuery })) {
-          const requirement = getBlockingRequirement({ scopeKey, capabilityKey })
-          console.log(`[GranClaw] Setup required for scope=${scopeKey} - blocking execution`)
+        trace.addStep({
+          stage: 'orchestrator',
+          status: 'running',
+          label: 'Comprobando setup antes de OpenClaw',
+          detail: `scope resolution for: ${capabilityKey || 'unknown'}`
+        })
+
+        const setupBlock: SetupBlockResult = checkSetupBlockBeforeExecution({
+          tenantId: context.tenant.id,
+          userId: context.user.id,
+          intent,
+          capabilityKey,
+          provider: 'openclaw',
+          message: input.message,
+          isSimpleQuery
+        })
+
+        // Use resolved scope from checkSetupBlockBeforeExecution
+        const scopeKey = setupBlock.scopeKey
+
+        if (setupBlock.blocked) {
+          console.log(`[GranClaw] Setup required for scope=${scopeKey} (source=${setupBlock.source}) - blocking execution`)
+
+          trace.addStep({
+            stage: 'orchestrator',
+            status: 'blocked',
+            label: 'Bloqueado por setup activo',
+            detail: `OpenClaw necesita autorización para: ${setupBlock.reason}`
+          })
 
           // Store pending action for retry after setup
           storePendingAction({
@@ -265,13 +295,6 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
             scopeKey
           })
 
-          trace.addStep({
-            stage: 'orchestrator',
-            status: 'blocked',
-            label: 'Configuración requerida',
-            detail: `OpenClaw necesita autorización para: ${requirement?.reason || scopeKey}`
-          })
-
           const debugSnapshot = trace.getDebugSnapshot()
           debugSnapshot.source = 'setup-required'
           debugSnapshot.executionConfirmed = false
@@ -280,14 +303,27 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
 
           completeTask(task.id, 'blocked', undefined, 'setup-required', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Configuración requerida')
 
+          // FIX 124.2: Include statusResolution for consistent UI display
+          const statusResolution = resolveFinalExecutionStatus({
+            hubAllowed: true,
+            hubBlocked: false,
+            hubReason: undefined,
+            result: { success: false, executionStatus: 'setup_required' },
+            error: setupBlock.reason,
+            source: 'setup-required',
+            meta: { executionConfirmed: false, requiresSetup: true }
+          })
+
           const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, {
             pendingInput: input.message,
             scopeKey,
             capabilityKey,
-            requirement
+            requirement: setupBlock.requirement
           })
+
           ok(res, {
             ...setupResponse,
+            statusResolution,
             meta: {
               ...setupResponse.meta,
               hubDecision: hubResult.decisionLog,
@@ -299,6 +335,13 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           })
           return
         }
+
+        trace.addStep({
+          stage: 'orchestrator',
+          status: 'success',
+          label: 'No hay setup activo aplicable, continúa OpenClaw',
+          detail: `scope=${scopeKey} source=${setupBlock.source}`
+        })
 
         trace.addStep({
           stage: 'orchestrator',
@@ -357,8 +400,20 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
             task.id
           )
 
+          // FIX 124.2: Include statusResolution for consistent UI display
+          const statusResolution = resolveFinalExecutionStatus({
+            hubAllowed: true,
+            hubBlocked: false,
+            hubReason: undefined,
+            result: { success: false, executionStatus: 'reauthorization_required' },
+            error: reauthDetection.matchedText,
+            source: 'openclaw-reauth',
+            meta: { executionConfirmed: false, requiresReauth: true }
+          })
+
           ok(res, {
             ...reauthResponse,
+            statusResolution,
             meta: {
               ...reauthResponse.meta,
               hubDecision: hubResult.decisionLog,
@@ -426,6 +481,18 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           result.error
         )
 
+        // FIX 124.2: Include statusResolution for consistent UI display
+        const statusResolution = resolveFinalExecutionStatus({
+          hubAllowed: true,
+          hubBlocked: false,
+          hubReason: undefined,
+          result,
+          error: result.error,
+          source,
+          meta: { executionConfirmed: debugSnapshot.executionConfirmed },
+          debugSnapshot
+        })
+
         ok(res, {
           ...result,
           success: finalSuccess,
@@ -433,6 +500,7 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
             message: 'Permitido, pero no se pudo confirmar la ejecucion real'
           } : {}),
           warning,
+          statusResolution,
           meta: {
             requestId: trace.requestId,
             taskId: task.id,

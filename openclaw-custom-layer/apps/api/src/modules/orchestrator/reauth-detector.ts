@@ -3,11 +3,13 @@
  * FIX 122: OpenClaw Reauthorization Handling
  * FIX 123: OpenClaw Persistent Setup & Pairing Flow
  * FIX 123.1: OpenClaw Setup Hardening & Scoped Reauthorization
+ * FIX 124.2: Consistent Setup Blocking & Requirement Synchronization
  *
  * Detects when OpenClaw responses indicate permission/authorization errors
  * that require the user to reauthorize the device or request more scopes.
  *
  * FIX 123.1: Now creates granular setup requirements by scope/capability.
+ * FIX 124.2: Normalizes scope resolution and prevents inconsistent blocking.
  */
 
 import {
@@ -16,6 +18,7 @@ import {
   recordSuccessfulExecution,
   shouldBlockExecution,
   getActiveRequirements,
+  reloadState,
   type PendingAction,
   type OpenClawScopeKey,
   type OpenClawSetupRequirement
@@ -127,6 +130,218 @@ function detectScopeFromError(errorText: string): OpenClawScopeKey {
 export function getScopeFromCapability(capabilityKey?: string): OpenClawScopeKey {
   if (!capabilityKey) return 'openclaw:unknown_scope'
   return CAPABILITY_SCOPE_MAP[capabilityKey] || 'openclaw:unknown_scope'
+}
+
+/**
+ * FIX 124.2: Intent kind to scope mapping
+ */
+const INTENT_SCOPE_MAP: Record<string, OpenClawScopeKey> = {
+  'os_action': 'os:open_app',
+  'file_operation': 'os:filesystem',
+  'web_navigation': 'os:browser',
+  'app_install': 'os:install',
+  'system_command': 'os:system'
+}
+
+/**
+ * FIX 124.2: Message patterns to scope mapping
+ * Used when capabilityKey is not available but message indicates OS action
+ */
+const MESSAGE_SCOPE_PATTERNS: Array<{ pattern: RegExp; scope: OpenClawScopeKey }> = [
+  // Open app patterns - most common
+  { pattern: /\b(abre|abrir|open|launch|ejecuta|ejecutar|inicia|iniciar|run)\b.*\b(app|aplicación|application|programa|program|vscode|code|visual studio|calculator|calculadora|notepad|chrome|firefox|edge|terminal|cmd|powershell|excel|word|slack|discord|spotify|teams|outlook|photoshop|illustrator)\b/i, scope: 'os:open_app' },
+  { pattern: /\b(abre|abrir|open|launch|ejecuta|ejecutar)\b\s+(?:la\s+)?(?:aplicación|app)\b/i, scope: 'os:open_app' },
+  { pattern: /\b(vscode|visual studio code|code)\b/i, scope: 'os:open_app' },
+  { pattern: /\b(calculadora|calculator)\b/i, scope: 'os:open_app' },
+  // Install patterns
+  { pattern: /\b(instala|instalar|install|download|descarga|descargar)\b/i, scope: 'os:install' },
+  // File patterns
+  { pattern: /\b(archivo|file|carpeta|folder|directorio|directory|documento|document)\b.*\b(crear|create|leer|read|escribir|write|borrar|delete|eliminar|mover|move|copiar|copy)\b/i, scope: 'os:filesystem' },
+  { pattern: /\b(crear|create|leer|read|escribir|write|borrar|delete|eliminar|mover|move|copiar|copy)\b.*\b(archivo|file|carpeta|folder)\b/i, scope: 'os:filesystem' },
+  // Browser patterns
+  { pattern: /\b(navega|navigate|browse|visita|visit|ir a|go to)\b.*\b(url|página|page|sitio|site|web)\b/i, scope: 'os:browser' },
+  { pattern: /\b(busca|search|google)\b.*\b(en (?:la )?web|online|internet)\b/i, scope: 'os:browser' },
+  // System patterns
+  { pattern: /\b(ejecuta|execute|run|correr)\b.*\b(comando|command|script|terminal|shell|cmd|powershell)\b/i, scope: 'os:system' }
+]
+
+/**
+ * FIX 124.2: Resolve execution scope from multiple sources
+ *
+ * This function provides CONSISTENT scope resolution for:
+ * - "abre vscode"
+ * - "abre la aplicación vscode"
+ * - "abre Visual Studio Code"
+ *
+ * All should return the same scope: os:open_app
+ */
+export interface ScopeResolution {
+  scopeKey: OpenClawScopeKey
+  capabilityKey?: string
+  reason: string
+  source: 'capability' | 'intent' | 'message' | 'error' | 'default'
+}
+
+export function resolveExecutionScope(params: {
+  intent?: { kind: string }
+  capabilityKey?: string
+  provider?: string
+  message?: string
+  errorText?: string
+}): ScopeResolution {
+  // Priority 1: capabilityKey (most specific)
+  if (params.capabilityKey) {
+    const scope = getScopeFromCapability(params.capabilityKey)
+    if (scope !== 'openclaw:unknown_scope') {
+      return {
+        scopeKey: scope,
+        capabilityKey: params.capabilityKey,
+        reason: `Scope from capability: ${params.capabilityKey}`,
+        source: 'capability'
+      }
+    }
+  }
+
+  // Priority 2: Intent kind
+  if (params.intent?.kind && params.intent.kind in INTENT_SCOPE_MAP) {
+    const scope = INTENT_SCOPE_MAP[params.intent.kind]
+    return {
+      scopeKey: scope,
+      capabilityKey: params.capabilityKey,
+      reason: `Scope from intent: ${params.intent.kind}`,
+      source: 'intent'
+    }
+  }
+
+  // Priority 3: Message patterns (for consistent resolution)
+  if (params.message) {
+    for (const { pattern, scope } of MESSAGE_SCOPE_PATTERNS) {
+      if (pattern.test(params.message)) {
+        return {
+          scopeKey: scope,
+          capabilityKey: params.capabilityKey,
+          reason: `Scope from message pattern: ${pattern.source.substring(0, 30)}...`,
+          source: 'message'
+        }
+      }
+    }
+  }
+
+  // Priority 4: Error text (for reauth cases)
+  if (params.errorText) {
+    const scope = detectScopeFromError(params.errorText)
+    if (scope !== 'openclaw:unknown_scope') {
+      return {
+        scopeKey: scope,
+        capabilityKey: params.capabilityKey,
+        reason: `Scope from error: ${params.errorText.substring(0, 30)}...`,
+        source: 'error'
+      }
+    }
+  }
+
+  // Default: unknown scope
+  return {
+    scopeKey: 'openclaw:unknown_scope',
+    capabilityKey: params.capabilityKey,
+    reason: 'Could not determine specific scope',
+    source: 'default'
+  }
+}
+
+/**
+ * FIX 124.2: Check setup block BEFORE execution
+ *
+ * This function:
+ * 1. Reloads systemState from disk (ensures fresh data)
+ * 2. Resolves execution scope consistently
+ * 3. Checks for active requirement that applies
+ * 4. Returns block decision with details
+ */
+export interface SetupBlockResult {
+  blocked: boolean
+  requirement?: OpenClawSetupRequirement
+  scopeKey: OpenClawScopeKey
+  reason: string
+  source: 'capability' | 'intent' | 'message' | 'error' | 'default'
+}
+
+export function checkSetupBlockBeforeExecution(params: {
+  tenantId: string
+  userId?: string
+  intent?: { kind: string }
+  capabilityKey?: string
+  provider?: string
+  message?: string
+  isSimpleQuery?: boolean
+}): SetupBlockResult {
+  // Never block simple queries
+  if (params.isSimpleQuery) {
+    return {
+      blocked: false,
+      scopeKey: 'openclaw:unknown_scope',
+      reason: 'Simple query - not blocked',
+      source: 'default'
+    }
+  }
+
+  // FIX 124.2: Force reload state from disk to ensure fresh data
+  reloadState()
+
+  // Resolve scope consistently
+  const resolution = resolveExecutionScope({
+    intent: params.intent,
+    capabilityKey: params.capabilityKey,
+    provider: params.provider,
+    message: params.message
+  })
+
+  console.log(`[Setup Block Check] tenantId=${params.tenantId} scope=${resolution.scopeKey} source=${resolution.source}`)
+  console.log(`[Setup Block Check] reason="${resolution.reason}"`)
+
+  // Check for blocking requirement
+  const { blocked, requirement } = shouldBlockExecution({
+    scopeKey: resolution.scopeKey,
+    capabilityKey: params.capabilityKey
+  })
+
+  if (blocked && requirement) {
+    console.log(`[Setup Block Check] BLOCKED by requirement: ${requirement.id} scope=${requirement.scopeKey}`)
+    return {
+      blocked: true,
+      requirement,
+      scopeKey: resolution.scopeKey,
+      reason: requirement.reason || 'Setup required',
+      source: resolution.source
+    }
+  }
+
+  // Also check for matching scope even if capabilityKey differs
+  // This handles cases like "open_local_application" vs message saying "abre vscode"
+  if (!blocked && resolution.scopeKey !== 'openclaw:unknown_scope') {
+    const activeReqs = getActiveRequirements()
+    const matchingReq = activeReqs.find(r =>
+      r.status === 'active' && r.scopeKey === resolution.scopeKey
+    )
+    if (matchingReq) {
+      console.log(`[Setup Block Check] BLOCKED by scope match: ${matchingReq.id} scope=${matchingReq.scopeKey}`)
+      return {
+        blocked: true,
+        requirement: matchingReq,
+        scopeKey: resolution.scopeKey,
+        reason: matchingReq.reason || 'Setup required for scope',
+        source: resolution.source
+      }
+    }
+  }
+
+  console.log(`[Setup Block Check] NOT BLOCKED - no active requirement for scope=${resolution.scopeKey}`)
+  return {
+    blocked: false,
+    scopeKey: resolution.scopeKey,
+    reason: 'No active setup requirement',
+    source: resolution.source
+  }
 }
 
 /**

@@ -124,6 +124,7 @@ export function markOpenClawRequiresSetup(error: string): void {
 
 /**
  * FIX 123.1: Add a granular setup requirement
+ * FIX 124.2: Improved deduplication - matches by scope even if capabilityKey differs
  */
 export function addSetupRequirement(params: {
   scopeKey: OpenClawScopeKey
@@ -133,21 +134,24 @@ export function addSetupRequirement(params: {
 }): OpenClawSetupRequirement {
   const state = loadState()
 
-  // Check if similar requirement already exists (active)
-  const existing = state.setupRequirements.find(
-    r => r.status === 'active' &&
-         r.scopeKey === params.scopeKey &&
-         r.capabilityKey === params.capabilityKey
+  // FIX 124.2: Check for existing by SCOPE first (primary match)
+  // This prevents creating multiple requirements for same scope with different capabilities
+  const existingByScope = state.setupRequirements.find(
+    r => r.status === 'active' && r.scopeKey === params.scopeKey
   )
 
-  if (existing) {
+  if (existingByScope) {
     // Update existing requirement
-    existing.updatedAt = new Date().toISOString()
-    existing.reason = params.reason
-    existing.originalError = params.originalError
+    existingByScope.updatedAt = new Date().toISOString()
+    existingByScope.reason = params.reason
+    existingByScope.originalError = params.originalError
+    // FIX 124.2: Keep the most recent capabilityKey if provided
+    if (params.capabilityKey) {
+      existingByScope.capabilityKey = params.capabilityKey
+    }
     saveState(state)
-    console.log(`[SystemState] Updated setup requirement: ${params.scopeKey}`)
-    return existing
+    console.log(`[SystemState] Updated existing requirement by scope: ${params.scopeKey} (${existingByScope.id})`)
+    return existingByScope
   }
 
   // Create new requirement
@@ -309,6 +313,7 @@ export function markOpenClawReady(): void {
 /**
  * Record successful OpenClaw execution
  * FIX 123.1: Now resolves specific scope/capability requirement
+ * FIX 124.2: Only resolves requirements compatible with executed scope
  */
 export function recordSuccessfulExecution(params?: {
   scopeKey?: OpenClawScopeKey
@@ -316,12 +321,16 @@ export function recordSuccessfulExecution(params?: {
 }): void {
   const state = loadState()
 
-  // Resolve specific requirement if provided
+  // FIX 124.2: Resolve ONLY specific requirement if provided
+  // This ensures we don't clear unrelated requirements
   if (params?.scopeKey || params?.capabilityKey) {
-    resolveSetupRequirement({
+    const resolved = resolveSetupRequirement({
       scopeKey: params.scopeKey,
       capabilityKey: params.capabilityKey
     })
+    if (resolved) {
+      console.log(`[SystemState] Scope authorized by successful execution: ${params.scopeKey || params.capabilityKey}`)
+    }
   }
 
   state.lastSuccessfulExecution = Date.now()

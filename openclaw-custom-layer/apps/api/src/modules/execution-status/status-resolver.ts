@@ -1,6 +1,7 @@
 /**
  * Status Resolver
  * FIX 124: Final Execution Status Resolution
+ * FIX 124.3: OpenClaw Negative Response Overrides Execution Success
  *
  * Resolves the final execution status based on hub decision,
  * execution outcome, and various error conditions.
@@ -8,12 +9,13 @@
  * Priority order:
  * 1. Hub blocked -> blocked
  * 2. Pending confirmation -> pending_confirmation
- * 3. Requires setup -> setup_required
- * 4. Requires reauth -> reauthorization_required
- * 5. Execution failed -> failed
- * 6. Execution confirmed -> executed
- * 7. Hub allowed (no execution needed) -> allowed
- * 8. Partial -> partial
+ * 3. Requires setup -> setup_required (from flags)
+ * 4. Requires reauth -> reauthorization_required (from flags)
+ * 5. **OpenClaw content classification** -> setup_required/reauth/failed (FIX 124.3)
+ * 6. Execution failed -> failed
+ * 7. Execution confirmed -> executed
+ * 8. Hub allowed (no execution needed) -> allowed
+ * 9. Partial -> partial
  */
 
 import type {
@@ -24,6 +26,7 @@ import type {
   ResolvedExecutionStatus,
   StatusResolverInput
 } from './types'
+import { classifyOpenClawExecutionResult, type OpenClawExecutionClassification } from './openclaw-result-classifier'
 
 /**
  * UI labels for each status
@@ -147,6 +150,32 @@ function checkExecutionConfirmed(input: StatusResolverInput): boolean {
 }
 
 /**
+ * FIX 124.3: Classify OpenClaw response content
+ * Returns classification only for openclaw/tool provider responses
+ */
+function classifyOpenClawResponse(input: StatusResolverInput): OpenClawExecutionClassification | null {
+  // Only classify openclaw responses
+  const isOpenClaw = input.provider === 'openclaw' ||
+                     input.source === 'openclaw' ||
+                     input.source === 'tool'
+
+  if (!isOpenClaw) {
+    return null
+  }
+
+  return classifyOpenClawExecutionResult({
+    result: input.result,
+    raw: input.raw,
+    error: input.error,
+    meta: input.meta,
+    provider: input.provider,
+    source: input.source,
+    debugSnapshot: input.debugSnapshot,
+    executionTrace: input.executionTrace
+  })
+}
+
+/**
  * Check if execution failed
  */
 function checkFailed(input: StatusResolverInput): boolean {
@@ -239,7 +268,62 @@ export function resolveFinalExecutionStatus(input: StatusResolverInput): Resolve
     }
   }
 
-  // Priority 5: Failed
+  // Priority 5: FIX 124.3 - OpenClaw content classification
+  // Even if executionConfirmed=true, check response text for failure patterns
+  const openclawClassification = classifyOpenClawResponse(input)
+  if (openclawClassification && !openclawClassification.executionActuallySucceeded) {
+    // Content says it failed - override executionConfirmed
+    if (openclawClassification.requiresReauth) {
+      return {
+        hubDecision,
+        executionStatus: 'reauthorization_required',
+        finalUiStatus: 'reauthorization_required',
+        executionConfirmed: false,
+        isSuccess: false,
+        severity: 'warning',
+        title: STATUS_LABELS.reauthorization_required.title,
+        message: openclawClassification.reason,
+        reason: openclawClassification.reason,
+        classifierOverride: true,
+        classifierEvidence: openclawClassification.evidence
+      }
+    }
+
+    if (openclawClassification.requiresSetup) {
+      return {
+        hubDecision,
+        executionStatus: 'setup_required',
+        finalUiStatus: 'setup_required',
+        executionConfirmed: false,
+        isSuccess: false,
+        severity: 'warning',
+        title: STATUS_LABELS.setup_required.title,
+        message: openclawClassification.reason,
+        reason: openclawClassification.reason,
+        classifierOverride: true,
+        classifierEvidence: openclawClassification.evidence
+      }
+    }
+
+    // Generic failure from content
+    if (openclawClassification.failed) {
+      return {
+        hubDecision,
+        executionStatus: 'failed',
+        finalUiStatus: 'failed',
+        executionConfirmed: false,
+        isSuccess: false,
+        severity: 'error',
+        title: STATUS_LABELS.failed.title,
+        message: openclawClassification.reason,
+        reason: openclawClassification.reason,
+        classifierOverride: true,
+        classifierEvidence: openclawClassification.evidence
+      }
+    }
+  }
+
+  // Priority 6: Failed
   if (checkFailed(input)) {
     const errorMsg = input.error || input.debugSnapshot?.error || 'Execution failed'
     return {

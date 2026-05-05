@@ -1,6 +1,7 @@
 /**
  * Execution Status Types
  * FIX 124: Final Execution Status Resolution
+ * FIX 124.3: OpenClaw Negative Response Overrides Execution Success
  *
  * Separates Hub decision from execution status and final UI status.
  */
@@ -63,6 +64,10 @@ export interface ResolvedExecutionStatus {
   message: string
   /** Technical reason for this status */
   reason: string
+  /** FIX 124.3: Was this status overridden by content classifier? */
+  classifierOverride?: boolean
+  /** FIX 124.3: Evidence strings that triggered classification */
+  classifierEvidence?: string[]
 }
 
 /**
@@ -77,6 +82,8 @@ export interface StatusResolverInput {
   hubReason?: string
   /** Execution result */
   result?: unknown
+  /** Raw response */
+  raw?: unknown
   /** Error from execution */
   error?: string
   /** Response meta */
@@ -98,4 +105,8 @@ export interface StatusResolverInput {
   executionStatus?: string
   /** Source of result */
   source?: string
+  /** Provider (openclaw, tool, etc) */
+  provider?: string
+  /** Execution trace */
+  executionTrace?: unknown[]
 }

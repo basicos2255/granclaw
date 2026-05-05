@@ -4669,3 +4669,103 @@ Antes de cualquier llamada a OpenClaw:
 - ✅ Success limpia solo scope compatible
 - ✅ npm run check sin errores
 - ✅ npm run build exitoso
+
+---
+
+## FIX 124.3 - OpenClaw Negative Response Overrides Execution Success
+
+**Fecha**: 2026-05-05
+**Estado**: Completado
+
+### Problema
+
+Escenario observado:
+1. Usuario pide "abre vscode"
+2. OpenClaw responde con `executionConfirmed: true`
+3. Pero el texto de la respuesta dice: "No puedo abrirla ahora mismo porque el nodo pide reemparejar/permisos adicionales"
+4. UI muestra "EJECUTADO" (verde) cuando en realidad NO se ejecutó
+
+El sistema confiaba en el flag `executionConfirmed` sin analizar el contenido semántico de la respuesta.
+
+### Principio
+
+El contenido textual de la respuesta de OpenClaw tiene **prioridad** sobre los flags de éxito del wrapper:
+- Si `executionConfirmed: true` pero el texto dice "no puedo", "requiere permisos", etc. → NO es éxito
+- Si hay patrones de fallo semántico en el texto → override del status
+- Los patrones de fallo tienen prioridad sobre patrones de éxito
+
+### Solución
+
+1. **OpenClaw Result Classifier** (execution-status/openclaw-result-classifier.ts):
+   - FAILURE_PATTERNS: Array de patrones regex que indican fallo semántico
+     - Español: "no puedo abrir", "no he podido abrir", "requiere permisos", "pide reemparejar"
+     - Inglés: "could not open", "pairing required", "authorization required", "permission denied"
+   - SUCCESS_PATTERNS: Array de patrones que indican éxito
+     - "abierto", "completado", "ejecutado", "opened", "launched", "completed"
+   - `extractTextContent()`: Extrae texto recursivamente de cualquier estructura de respuesta
+   - `classifyOpenClawExecutionResult()`: Clasifica respuesta y devuelve:
+     - executionActuallySucceeded: boolean
+     - requiresReauth: boolean
+     - requiresSetup: boolean
+     - failed: boolean
+     - reason: string
+     - evidence: string[]
+
+2. **Status Resolver Integration** (execution-status/status-resolver.ts):
+   - Nueva prioridad 5: OpenClaw content classification (antes de Priority 6: Execution confirmed)
+   - `classifyOpenClawResponse()`: Wrapper que solo clasifica responses de provider=openclaw
+   - Si classifier detecta fallo → override con status apropiado (reauthorization_required, setup_required, failed)
+   - Nuevos campos en ResolvedExecutionStatus:
+     - classifierOverride: boolean
+     - classifierEvidence: string[]
+
+3. **Orchestrator Integration** (orchestrator/routes.ts):
+   - statusResolution se calcula ANTES de completeTask()
+   - Si classifierOverride=true → ajusta taskStatus a 'error'
+   - Si classifierOverride + requiresReauth/Setup → registra requirement inmediatamente
+   - Response incluye statusResolution con evidencia del classifier
+
+4. **Task History Consistency**:
+   - completeTask() recibe el status correcto basado en classifier
+   - Historial muestra 'error' cuando classifier detecta fallo semántico
+   - No se marca 'success' si el contenido indica que no se pudo ejecutar
+
+5. **Types Updated** (execution-status/types.ts):
+   - ResolvedExecutionStatus: +classifierOverride, +classifierEvidence
+   - StatusResolverInput: +raw, +provider, +executionTrace
+
+### Archivos creados
+
+| Archivo | Descripción |
+|---------|-------------|
+| apps/api/src/modules/execution-status/openclaw-result-classifier.ts | Clasificador semántico de respuestas OpenClaw |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/modules/execution-status/types.ts | +classifierOverride, +classifierEvidence en ResolvedExecutionStatus; +raw, +provider, +executionTrace en StatusResolverInput |
+| apps/api/src/modules/execution-status/status-resolver.ts | Import classifier, nueva priority 5 para clasificación, classifyOpenClawResponse helper |
+| apps/api/src/modules/execution-status/index.ts | Export classifier |
+| apps/api/src/modules/orchestrator/routes.ts | statusResolution antes de completeTask, classifierOverride handling, addSetupRequirement import |
+
+### Patrones de fallo detectados
+
+| Categoría | Ejemplos |
+|-----------|----------|
+| No pudo abrir (ES) | "no puedo abrir", "no he podido abrir", "no pude abrir" |
+| No pudo ejecutar (ES) | "no se pudo", "no es posible", "no fue posible" |
+| Permisos (ES) | "requiere permisos", "permisos adicionales", "sin autorización" |
+| Emparejamiento (ES) | "pide reemparejar", "emparejar", "bloqueado por emparejamiento" |
+| No pudo abrir (EN) | "could not open", "failed to open", "unable to open" |
+| Auth requerida (EN) | "pairing required", "authorization required", "permission denied" |
+
+### Verificaciones
+
+- ✅ Classifier creado con FAILURE_PATTERNS y SUCCESS_PATTERNS
+- ✅ Status resolver integra classifier en priority 5
+- ✅ Orchestrator registra requirement cuando classifier detecta fallo
+- ✅ Task history usa status correcto del classifier
+- ✅ UI muestra warning (rosa) en lugar de success (verde) para fallos semánticos
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso

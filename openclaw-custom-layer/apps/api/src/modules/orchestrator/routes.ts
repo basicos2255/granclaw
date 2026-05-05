@@ -32,7 +32,7 @@ import {
   resolveExecutionScope,
   type SetupBlockResult
 } from './reauth-detector'
-import { storePendingAction, getSystemState, getActiveRequirements } from '../system-state'
+import { storePendingAction, getSystemState, getActiveRequirements, addSetupRequirement } from '../system-state'
 import type { RunTaskInput, StreamTaskInput } from './types'
 import type { AuthContext } from '../auth'
 import { getGranClawHubService } from '../granclaw-hub'
@@ -456,10 +456,46 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           warning = 'No execution result available'
         }
 
-        const finalSuccess = result.success && debugSnapshot.executionConfirmed
+        // FIX 124.3: Compute statusResolution BEFORE task completion
+        // This allows classifier to override execution status
+        const statusResolution = resolveFinalExecutionStatus({
+          hubAllowed: true,
+          hubBlocked: false,
+          hubReason: undefined,
+          result,
+          raw: result,
+          error: result.error,
+          source,
+          provider: 'openclaw',
+          meta: { executionConfirmed: debugSnapshot.executionConfirmed },
+          debugSnapshot,
+          executionTrace: trace.getSteps()
+        })
 
+        // FIX 124.3: Determine task status based on classifier override
+        let finalSuccess = result.success && debugSnapshot.executionConfirmed
         let taskStatus: TaskStatus
-        if (!result.success) {
+
+        if (statusResolution.classifierOverride) {
+          console.log(`[GranClaw] Classifier override detected: ${statusResolution.finalUiStatus}`)
+          console.log(`[GranClaw] Evidence: ${statusResolution.classifierEvidence?.join(', ')}`)
+
+          // Classifier detected semantic failure - override success flags
+          finalSuccess = false
+          taskStatus = 'error'
+
+          // Register setup requirement from classifier detection
+          if (statusResolution.finalUiStatus === 'reauthorization_required' ||
+              statusResolution.finalUiStatus === 'setup_required') {
+            addSetupRequirement({
+              scopeKey: scopeKey || 'openclaw:unknown_scope',
+              capabilityKey,
+              reason: statusResolution.reason,
+              originalError: statusResolution.classifierEvidence?.join('; ')
+            })
+            console.log(`[GranClaw] Registered requirement from classifier: ${scopeKey}`)
+          }
+        } else if (!result.success) {
           taskStatus = 'error'
         } else if (!debugSnapshot.executionConfirmed) {
           taskStatus = 'unconfirmed'
@@ -477,27 +513,18 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           trace.getSteps(),
           debugSnapshot,
           trace.getTotalDurationMs(),
-          undefined,
+          statusResolution.classifierOverride ? statusResolution.reason : undefined,
           result.error
         )
-
-        // FIX 124.2: Include statusResolution for consistent UI display
-        const statusResolution = resolveFinalExecutionStatus({
-          hubAllowed: true,
-          hubBlocked: false,
-          hubReason: undefined,
-          result,
-          error: result.error,
-          source,
-          meta: { executionConfirmed: debugSnapshot.executionConfirmed },
-          debugSnapshot
-        })
 
         ok(res, {
           ...result,
           success: finalSuccess,
-          ...(result.success && !debugSnapshot.executionConfirmed ? {
+          ...(result.success && !debugSnapshot.executionConfirmed && !statusResolution.classifierOverride ? {
             message: 'Permitido, pero no se pudo confirmar la ejecucion real'
+          } : {}),
+          ...(statusResolution.classifierOverride ? {
+            message: statusResolution.reason
           } : {}),
           warning,
           statusResolution,
@@ -894,10 +921,46 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         warning = 'No execution result available'
       }
 
-      const finalSuccess = result.success && debugSnapshot.executionConfirmed
+      // FIX 124.3: Compute statusResolution BEFORE task completion (fallback path)
+      const statusResolution = resolveFinalExecutionStatus({
+        hubAllowed: hubResult.allowed,
+        hubBlocked: !hubResult.allowed,
+        hubReason: hubResult.decisionLog?.join(', '),
+        result,
+        raw: result,
+        error: result.error,
+        source,
+        provider: 'openclaw',
+        meta: {
+          executionConfirmed: debugSnapshot.executionConfirmed,
+          source
+        },
+        debugSnapshot,
+        executionTrace: trace.getSteps()
+      })
 
+      // FIX 124.3: Determine task status based on classifier override (fallback)
+      let finalSuccess = result.success && debugSnapshot.executionConfirmed
       let taskStatus: TaskStatus
-      if (!result.success) {
+
+      if (statusResolution.classifierOverride) {
+        console.log(`[GranClaw Fallback] Classifier override: ${statusResolution.finalUiStatus}`)
+        console.log(`[GranClaw Fallback] Evidence: ${statusResolution.classifierEvidence?.join(', ')}`)
+
+        // Classifier detected semantic failure - override success flags
+        finalSuccess = false
+        taskStatus = 'error'
+
+        if (statusResolution.finalUiStatus === 'reauthorization_required' ||
+            statusResolution.finalUiStatus === 'setup_required') {
+          addSetupRequirement({
+            scopeKey: fallbackScopeKey || 'openclaw:unknown_scope',
+            capabilityKey,
+            reason: statusResolution.reason,
+            originalError: statusResolution.classifierEvidence?.join('; ')
+          })
+        }
+      } else if (!result.success) {
         taskStatus = 'error'
       } else if (!debugSnapshot.executionConfirmed) {
         taskStatus = 'unconfirmed'
@@ -915,30 +978,18 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         trace.getSteps(),
         debugSnapshot,
         trace.getTotalDurationMs(),
-        undefined,
+        statusResolution.classifierOverride ? statusResolution.reason : undefined,
         result.error
       )
-
-      // FIX 121: Fallback response with router decision
-      // FIX 124: Add status resolution
-      const statusResolution = resolveFinalExecutionStatus({
-        hubAllowed: hubResult.allowed,
-        hubBlocked: !hubResult.allowed,
-        hubReason: hubResult.decisionLog?.join(', '),
-        result,
-        error: result.error,
-        meta: {
-          executionConfirmed: debugSnapshot.executionConfirmed,
-          source
-        },
-        debugSnapshot
-      })
 
       ok(res, {
         ...result,
         success: finalSuccess,
-        ...(result.success && !debugSnapshot.executionConfirmed ? {
+        ...(result.success && !debugSnapshot.executionConfirmed && !statusResolution.classifierOverride ? {
           message: 'Permitido, pero no se pudo confirmar la ejecucion real'
+        } : {}),
+        ...(statusResolution.classifierOverride ? {
+          message: statusResolution.reason
         } : {}),
         warning,
         statusResolution,

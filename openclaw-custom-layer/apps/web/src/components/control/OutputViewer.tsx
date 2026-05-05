@@ -3,6 +3,7 @@
  * FEATURE 091: Render capability output (documents, editors, info)
  * FIX 101: UX Polish - hide internal paths, better actions, cleaner UI
  * FIX 111: Complete OS Tools UI Confirmation & Human Output
+ * FIX 122: OpenClaw Reauthorization Handling
  */
 
 import { useState } from 'react'
@@ -286,6 +287,103 @@ function ConfirmationOutput({
           >
             Cancelar
           </button>
+        </div>
+      </div>
+      {normalized.isTechnicalRaw && (
+        <AdvancedToggle
+          showAdvanced={showAdvanced}
+          onToggle={() => setShowAdvanced(!showAdvanced)}
+          raw={normalized.raw}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * FIX 122: Render reauthorization required output
+ */
+function ReauthorizationOutput({ normalized }: { normalized: NormalizedOutput }) {
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const reauthInfo = normalized.reauthorization
+
+  const cardStyle: React.CSSProperties = {
+    backgroundColor: 'white',
+    borderRadius: '16px',
+    border: '2px solid #f43f5e',
+    boxShadow: '0 4px 12px rgba(244, 63, 94, 0.15)',
+    overflow: 'hidden',
+    marginTop: '24px'
+  }
+
+  const headerStyle: React.CSSProperties = {
+    padding: '20px 24px',
+    backgroundColor: '#fff1f2',
+    borderBottom: '1px solid #fecdd3',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px'
+  }
+
+  const contentStyle: React.CSSProperties = {
+    padding: '24px'
+  }
+
+  const messageStyle: React.CSSProperties = {
+    fontSize: '16px',
+    lineHeight: '1.7',
+    color: '#374151',
+    marginBottom: '20px'
+  }
+
+  const detailStyle: React.CSSProperties = {
+    fontSize: '13px',
+    color: '#6b7280',
+    backgroundColor: '#fafafa',
+    padding: '12px 16px',
+    borderRadius: '8px',
+    fontFamily: 'ui-monospace, monospace',
+    marginBottom: '16px'
+  }
+
+  return (
+    <div style={cardStyle}>
+      <div style={headerStyle}>
+        <span style={{ fontSize: '28px' }}>🔐</span>
+        <span style={{ fontSize: '18px', fontWeight: '700', color: '#9f1239' }}>
+          Reautorización Requerida
+        </span>
+      </div>
+      <div style={contentStyle}>
+        <div style={messageStyle}>
+          {normalized.content}
+        </div>
+        {reauthInfo?.matchedText && (
+          <div style={detailStyle}>
+            <strong>Detectado:</strong> "{reauthInfo.matchedText}"
+            {reauthInfo.matchSource && <span> (en {reauthInfo.matchSource})</span>}
+          </div>
+        )}
+        <div style={{ marginTop: '16px' }}>
+          <a
+            href="https://openclaw.app/settings"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '12px 24px',
+              backgroundColor: '#f43f5e',
+              color: 'white',
+              borderRadius: '8px',
+              fontSize: '14px',
+              fontWeight: '600',
+              textDecoration: 'none'
+            }}
+          >
+            🔑 Reautorizar en OpenClaw →
+          </a>
         </div>
       </div>
       {normalized.isTechnicalRaw && (
@@ -710,6 +808,9 @@ export function OutputViewer({
           onCancel={onCancelAction}
         />
       )
+
+    case 'reauthorization_required':
+      return <ReauthorizationOutput normalized={normalized} />
 
     case 'document':
       return <DocumentOutputView normalized={normalized} capabilityName={capabilityName} />

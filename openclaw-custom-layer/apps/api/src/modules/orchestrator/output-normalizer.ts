@@ -1,6 +1,7 @@
 /**
  * Output Normalizer
  * FEATURE 110: Controlled OS Tools v1 - Part B
+ * FIX 122: OpenClaw Reauthorization Handling
  *
  * Converts orchestrator responses to human-readable format.
  * Extracts the readable content from structured responses.
@@ -8,8 +9,9 @@
 
 /**
  * Types of normalized output
+ * FIX 122: Added 'reauthorization_required' for OpenClaw permission errors
  */
-export type NormalizedOutputType = 'text' | 'action' | 'document' | 'info' | 'error' | 'approval_needed'
+export type NormalizedOutputType = 'text' | 'action' | 'document' | 'info' | 'error' | 'approval_needed' | 'reauthorization_required'
 
 /**
  * Normalized output structure for human display
@@ -49,6 +51,14 @@ interface OrchestratorResponse {
   response?: string
   message?: string
   error?: string
+  /** FIX 122: Execution status for reauth detection */
+  executionStatus?: 'success' | 'error' | 'reauthorization_required' | 'blocked' | 'pending'
+  /** FIX 122: Reauth info when executionStatus is 'reauthorization_required' */
+  reauthInfo?: {
+    matchedPattern?: string
+    matchSource?: string
+    matchedText?: string
+  }
   meta?: Record<string, unknown>
 }
 
@@ -56,6 +66,20 @@ interface OrchestratorResponse {
  * Normalize orchestrator response to human-readable format
  */
 export function normalizeOutput(response: OrchestratorResponse): NormalizedOutput {
+  // FIX 122: Handle reauthorization required FIRST
+  if (response.executionStatus === 'reauthorization_required') {
+    const reauthDetails = response.reauthInfo
+      ? `Detectado: "${response.reauthInfo.matchedText}" en ${response.reauthInfo.matchSource}`
+      : undefined
+    return {
+      type: 'reauthorization_required',
+      title: 'Reautorización Requerida',
+      message: response.message || 'OpenClaw requiere permisos adicionales. Por favor, reautoriza el dispositivo.',
+      details: reauthDetails,
+      raw: response
+    }
+  }
+
   // Handle errors
   if (!response.success && response.error) {
     return {
@@ -202,4 +226,26 @@ export function getApprovalInfo(response: OrchestratorResponse): {
     riskLevel: result.riskLevel,
     capabilityKey: (meta.capabilityKey as string)
   }
+}
+
+/**
+ * FIX 122: Check if response indicates reauthorization is required
+ */
+export function needsReauthorization(response: OrchestratorResponse): boolean {
+  return response.executionStatus === 'reauthorization_required'
+}
+
+/**
+ * FIX 122: Get reauthorization info from response
+ */
+export function getReauthInfo(response: OrchestratorResponse): {
+  matchedPattern?: string
+  matchSource?: string
+  matchedText?: string
+} | null {
+  if (!needsReauthorization(response)) {
+    return null
+  }
+
+  return response.reauthInfo || null
 }

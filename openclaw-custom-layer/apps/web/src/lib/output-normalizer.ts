@@ -1,6 +1,7 @@
 /**
  * Frontend Output Normalizer
  * FIX 111: Complete OS Tools UI Confirmation & Human Output
+ * FIX 122: OpenClaw Reauthorization Handling
  *
  * Converts orchestrator responses to human-readable format.
  * Hides raw JSON from users, shows only in advanced mode.
@@ -8,12 +9,14 @@
 
 /**
  * Normalized output type
+ * FIX 122: Added 'reauthorization_required' for OpenClaw permission errors
  */
 export type NormalizedOutputType =
   | 'text'
   | 'document'
   | 'action'
   | 'confirmation_required'
+  | 'reauthorization_required'
   | 'json'
   | 'empty'
   | 'unknown'
@@ -30,6 +33,15 @@ export interface OSToolConfirmation {
 }
 
 /**
+ * FIX 122: Reauthorization info when OpenClaw requires permissions
+ */
+export interface ReauthorizationInfo {
+  matchedPattern?: string
+  matchSource?: string
+  matchedText?: string
+}
+
+/**
  * Normalized output for UI display
  */
 export interface NormalizedOutput {
@@ -43,6 +55,8 @@ export interface NormalizedOutput {
   filePath?: string
   editable?: boolean
   confirmation?: OSToolConfirmation
+  /** FIX 122: Reauthorization info when OpenClaw requires permissions */
+  reauthorization?: ReauthorizationInfo
 }
 
 /**
@@ -125,6 +139,22 @@ function isInfoOutput(val: unknown): val is {
 }
 
 /**
+ * FIX 122: Check if value indicates reauthorization required
+ */
+function isReauthorizationRequired(val: unknown): val is {
+  executionStatus: 'reauthorization_required'
+  message?: string
+  reauthInfo?: {
+    matchedPattern?: string
+    matchSource?: string
+    matchedText?: string
+  }
+} {
+  if (!isPlainObject(val)) return false
+  return val.executionStatus === 'reauthorization_required'
+}
+
+/**
  * Extract filename from path
  */
 function extractFilename(filePath?: string): string | undefined {
@@ -185,6 +215,18 @@ export function normalizeOutput(response: unknown): NormalizedOutput {
       content,
       raw: response,
       isTechnicalRaw: true
+    }
+  }
+
+  // FIX 122: Reauthorization required
+  if (isReauthorizationRequired(response)) {
+    return {
+      type: 'reauthorization_required',
+      title: 'Reautorización Requerida',
+      content: response.message || 'OpenClaw requiere permisos adicionales. Por favor, reautoriza el dispositivo.',
+      raw: response,
+      isTechnicalRaw: true,
+      reauthorization: response.reauthInfo
     }
   }
 
@@ -370,6 +412,32 @@ export function extractOSConfirmation(response: unknown): OSToolConfirmation | n
       actionLabel: meta.displayName as string || 'Accion OS',
       riskLevel: meta.riskLevel as 'low' | 'medium' | 'high' | undefined,
       message: meta.message as string || 'Esta accion requiere confirmacion'
+    }
+  }
+
+  return null
+}
+
+/**
+ * FIX 122: Check if response indicates reauthorization is required
+ */
+export function needsReauthorization(response: unknown): boolean {
+  if (!isPlainObject(response)) return false
+  return response.executionStatus === 'reauthorization_required'
+}
+
+/**
+ * FIX 122: Extract reauthorization info from response
+ */
+export function extractReauthorizationInfo(response: unknown): ReauthorizationInfo | null {
+  if (!isPlainObject(response)) return null
+  if (response.executionStatus !== 'reauthorization_required') return null
+
+  if (isPlainObject(response.reauthInfo)) {
+    return {
+      matchedPattern: response.reauthInfo.matchedPattern as string | undefined,
+      matchSource: response.reauthInfo.matchSource as string | undefined,
+      matchedText: response.reauthInfo.matchedText as string | undefined
     }
   }
 

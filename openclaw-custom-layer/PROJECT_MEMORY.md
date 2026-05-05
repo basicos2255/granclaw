@@ -4109,3 +4109,109 @@ Crear sistema de políticas de ejecución híbrida que:
 - ✅ routerDecision en meta
 - ✅ npm run check sin errores
 - ✅ npm run build exitoso
+
+---
+
+## FIX 122 - OpenClaw Reauthorization Handling
+
+**Fecha**: 2026-05-05
+**Estado**: Completado
+
+### Problema
+
+- OpenClaw devuelve errores de permisos como éxito falso
+- Mensajes como "pairing required" o "authorization required" no se detectaban
+- El frontend mostraba "PERMITIDO" cuando realmente se requería reautorización
+- No había estado visual específico para indicar problemas de permisos
+
+### Solución
+
+1. **Reauth Detector** (apps/api/src/modules/orchestrator/reauth-detector.ts):
+   - Patrones detectados: pairing required, authorization required, more scopes, permission denied, etc.
+   - Búsqueda recursiva en: error, message, result, executionTrace, debugSnapshot
+   - Función: detectReauthRequired() → { requiresReauth, matchedPattern, matchSource, matchedText }
+   - Función: createReauthRequiredResponse() → respuesta estandarizada
+
+2. **Output Type** (orchestrator/output-normalizer.ts + web/lib/output-normalizer.ts):
+   - Nuevo tipo: 'reauthorization_required'
+   - Campo executionStatus en respuesta
+   - reauthInfo con detalles del match
+   - Helpers: needsReauthorization(), getReauthInfo()
+
+3. **Orchestrator** (orchestrator/routes.ts):
+   - Detecta reauth después de cada llamada a OpenClaw
+   - Si detecta reauth → crea respuesta con executionStatus: 'reauthorization_required'
+   - Completa task como 'error' con source 'openclaw-reauth'
+   - Incluye reauthInfo en meta
+
+4. **UI** (SecurityResultPanel.tsx + OutputViewer.tsx):
+   - Nuevo estado visual: REAUTORIZACIÓN REQUERIDA (color rose)
+   - Icono: 🔐
+   - Mensaje claro indicando necesidad de permisos
+   - Botón para ir a reautorizar en OpenClaw
+   - Detalles técnicos del match detectado
+
+### Patrones detectados
+
+```typescript
+const REAUTH_PATTERNS = [
+  /pairing required/i,
+  /authorization required/i,
+  /more scopes/i,
+  /device is asking for more scopes/i,
+  /reauthorize/i,
+  /permission denied/i,
+  /not authorized/i,
+  /requires authorization/i,
+  /access denied/i,
+  /insufficient permissions/i,
+  /token expired/i,
+  /session expired/i,
+  /auth.*required/i,
+  /need.*permission/i,
+  /grant.*access/i,
+  /oauth.*error/i,
+  /scope.*required/i,
+  /unauthorized/i,
+]
+```
+
+### Archivos creados
+
+| Archivo | Propósito |
+|---------|-----------|
+| apps/api/src/modules/orchestrator/reauth-detector.ts | Detector de errores de reautorización |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/modules/orchestrator/output-normalizer.ts | Tipo reauthorization_required |
+| apps/api/src/modules/orchestrator/index.ts | Export reauth-detector |
+| apps/api/src/modules/orchestrator/routes.ts | Detección reauth en OpenClaw responses |
+| apps/web/src/lib/output-normalizer.ts | Tipo y detección reauth |
+| apps/web/src/components/control/SecurityResultPanel.tsx | Estado visual reauth |
+| apps/web/src/components/control/OutputViewer.tsx | ReauthorizationOutput component |
+
+### Flujo de detección
+
+```
+1. OpenClaw devuelve respuesta
+2. detectReauthRequired() analiza response
+3. Si match encontrado:
+   - Log: "[Reauth Detector] Found in {source}: {matchedText}"
+   - Return { requiresReauth: true, matchedPattern, matchSource, matchedText }
+4. Orchestrator crea respuesta con executionStatus: 'reauthorization_required'
+5. Frontend detecta executionStatus y muestra UI de reautorización
+```
+
+### Verificaciones
+
+- ✅ Reauth detector creado
+- ✅ Output type reauthorization_required añadido
+- ✅ Orchestrator detecta reauth en todas las rutas OpenClaw
+- ✅ Frontend normalizer actualizado
+- ✅ SecurityResultPanel con estado visual
+- ✅ OutputViewer con ReauthorizationOutput
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso

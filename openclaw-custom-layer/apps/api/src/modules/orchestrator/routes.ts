@@ -15,6 +15,8 @@
 import type { IncomingMessage, ServerResponse } from 'http'
 import { ok, badRequest, unauthorized } from '../../shared/response'
 import { runSimpleAgentTask, runStreamingTask, getAdapterStatus } from './service'
+// FIX 122: Reauthorization detection for OpenClaw responses
+import { detectReauthRequired, createReauthRequiredResponse } from './reauth-detector'
 import type { RunTaskInput, StreamTaskInput } from './types'
 import type { AuthContext } from '../auth'
 import { getGranClawHubService } from '../granclaw-hub'
@@ -245,6 +247,62 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         }
 
         const result = await runSimpleAgentTask(taskInput)
+
+        // FIX 122: Detect if reauthorization is required
+        const reauthDetection = detectReauthRequired(result)
+        if (reauthDetection.requiresReauth) {
+          console.log(`[GranClaw] Reauth required detected: ${reauthDetection.matchedText} in ${reauthDetection.matchSource}`)
+
+          trace.addStep({
+            stage: 'openclaw',
+            status: 'error',
+            label: 'Reautorización requerida',
+            detail: `OpenClaw requiere permisos adicionales: ${reauthDetection.matchedText}`
+          })
+
+          const debugSnapshot = trace.getDebugSnapshot()
+          debugSnapshot.source = 'openclaw'
+          debugSnapshot.executionConfirmed = false
+          debugSnapshot.error = 'Reauthorization required'
+          logDebug(debugSnapshot)
+
+          completeTask(
+            task.id,
+            'error',
+            undefined,
+            'openclaw-reauth',
+            trace.getSteps(),
+            debugSnapshot,
+            trace.getTotalDurationMs(),
+            'Reautorización requerida'
+          )
+
+          const reauthResponse = createReauthRequiredResponse(
+            result,
+            reauthDetection,
+            trace.requestId,
+            task.id
+          )
+
+          ok(res, {
+            ...reauthResponse,
+            meta: {
+              ...reauthResponse.meta,
+              hubDecision: hubResult.decisionLog,
+              executionTrace: trace.getSteps(),
+              executionDurationMs: trace.getTotalDurationMs(),
+              tenantId: context.tenant.id,
+              adapterStatus,
+              debugSnapshot,
+              routerDecision: {
+                provider: routeDecision.provider,
+                reason: routeDecision.reason,
+                intentKind: intent.kind
+              }
+            }
+          })
+          return
+        }
 
         if (result.success) {
           trace.orchestratorSuccess()
@@ -599,6 +657,47 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
 
       const result = await runSimpleAgentTask(taskInput)
 
+      // FIX 122: Detect if reauthorization is required (fallback path)
+      const reauthDetectionFallback = detectReauthRequired(result)
+      if (reauthDetectionFallback.requiresReauth) {
+        console.log(`[GranClaw Fallback] Reauth required: ${reauthDetectionFallback.matchedText}`)
+
+        trace.addStep({
+          stage: 'openclaw',
+          status: 'error',
+          label: 'Reautorización requerida',
+          detail: `OpenClaw requiere permisos: ${reauthDetectionFallback.matchedText}`
+        })
+
+        const debugSnapshot = trace.getDebugSnapshot()
+        debugSnapshot.source = 'openclaw'
+        debugSnapshot.executionConfirmed = false
+        debugSnapshot.error = 'Reauthorization required'
+        logDebug(debugSnapshot)
+
+        completeTask(task.id, 'error', undefined, 'openclaw-reauth', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Reautorización requerida')
+
+        const reauthResponse = createReauthRequiredResponse(result, reauthDetectionFallback, trace.requestId, task.id)
+        ok(res, {
+          ...reauthResponse,
+          meta: {
+            ...reauthResponse.meta,
+            hubDecision: hubResult.decisionLog,
+            executionTrace: trace.getSteps(),
+            executionDurationMs: trace.getTotalDurationMs(),
+            tenantId: context.tenant.id,
+            adapterStatus,
+            debugSnapshot,
+            routerDecision: {
+              provider: routeDecision.provider,
+              reason: routeDecision.reason,
+              intentKind: intent.kind
+            }
+          }
+        })
+        return
+      }
+
       if (result.success) {
         trace.orchestratorSuccess()
         if (result.source) {
@@ -895,6 +994,41 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
 
         const result = await runStreamingTask(taskInput)
 
+        // FIX 122: Detect if reauthorization is required (stream)
+        const reauthDetectionStream = detectReauthRequired(result)
+        if (reauthDetectionStream.requiresReauth) {
+          console.log(`[GranClaw Stream] Reauth required: ${reauthDetectionStream.matchedText}`)
+
+          trace.addStep({
+            stage: 'openclaw',
+            status: 'error',
+            label: 'Reautorización requerida',
+            detail: `OpenClaw requiere permisos: ${reauthDetectionStream.matchedText}`
+          })
+
+          const debugSnapshot = trace.getDebugSnapshot()
+          debugSnapshot.source = 'openclaw'
+          debugSnapshot.executionConfirmed = false
+          debugSnapshot.error = 'Reauthorization required'
+          logDebug(debugSnapshot)
+
+          completeTask(task.id, 'error', undefined, 'openclaw-reauth', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Reautorización requerida')
+
+          const reauthResponse = createReauthRequiredResponse(result, reauthDetectionStream, trace.requestId, task.id)
+          ok(res, {
+            ...reauthResponse,
+            meta: {
+              ...reauthResponse.meta,
+              hubDecision: hubResult.decisionLog,
+              executionTrace: trace.getSteps(),
+              tenantId: context.tenant.id,
+              adapterStatus,
+              debugSnapshot
+            }
+          })
+          return
+        }
+
         const debugSnapshot = trace.getDebugSnapshot()
         debugSnapshot.source = 'openclaw'
 
@@ -1132,6 +1266,41 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
       }
 
       const result = await runStreamingTask(taskInputFallback)
+
+      // FIX 122: Detect if reauthorization is required (stream fallback)
+      const reauthDetectionStreamFb = detectReauthRequired(result)
+      if (reauthDetectionStreamFb.requiresReauth) {
+        console.log(`[GranClaw Stream Fallback] Reauth required: ${reauthDetectionStreamFb.matchedText}`)
+
+        trace.addStep({
+          stage: 'openclaw',
+          status: 'error',
+          label: 'Reautorización requerida',
+          detail: `OpenClaw requiere permisos: ${reauthDetectionStreamFb.matchedText}`
+        })
+
+        const debugSnapshot = trace.getDebugSnapshot()
+        debugSnapshot.source = 'openclaw'
+        debugSnapshot.executionConfirmed = false
+        debugSnapshot.error = 'Reauthorization required'
+        logDebug(debugSnapshot)
+
+        completeTask(task.id, 'error', undefined, 'openclaw-reauth', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Reautorización requerida')
+
+        const reauthResponse = createReauthRequiredResponse(result, reauthDetectionStreamFb, trace.requestId, task.id)
+        ok(res, {
+          ...reauthResponse,
+          meta: {
+            ...reauthResponse.meta,
+            hubDecision: hubResult.decisionLog,
+            executionTrace: trace.getSteps(),
+            tenantId: context.tenant.id,
+            adapterStatus,
+            debugSnapshot
+          }
+        })
+        return
+      }
 
       // FEATURE 073: Trazar resultado
       let source: string = 'unknown'

@@ -8,6 +8,7 @@
  * FEATURE 090: Estado missing_capability
  * FIX 103: Aprobar inline + callback de reintentar
  * FIX 111: Soporte confirmation_required para OS tools
+ * FIX 122: OpenClaw Reauthorization Handling
  */
 
 import { useState } from 'react'
@@ -15,8 +16,8 @@ import { api } from '../../services/api'
 import { OutputViewer } from './OutputViewer'
 // FIX 112: normalizeOutput removed - OutputViewer handles normalization internally
 
-// FIX 077 + FEATURE 090 + FIX 111: Estados posibles
-export type ResultStatus = 'allowed' | 'blocked' | 'error' | 'unconfirmed' | 'missing_capability' | 'confirmation_required'
+// FIX 077 + FEATURE 090 + FIX 111 + FIX 122: Estados posibles
+export type ResultStatus = 'allowed' | 'blocked' | 'error' | 'unconfirmed' | 'missing_capability' | 'confirmation_required' | 'reauthorization_required'
 
 // FEATURE 090: Info de propuesta de tool
 interface ToolProposalInfo {
@@ -86,8 +87,12 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
   const amber = '#f59e0b'
   const amberBg = '#fffbeb'
   const amberDark = '#92400e'
+  // FIX 122: Colores para reauthorization_required
+  const rose = '#f43f5e'
+  const roseBg = '#fff1f2'
+  const roseDark = '#9f1239'
 
-  // FIX 077 + FEATURE 090 + FIX 111: Determinar colores según estado
+  // FIX 077 + FEATURE 090 + FIX 111 + FIX 122: Determinar colores según estado
   const getColors = () => {
     switch (effectiveStatus) {
       case 'allowed':
@@ -102,12 +107,14 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
         return { main: purple, bg: purpleBg, dark: purpleDark }
       case 'confirmation_required':
         return { main: amber, bg: amberBg, dark: amberDark }
+      case 'reauthorization_required':
+        return { main: rose, bg: roseBg, dark: roseDark }
     }
   }
 
   const colors = getColors()
 
-  // FIX 077 + FEATURE 090 + FIX 111: Textos según estado
+  // FIX 077 + FEATURE 090 + FIX 111 + FIX 122: Textos según estado
   const getTexts = () => {
     switch (effectiveStatus) {
       case 'allowed':
@@ -122,6 +129,8 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
         return { icon: '🧩', title: 'CAPACIDAD NO DISPONIBLE', message: 'GranClaw no tiene todavía una herramienta para ejecutar esta acción' }
       case 'confirmation_required':
         return { icon: '⚠️', title: 'CONFIRMACIÓN REQUERIDA', message: 'Esta acción necesita confirmación del usuario' }
+      case 'reauthorization_required':
+        return { icon: '🔐', title: 'REAUTORIZACIÓN REQUERIDA', message: 'OpenClaw necesita permisos adicionales para completar esta acción' }
     }
   }
 
@@ -367,6 +376,70 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
                 >
                   Cancelar
                 </button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* FIX 122: Reauthorization required section */}
+        {effectiveStatus === 'reauthorization_required' && (
+          <>
+            <div style={{ ...resultLabelStyle, color: colors.dark }}>
+              <span style={{ ...dividerStyle, backgroundColor: '#fecdd3' }} />
+              <span>OpenClaw requiere reautorización</span>
+              <span style={{ ...dividerStyle, backgroundColor: '#fecdd3' }} />
+            </div>
+            <div style={{
+              backgroundColor: roseBg,
+              padding: '20px 24px',
+              borderRadius: '12px',
+              border: `1px solid ${rose}`,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span style={{ fontSize: '28px' }}>🔐</span>
+                <span style={{ fontSize: '15px', fontWeight: '600', color: roseDark }}>
+                  Se requiere autorización adicional
+                </span>
+              </div>
+              <div style={{ fontSize: '14px', color: '#374151', lineHeight: '1.6' }}>
+                El dispositivo o la acción solicitada requiere permisos que no han sido otorgados.
+                Por favor, reautoriza OpenClaw para continuar.
+              </div>
+              {reason && (
+                <div style={{
+                  fontSize: '13px',
+                  color: '#6b7280',
+                  backgroundColor: 'white',
+                  padding: '12px',
+                  borderRadius: '8px',
+                  fontFamily: 'ui-monospace, monospace'
+                }}>
+                  Detalle: {reason}
+                </div>
+              )}
+              <div style={{ marginTop: '8px' }}>
+                <a
+                  href="https://openclaw.app/settings"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '10px 20px',
+                    backgroundColor: rose,
+                    color: 'white',
+                    borderRadius: '8px',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    textDecoration: 'none'
+                  }}
+                >
+                  🔑 Reautorizar en OpenClaw →
+                </a>
               </div>
             </div>
           </>

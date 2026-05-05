@@ -1,0 +1,24 @@
+{
+  "name": "granclaw",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run check --workspaces --if-present",
+    "dev:api": "npm run dev --workspace=@granclaw/api",
+    "dev:web": "npm run dev --workspace=@granclaw/web -- --host 0.0.0.0",
+    "start:api": "npm run start --workspace=@granclaw/api",
+    "start:web": "npm run preview --workspace=@granclaw/web -- --host 0.0.0.0",
+    "dev": "./scripts/granclaw-dev.sh start",
+    "dev:stop": "./scripts/granclaw-dev.sh stop",
+    "dev:restart": "./scripts/granclaw-dev.sh restart",
+    "dev:status": "./scripts/granclaw-dev.sh status",
+    "dev:logs": "./scripts/granclaw-dev.sh logs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

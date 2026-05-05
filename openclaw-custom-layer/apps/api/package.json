@@ -1,0 +1,24 @@
+{
+  "name": "@granclaw/api",
+  "version": "0.1.0",
+  "description": "GranClaw Backend API",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "start": "node dist/index.js"
+  },
+  "keywords": ["granclaw", "api", "backend"],
+  "license": "MIT",
+  "dependencies": {
+    "@granclaw/core": "*",
+    "@granclaw/openclaw-adapter": "*",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.0",
+    "@types/node": "^20.0.0"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@granclaw/openclaw-adapter",
+  "version": "0.1.0",
+  "description": "GranClaw OpenClaw Adapter",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "keywords": [
+    "granclaw",
+    "openclaw",
+    "adapter"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@granclaw/core": "*",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.0.0"
+  }
+}

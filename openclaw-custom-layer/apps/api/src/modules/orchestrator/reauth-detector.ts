@@ -2,19 +2,23 @@
  * Reauthorization Detector
  * FIX 122: OpenClaw Reauthorization Handling
  * FIX 123: OpenClaw Persistent Setup & Pairing Flow
+ * FIX 123.1: OpenClaw Setup Hardening & Scoped Reauthorization
  *
  * Detects when OpenClaw responses indicate permission/authorization errors
  * that require the user to reauthorize the device or request more scopes.
  *
- * FIX 123: Now updates persistent system state when reauth is detected.
+ * FIX 123.1: Now creates granular setup requirements by scope/capability.
  */
 
 import {
-  markOpenClawRequiresSetup,
-  openclawRequiresSetup,
+  addSetupRequirement,
   storePendingAction,
   recordSuccessfulExecution,
-  type PendingAction
+  shouldBlockExecution,
+  getActiveRequirements,
+  type PendingAction,
+  type OpenClawScopeKey,
+  type OpenClawSetupRequirement
 } from '../system-state'
 
 /**
@@ -53,6 +57,76 @@ export interface ReauthDetectionResult {
   matchSource?: 'message' | 'error' | 'trace' | 'result' | 'debugSnapshot'
   /** Original matched text */
   matchedText?: string
+  /** FIX 123.1: Detected scope key */
+  scopeKey?: OpenClawScopeKey
+  /** FIX 123.1: Setup requirement created */
+  setupRequirement?: OpenClawSetupRequirement
+}
+
+/**
+ * FIX 123.1: Capability to scope mapping
+ */
+const CAPABILITY_SCOPE_MAP: Record<string, OpenClawScopeKey> = {
+  // OS open app scopes
+  'open_calculator': 'os:open_app',
+  'open_web_browser': 'os:open_app',
+  'open_local_application': 'os:open_app',
+  'open_file_explorer': 'os:open_app',
+  'open_text_editor': 'os:open_app',
+  'open_terminal': 'os:open_app',
+  'open_vscode': 'os:open_app',
+  'launch_app': 'os:open_app',
+  // Install scopes
+  'install_application': 'os:install',
+  'install_download_action': 'os:install',
+  'download_file': 'os:install',
+  // Filesystem scopes
+  'read_file': 'os:filesystem',
+  'write_file': 'os:filesystem',
+  'create_directory': 'os:filesystem',
+  'delete_file': 'os:filesystem',
+  'list_directory': 'os:filesystem',
+  // Browser scopes
+  'browse_url': 'os:browser',
+  'open_url': 'os:browser',
+  'web_search': 'os:browser',
+  // System scopes
+  'run_command': 'os:system',
+  'execute_script': 'os:system',
+  'system_settings': 'os:system'
+}
+
+/**
+ * FIX 123.1: Detect scope from error text
+ */
+function detectScopeFromError(errorText: string): OpenClawScopeKey {
+  const lower = errorText.toLowerCase()
+
+  if (lower.includes('open') || lower.includes('launch') || lower.includes('application')) {
+    return 'os:open_app'
+  }
+  if (lower.includes('install') || lower.includes('download')) {
+    return 'os:install'
+  }
+  if (lower.includes('file') || lower.includes('directory') || lower.includes('folder')) {
+    return 'os:filesystem'
+  }
+  if (lower.includes('browser') || lower.includes('url') || lower.includes('web')) {
+    return 'os:browser'
+  }
+  if (lower.includes('command') || lower.includes('script') || lower.includes('system')) {
+    return 'os:system'
+  }
+
+  return 'openclaw:unknown_scope'
+}
+
+/**
+ * FIX 123.1: Get scope from capabilityKey
+ */
+export function getScopeFromCapability(capabilityKey?: string): OpenClawScopeKey {
+  if (!capabilityKey) return 'openclaw:unknown_scope'
+  return CAPABILITY_SCOPE_MAP[capabilityKey] || 'openclaw:unknown_scope'
 }
 
 /**
@@ -217,56 +291,130 @@ export function detectReauthRequired(response: {
 }
 
 /**
- * FIX 123: Detect reauth AND update system state
+ * FIX 123.1: Detect reauth AND update system state with granular scope
  */
 export function detectAndMarkReauthRequired(
   response: Parameters<typeof detectReauthRequired>[0],
-  pendingAction?: Omit<PendingAction, 'timestamp'>
+  pendingAction?: Omit<PendingAction, 'timestamp' | 'scopeKey'>
 ): ReauthDetectionResult {
   const result = detectReauthRequired(response)
 
   if (result.requiresReauth) {
-    // Mark system state as requiring setup
-    markOpenClawRequiresSetup(result.matchedText || 'Authorization required')
+    // Determine scope from capabilityKey or error text
+    let scopeKey: OpenClawScopeKey = 'openclaw:unknown_scope'
+
+    if (pendingAction?.capabilityKey) {
+      scopeKey = getScopeFromCapability(pendingAction.capabilityKey)
+    }
+
+    // If still unknown, try to detect from error text
+    if (scopeKey === 'openclaw:unknown_scope' && result.matchedText) {
+      scopeKey = detectScopeFromError(result.matchedText)
+    }
+
+    result.scopeKey = scopeKey
+
+    // Create granular setup requirement
+    const requirement = addSetupRequirement({
+      scopeKey,
+      capabilityKey: pendingAction?.capabilityKey,
+      reason: result.matchedText || 'Authorization required',
+      originalError: result.matchedText
+    })
+
+    result.setupRequirement = requirement
 
     // Store pending action if provided
     if (pendingAction) {
       storePendingAction({
         ...pendingAction,
+        scopeKey,
         timestamp: Date.now()
       })
     }
+
+    console.log(`[Reauth Detector] Created requirement: scope=${scopeKey} capability=${pendingAction?.capabilityKey}`)
   }
 
   return result
 }
 
 /**
- * FIX 123: Check if setup is required before executing
+ * FIX 123.1: Check if setup is required for specific scope/capability
+ * Returns true ONLY if there's an active requirement that affects this action
  */
-export function shouldBlockForSetup(): boolean {
-  return openclawRequiresSetup()
+export function shouldBlockForSetup(context?: {
+  scopeKey?: OpenClawScopeKey
+  capabilityKey?: string
+  isSimpleQuery?: boolean
+}): boolean {
+  // Never block simple queries
+  if (context?.isSimpleQuery) {
+    return false
+  }
+
+  const { blocked, requirement } = shouldBlockExecution({
+    scopeKey: context?.scopeKey,
+    capabilityKey: context?.capabilityKey
+  })
+
+  if (blocked && requirement) {
+    console.log(`[Reauth Detector] Blocked by requirement: ${requirement.scopeKey} (${requirement.id})`)
+  }
+
+  return blocked
 }
 
 /**
- * FIX 123: Record successful execution (clears setup_required if set)
+ * FIX 123.1: Get current setup requirement if blocking
  */
-export function recordOpenClawSuccess(): void {
-  recordSuccessfulExecution()
+export function getBlockingRequirement(context?: {
+  scopeKey?: OpenClawScopeKey
+  capabilityKey?: string
+}): OpenClawSetupRequirement | undefined {
+  const { requirement } = shouldBlockExecution({
+    scopeKey: context?.scopeKey,
+    capabilityKey: context?.capabilityKey
+  })
+  return requirement
 }
 
 /**
- * FIX 123: Create setup required response
+ * FIX 123.1: Record successful execution (resolves specific scope/capability)
+ */
+export function recordOpenClawSuccess(context?: {
+  scopeKey?: OpenClawScopeKey
+  capabilityKey?: string
+}): void {
+  recordSuccessfulExecution({
+    scopeKey: context?.scopeKey,
+    capabilityKey: context?.capabilityKey
+  })
+}
+
+/**
+ * FIX 123.1: Create setup required response with scope info
  */
 export function createSetupRequiredResponse(
   requestId: string,
   taskId: string,
-  pendingInput?: string
+  context?: {
+    pendingInput?: string
+    scopeKey?: OpenClawScopeKey
+    capabilityKey?: string
+    requirement?: OpenClawSetupRequirement
+  }
 ): {
   success: boolean
   executionStatus: 'setup_required'
   error: string
   message: string
+  setupInfo: {
+    scopeKey?: OpenClawScopeKey
+    capabilityKey?: string
+    requirementId?: string
+    reason?: string
+  }
   meta: {
     requestId: string
     taskId: string
@@ -274,16 +422,29 @@ export function createSetupRequiredResponse(
     hasPendingAction: boolean
   }
 } {
+  const requirement = context?.requirement || getBlockingRequirement({
+    scopeKey: context?.scopeKey,
+    capabilityKey: context?.capabilityKey
+  })
+
   return {
     success: false,
     executionStatus: 'setup_required',
     error: 'OpenClaw requiere configuración',
-    message: 'OpenClaw necesita permisos adicionales para funcionar correctamente. Por favor, completa la configuración.',
+    message: requirement
+      ? `OpenClaw necesita autorización para: ${requirement.reason}`
+      : 'OpenClaw necesita permisos adicionales para funcionar correctamente.',
+    setupInfo: {
+      scopeKey: requirement?.scopeKey || context?.scopeKey,
+      capabilityKey: requirement?.capabilityKey || context?.capabilityKey,
+      requirementId: requirement?.id,
+      reason: requirement?.reason
+    },
     meta: {
       requestId,
       taskId,
       source: 'setup-required',
-      hasPendingAction: !!pendingInput
+      hasPendingAction: !!context?.pendingInput
     }
   }
 }

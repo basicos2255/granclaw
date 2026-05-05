@@ -1,10 +1,11 @@
 /**
  * Setup Page - OpenClaw Configuration & Pairing
  * FIX 123: OpenClaw Persistent Setup & Pairing Flow
+ * FIX 123.1: Granular requirements display
  */
 
 import { useState, useEffect } from 'react'
-import { api, isAuthenticated, type SystemStateData, type OpenClawCheckAuthResult, type PendingActionData } from '../../services/api'
+import { api, isAuthenticated, type SystemStateData, type OpenClawCheckAuthResult, type PendingActionData, type OpenClawSetupRequirement } from '../../services/api'
 
 export function Setup() {
   const [loading, setLoading] = useState(true)
@@ -69,11 +70,15 @@ export function Setup() {
     setSuccess(null)
     try {
       const response = await api.markOpenClawReady()
-      if (response.success) {
-        setSuccess('OpenClaw marcado como listo')
+      // FIX 123.1: markReady now requires verification
+      if (response.success && response.data?.verified) {
+        setSuccess(`OpenClaw verificado y listo (${response.data.resolvedCount || 0} requisitos resueltos)`)
         await loadState()
+      } else if (response.success && !response.data?.verified) {
+        // Verification failed
+        setError(response.data?.message || 'Verificacion fallida - OpenClaw no esta listo')
       } else {
-        setError(response.error || 'Error al marcar como listo')
+        setError(response.error || 'Error al verificar')
       }
     } catch {
       setError('Error de conexion')
@@ -198,6 +203,19 @@ export function Setup() {
     color: status === 'ok' ? '#16a34a' : status === 'fail' ? '#dc2626' : '#64748b'
   })
 
+  // FIX 123.1: Format scope key for display
+  const formatScopeKey = (scopeKey: string): string => {
+    const scopeLabels: Record<string, string> = {
+      'os:open_app': 'Abrir aplicaciones',
+      'os:install': 'Instalar aplicaciones',
+      'os:filesystem': 'Acceso a archivos',
+      'os:browser': 'Control de navegador',
+      'os:system': 'Control del sistema',
+      'openclaw:unknown_scope': 'Permiso desconocido'
+    }
+    return scopeLabels[scopeKey] || scopeKey
+  }
+
   if (!isAuthenticated()) {
     return (
       <div style={pageStyle}>
@@ -277,7 +295,7 @@ export function Setup() {
             </button>
             {!isReady && (
               <button style={buttonStyle('warning')} onClick={markReady}>
-                Marcar como listo manualmente
+                Verificar y marcar como listo
               </button>
             )}
           </div>
@@ -328,6 +346,43 @@ export function Setup() {
                   Se detecto un error de emparejamiento. Por favor, reautoriza OpenClaw en el portal.
                 </div>
               )}
+
+              {/* FIX 123.1: Show resolved count */}
+              {checkResult.resolvedCount !== undefined && checkResult.resolvedCount > 0 && (
+                <div style={alertStyle('success')}>
+                  {checkResult.resolvedCount} requisito(s) resuelto(s) con esta verificacion.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* FIX 123.1: Active Requirements */}
+        {systemState?.activeRequirements && systemState.activeRequirements.length > 0 && (
+          <div style={{ ...cardStyle, borderColor: '#dc2626', borderWidth: '2px' }}>
+            <h2 style={{ ...titleStyle, fontSize: '18px', color: '#dc2626' }}>
+              Requisitos de configuracion ({systemState.activeRequirements.length})
+            </h2>
+            <p style={subtitleStyle}>
+              Los siguientes permisos requieren autorizacion en OpenClaw.
+            </p>
+            <div style={{ marginTop: '16px' }}>
+              {systemState.activeRequirements.map((req: OpenClawSetupRequirement) => (
+                <div key={req.id} style={{ ...infoRowStyle, flexDirection: 'column', alignItems: 'flex-start', gap: '8px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                    <span style={{ ...valueStyle, fontWeight: '600' }}>{formatScopeKey(req.scopeKey)}</span>
+                    <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                      {new Date(req.createdAt).toLocaleString()}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: '13px', color: '#64748b' }}>{req.reason}</span>
+                  {req.capabilityKey && (
+                    <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                      Capability: {req.capabilityKey}
+                    </span>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -349,6 +404,12 @@ export function Setup() {
               <span style={labelStyle}>Antigüedad</span>
               <span style={valueStyle}>{Math.round(pendingAction.age / 1000 / 60)} minutos</span>
             </div>
+            {pendingAction.scopeKey && (
+              <div style={infoRowStyle}>
+                <span style={labelStyle}>Scope</span>
+                <span style={valueStyle}>{formatScopeKey(pendingAction.scopeKey)}</span>
+              </div>
+            )}
             <button style={buttonStyle('primary')} onClick={retryPendingAction}>
               Reintentar accion
             </button>

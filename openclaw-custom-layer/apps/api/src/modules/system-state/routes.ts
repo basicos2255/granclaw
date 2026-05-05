@@ -1,6 +1,7 @@
 /**
  * System State Routes
  * FIX 123: OpenClaw Persistent Setup & Pairing Flow
+ * FIX 123.1: OpenClaw Setup Hardening & Scoped Reauthorization
  *
  * API endpoints for system state management.
  */
@@ -10,15 +11,18 @@ import { ok } from '../../shared/response'
 import type { AuthContext } from '../auth'
 import {
   getSystemState,
-  markOpenClawReady,
   getPendingAction,
   clearPendingAction,
-  consumePendingAction
+  consumePendingAction,
+  getActiveRequirements,
+  resolveAllRequirements
 } from './service'
+import { checkOpenClawAuth } from '../openclaw/auth-check.service'
 
 /**
  * GET /system/state
  * Get current system state
+ * FIX 123.1: Include granular requirements
  */
 export function handleGetSystemState(
   _req: IncomingMessage,
@@ -26,6 +30,7 @@ export function handleGetSystemState(
   _context: AuthContext | null
 ): void {
   const state = getSystemState()
+  const activeRequirements = getActiveRequirements()
 
   ok(res, {
     success: true,
@@ -36,7 +41,10 @@ export function handleGetSystemState(
       lastChecked: state.lastChecked,
       lastSuccessfulExecution: state.lastSuccessfulExecution,
       hasPendingAction: !!state.pendingAction,
-      pendingActionInput: state.pendingAction?.input?.substring(0, 100)
+      pendingActionInput: state.pendingAction?.input?.substring(0, 100),
+      // FIX 123.1: Granular requirements
+      activeRequirements,
+      activeRequirementCount: activeRequirements.length
     }
   })
 }
@@ -44,6 +52,7 @@ export function handleGetSystemState(
 /**
  * GET /system/pending-action
  * Get pending action details
+ * FIX 123.1: Include scopeKey
  */
 export function handleGetPendingAction(
   _req: IncomingMessage,
@@ -60,6 +69,7 @@ export function handleGetPendingAction(
       userId: action.userId,
       timestamp: action.timestamp,
       capabilityKey: action.capabilityKey,
+      scopeKey: action.scopeKey,
       age: Date.now() - action.timestamp
     } : null
   })
@@ -101,17 +111,68 @@ export function handleConsumePendingAction(
 
 /**
  * POST /system/mark-openclaw-ready
- * Manually mark OpenClaw as ready (after user confirms setup)
+ * FIX 123.1: Verified-only - must pass real auth check before marking ready
+ * No longer allows manual marking without verification
  */
-export function handleMarkOpenClawReady(
+export async function handleMarkOpenClawReady(
   _req: IncomingMessage,
   res: ServerResponse,
   _context: AuthContext | null
-): void {
-  markOpenClawReady()
+): Promise<void> {
+  console.log('[SystemState] mark-openclaw-ready requested - running verification')
 
-  ok(res, {
-    success: true,
-    message: 'OpenClaw marked as ready'
-  })
+  try {
+    // FIX 123.1: Must verify before marking ready
+    const authStatus = await checkOpenClawAuth()
+
+    const wsOk = authStatus.ws === 'ok'
+    const restOk = authStatus.rest === 'ok'
+    const toolsOk = authStatus.tools === 'ok'
+
+    // At least WS and one other surface must be OK
+    if (wsOk && (restOk || toolsOk)) {
+      const resolvedCount = resolveAllRequirements()
+      console.log(`[SystemState] Verification passed - resolved ${resolvedCount} requirements`)
+
+      ok(res, {
+        success: true,
+        verified: true,
+        message: 'OpenClaw verified and marked as ready',
+        resolvedCount,
+        authStatus: {
+          ws: authStatus.ws,
+          rest: authStatus.rest,
+          tools: authStatus.tools
+        }
+      })
+    } else {
+      // Verification failed - cannot mark ready
+      console.log('[SystemState] Verification failed - cannot mark ready')
+      const activeRequirements = getActiveRequirements()
+
+      ok(res, {
+        success: false,
+        verified: false,
+        message: 'Verification failed - OpenClaw not ready',
+        authStatus: {
+          ws: authStatus.ws,
+          rest: authStatus.rest,
+          tools: authStatus.tools
+        },
+        details: authStatus.details,
+        activeRequirements
+      })
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    console.error('[SystemState] Verification error:', errorMsg)
+
+    ok(res, {
+      success: false,
+      verified: false,
+      message: 'Verification failed with error',
+      error: errorMsg,
+      activeRequirements: getActiveRequirements()
+    })
+  }
 }

@@ -16,16 +16,18 @@ import type { IncomingMessage, ServerResponse } from 'http'
 import { ok, badRequest, unauthorized } from '../../shared/response'
 import { runSimpleAgentTask, runStreamingTask, getAdapterStatus } from './service'
 // FIX 122: Reauthorization detection for OpenClaw responses
-// FIX 123: Setup required blocking and persistent state
+// FIX 123 + 123.1: Setup required blocking with granular scopes
 import {
   detectReauthRequired,
   createReauthRequiredResponse,
   detectAndMarkReauthRequired,
   shouldBlockForSetup,
   recordOpenClawSuccess,
-  createSetupRequiredResponse
+  createSetupRequiredResponse,
+  getBlockingRequirement,
+  getScopeFromCapability
 } from './reauth-detector'
-import { storePendingAction, getSystemState } from '../system-state'
+import { storePendingAction, getSystemState, getActiveRequirements } from '../system-state'
 import type { RunTaskInput, StreamTaskInput } from './types'
 import type { AuthContext } from '../auth'
 import { getGranClawHubService } from '../granclaw-hub'
@@ -241,9 +243,14 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
       if (routeDecision.provider === 'openclaw') {
         console.log(`[GranClaw] Delegating to OpenClaw: ${routeDecision.reason}`)
 
-        // FIX 123: Check if OpenClaw requires setup before executing
-        if (shouldBlockForSetup()) {
-          console.log(`[GranClaw] OpenClaw requires setup - blocking execution`)
+        // FIX 123.1: Check if OpenClaw requires setup (granular by scope/capability)
+        // Don't block simple queries that don't need OS permissions
+        const scopeKey = getScopeFromCapability(capabilityKey)
+        const isSimpleQuery = intent.kind === 'simple_question' || intent.kind === 'analysis_task'
+
+        if (shouldBlockForSetup({ scopeKey, capabilityKey, isSimpleQuery })) {
+          const requirement = getBlockingRequirement({ scopeKey, capabilityKey })
+          console.log(`[GranClaw] Setup required for scope=${scopeKey} - blocking execution`)
 
           // Store pending action for retry after setup
           storePendingAction({
@@ -251,14 +258,15 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
             tenantId: context.tenant.id,
             userId: context.user.id,
             timestamp: Date.now(),
-            capabilityKey: capabilityKey
+            capabilityKey: capabilityKey,
+            scopeKey
           })
 
           trace.addStep({
             stage: 'orchestrator',
             status: 'blocked',
             label: 'Configuración requerida',
-            detail: 'OpenClaw necesita configuración antes de ejecutar'
+            detail: `OpenClaw necesita autorización para: ${requirement?.reason || scopeKey}`
           })
 
           const debugSnapshot = trace.getDebugSnapshot()
@@ -269,7 +277,12 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
 
           completeTask(task.id, 'blocked', undefined, 'setup-required', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Configuración requerida')
 
-          const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, input.message)
+          const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, {
+            pendingInput: input.message,
+            scopeKey,
+            capabilityKey,
+            requirement
+          })
           ok(res, {
             ...setupResponse,
             meta: {
@@ -277,7 +290,8 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
               hubDecision: hubResult.decisionLog,
               executionTrace: trace.getSteps(),
               tenantId: context.tenant.id,
-              systemState: getSystemState()
+              systemState: getSystemState(),
+              activeRequirements: getActiveRequirements()
             }
           })
           return
@@ -393,8 +407,8 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           taskStatus = 'unconfirmed'
         } else {
           taskStatus = 'success'
-          // FIX 123: Record successful execution (clears setup_required if set)
-          recordOpenClawSuccess()
+          // FIX 123.1: Record successful execution (resolves specific scope/capability)
+          recordOpenClawSuccess({ scopeKey, capabilityKey })
         }
 
         completeTask(
@@ -700,17 +714,21 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
       // This should rarely happen as the router should always return a valid provider
       console.log(`[GranClaw] Fallback to OpenClaw - provider=${routeDecision.provider} but no matching handler`)
 
-      // FIX 123: Check if OpenClaw requires setup (fallback)
-      if (shouldBlockForSetup()) {
-        console.log(`[GranClaw Fallback] OpenClaw requires setup - blocking execution`)
-        storePendingAction({ input: input.message, tenantId: context.tenant.id, userId: context.user.id, timestamp: Date.now() })
-        trace.addStep({ stage: 'orchestrator', status: 'blocked', label: 'Configuración requerida', detail: 'OpenClaw necesita configuración' })
+      // FIX 123.1: Check if OpenClaw requires setup (fallback - granular)
+      const fallbackScopeKey = getScopeFromCapability(capabilityKey)
+      const fallbackIsSimple = intent.kind === 'simple_question' || intent.kind === 'analysis_task'
+
+      if (shouldBlockForSetup({ scopeKey: fallbackScopeKey, capabilityKey, isSimpleQuery: fallbackIsSimple })) {
+        const requirement = getBlockingRequirement({ scopeKey: fallbackScopeKey, capabilityKey })
+        console.log(`[GranClaw Fallback] Setup required for scope=${fallbackScopeKey}`)
+        storePendingAction({ input: input.message, tenantId: context.tenant.id, userId: context.user.id, timestamp: Date.now(), scopeKey: fallbackScopeKey })
+        trace.addStep({ stage: 'orchestrator', status: 'blocked', label: 'Configuración requerida', detail: requirement?.reason || 'OpenClaw necesita configuración' })
         const debugSnapshot = trace.getDebugSnapshot()
         debugSnapshot.source = 'setup-required'
         debugSnapshot.executionConfirmed = false
         completeTask(task.id, 'blocked', undefined, 'setup-required', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Configuración requerida')
-        const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, input.message)
-        ok(res, { ...setupResponse, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState() } })
+        const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, { pendingInput: input.message, scopeKey: fallbackScopeKey, requirement })
+        ok(res, { ...setupResponse, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState(), activeRequirements: getActiveRequirements() } })
         return
       }
 
@@ -807,8 +825,8 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         taskStatus = 'unconfirmed'
       } else {
         taskStatus = 'success'
-        // FIX 123: Record successful execution (fallback)
-        recordOpenClawSuccess()
+        // FIX 123.1: Record successful execution (fallback - resolves scope)
+        recordOpenClawSuccess({ scopeKey: fallbackScopeKey, capabilityKey })
       }
 
       completeTask(
@@ -1056,17 +1074,21 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
       if (routeDecision.provider === 'openclaw') {
         console.log(`[GranClaw Stream] Delegating to OpenClaw: ${routeDecision.reason}`)
 
-        // FIX 123: Check if OpenClaw requires setup (streaming)
-        if (shouldBlockForSetup()) {
-          console.log(`[GranClaw Stream] OpenClaw requires setup - blocking execution`)
-          storePendingAction({ input: input.message, tenantId: context.tenant.id, userId: context.user.id, timestamp: Date.now(), capabilityKey: capabilityKey })
-          trace.addStep({ stage: 'orchestrator', status: 'blocked', label: 'Configuración requerida', detail: 'OpenClaw necesita configuración' })
+        // FIX 123.1: Check if OpenClaw requires setup (streaming - granular)
+        const streamScopeKey = getScopeFromCapability(capabilityKey)
+        const streamIsSimple = intent.kind === 'simple_question' || intent.kind === 'analysis_task'
+
+        if (shouldBlockForSetup({ scopeKey: streamScopeKey, capabilityKey, isSimpleQuery: streamIsSimple })) {
+          const requirement = getBlockingRequirement({ scopeKey: streamScopeKey, capabilityKey })
+          console.log(`[GranClaw Stream] Setup required for scope=${streamScopeKey}`)
+          storePendingAction({ input: input.message, tenantId: context.tenant.id, userId: context.user.id, timestamp: Date.now(), capabilityKey, scopeKey: streamScopeKey })
+          trace.addStep({ stage: 'orchestrator', status: 'blocked', label: 'Configuración requerida', detail: requirement?.reason || 'OpenClaw necesita configuración' })
           const debugSnapshot = trace.getDebugSnapshot()
           debugSnapshot.source = 'setup-required'
           debugSnapshot.executionConfirmed = false
           completeTask(task.id, 'blocked', undefined, 'setup-required', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Configuración requerida')
-          const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, input.message)
-          ok(res, { ...setupResponse, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState() } })
+          const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, { pendingInput: input.message, scopeKey: streamScopeKey, capabilityKey, requirement })
+          ok(res, { ...setupResponse, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState(), activeRequirements: getActiveRequirements() } })
           return
         }
 
@@ -1129,9 +1151,9 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
         const debugSnapshot = trace.getDebugSnapshot()
         debugSnapshot.source = 'openclaw'
 
-        // FIX 123: Record successful execution (streaming openclaw)
+        // FIX 123.1: Record successful execution (streaming openclaw - resolves scope)
         if (result.success) {
-          recordOpenClawSuccess()
+          recordOpenClawSuccess({ scopeKey: streamScopeKey, capabilityKey })
         }
 
         completeTask(
@@ -1361,17 +1383,19 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
       // FIX 121: Fallback to streaming OpenClaw
       console.log(`[GranClaw Stream] Fallback to OpenClaw streaming`)
 
-      // FIX 123: Check if OpenClaw requires setup (streaming fallback)
-      if (shouldBlockForSetup()) {
-        console.log(`[GranClaw Stream Fallback] OpenClaw requires setup - blocking execution`)
-        storePendingAction({ input: input.message, tenantId: context.tenant.id, userId: context.user.id, timestamp: Date.now() })
-        trace.addStep({ stage: 'orchestrator', status: 'blocked', label: 'Configuración requerida', detail: 'OpenClaw necesita configuración' })
-        const debugSnapshot = trace.getDebugSnapshot()
-        debugSnapshot.source = 'setup-required'
-        debugSnapshot.executionConfirmed = false
-        completeTask(task.id, 'blocked', undefined, 'setup-required', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Configuración requerida')
-        const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, input.message)
-        ok(res, { ...setupResponse, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState() } })
+      // FIX 123.1: Check if OpenClaw requires setup (streaming fallback - granular)
+      const streamFbScopeKey = getScopeFromCapability(capabilityKey)
+      const streamFbIsSimple = intent.kind === 'simple_question' || intent.kind === 'analysis_task'
+
+      if (shouldBlockForSetup({ scopeKey: streamFbScopeKey, capabilityKey, isSimpleQuery: streamFbIsSimple })) {
+        const requirement = getBlockingRequirement({ scopeKey: streamFbScopeKey, capabilityKey })
+        console.log(`[GranClaw Stream Fallback] Setup required for scope=${streamFbScopeKey}`)
+        const setupDebugSnapshot = trace.getDebugSnapshot()
+        setupDebugSnapshot.source = 'setup-required'
+        setupDebugSnapshot.executionConfirmed = false
+        completeTask(task.id, 'blocked', undefined, 'setup-required', trace.getSteps(), setupDebugSnapshot, trace.getTotalDurationMs(), 'Configuración requerida')
+        const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, { pendingInput: input.message, scopeKey: streamFbScopeKey, requirement })
+        ok(res, { ...setupResponse, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState(), activeRequirements: getActiveRequirements() } })
         return
       }
 
@@ -1468,8 +1492,8 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
         taskStatus = 'unconfirmed'
       } else {
         taskStatus = 'success'
-        // FIX 123: Record successful execution (streaming fallback)
-        recordOpenClawSuccess()
+        // FIX 123.1: Record successful execution (streaming fallback - resolves scope)
+        recordOpenClawSuccess({ scopeKey: streamFbScopeKey, capabilityKey })
       }
 
       completeTask(

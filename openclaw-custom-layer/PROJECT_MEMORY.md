@@ -4342,3 +4342,102 @@ El pairing es un **estado del sistema**, no un error de una solicitud específic
 - ✅ Source type 'setup-required' añadido
 - ✅ npm run check sin errores
 - ✅ npm run build exitoso
+
+---
+
+## FIX 123.1 - OpenClaw Setup Hardening & Scoped Reauthorization
+
+**Fecha**: 2026-05-05
+**Estado**: Completado
+
+### Problema
+
+FIX 123 tenía problemas de diseño:
+
+1. `openclawRequiresSetup === true` bloqueaba TODO OpenClaw, incluso queries simples
+2. Endpoint `/system/mark-openclaw-ready` permitía marcar listo sin verificación real
+3. No había auto-clear cuando OpenClaw funcionaba para scopes específicos
+4. Estado de setup genérico sin distinguir scopes/capabilities
+5. UI necesitaba mostrar requisitos específicos, no solo flag genérico
+
+### Reglas de diseño
+
+- NO bloquear todo OpenClaw por un problema de scope específico
+- NO permitir marcar OpenClaw como listo sin verificación real
+- El sistema debe auto-limpiar cuando OpenClaw funciona
+- Requisitos granulares por scope/capability
+
+### Solución
+
+1. **Tipos granulares** (system-state/types.ts):
+   - `OpenClawScopeKey`: 'os:open_app' | 'os:install' | 'os:filesystem' | 'os:browser' | 'os:system' | 'openclaw:unknown_scope'
+   - `OpenClawSetupRequirement`: id, scopeKey, capabilityKey, reason, status, timestamps
+   - SystemState con `setupRequirements[]` para tracking granular
+
+2. **Detección granular** (reauth-detector.ts):
+   - `CAPABILITY_SCOPE_MAP`: Mapea capabilityKey a scopeKey
+   - `detectScopeFromError()`: Detecta scope desde texto de error
+   - `getScopeFromCapability()`: Obtiene scope de capability
+   - `shouldBlockForSetup()` ahora acepta contexto con `isSimpleQuery`
+   - `getBlockingRequirement()`: Obtiene requirement que bloquea
+
+3. **Blocking inteligente** (orchestrator/routes.ts):
+   - Queries simples (`simple_question`, `analysis_task`) no bloquean
+   - Blocking solo cuando hay requirement activo para el scope
+   - Auto-clear en `recordOpenClawSuccess()` por scope específico
+
+4. **Check-auth mejorado** (openclaw/routes.ts):
+   - Resuelve TODOS los requirements cuando auth OK
+   - Retorna `activeRequirements[]` y `resolvedRequirements[]`
+   - Retorna `resolvedCount` al resolver
+
+5. **Mark-ready verificado** (system-state/routes.ts):
+   - Ya no permite marcar listo manualmente
+   - Llama internamente a `checkOpenClawAuth()`
+   - Solo resuelve requirements si verificación pasa
+   - Retorna `verified: true/false` y `resolvedCount`
+
+6. **UI granular** (Setup.tsx):
+   - Muestra lista de requirements activos por scope
+   - Función `formatScopeKey()` para labels legibles
+   - Muestra scope en pending action
+   - Botón "Verificar y marcar como listo" (no manual)
+
+7. **Tipos frontend** (api.ts):
+   - `OpenClawScopeKey` type
+   - `OpenClawSetupRequirement` interface
+   - `SystemStateData.activeRequirements[]`
+   - `PendingActionData.scopeKey`
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/modules/system-state/types.ts | OpenClawScopeKey, OpenClawSetupRequirement, setupRequirements[] |
+| apps/api/src/modules/system-state/service.ts | addSetupRequirement, getActiveRequirements, resolveSetupRequirement, resolveAllRequirements, shouldBlockExecution |
+| apps/api/src/modules/system-state/routes.ts | handleMarkOpenClawReady async con verificación |
+| apps/api/src/modules/orchestrator/reauth-detector.ts | CAPABILITY_SCOPE_MAP, detectScopeFromError, getScopeFromCapability, getBlockingRequirement |
+| apps/api/src/modules/orchestrator/routes.ts | Contexto granular en shouldBlockForSetup y recordOpenClawSuccess |
+| apps/api/src/modules/openclaw/routes.ts | handleCheckAuth con granular requirements |
+| apps/web/src/services/api.ts | Tipos granulares |
+| apps/web/src/pages/control/Setup.tsx | UI granular requirements |
+
+### API Changes
+
+| Endpoint | Cambio |
+|----------|--------|
+| GET /system/state | Ahora incluye `activeRequirements[]` y `activeRequirementCount` |
+| POST /system/mark-openclaw-ready | Ahora verifica antes de marcar, retorna `verified`, `resolvedCount` |
+| GET /openclaw/check-auth | Retorna `activeRequirements[]`, `resolvedRequirements[]`, `resolvedCount` |
+
+### Verificaciones
+
+- ✅ Tipos granulares implementados
+- ✅ Detección por scope funcional
+- ✅ Blocking inteligente (no bloquea queries simples)
+- ✅ Auto-clear por scope específico
+- ✅ Check-auth resuelve requirements
+- ✅ Mark-ready requiere verificación
+- ✅ UI muestra requirements granulares
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso

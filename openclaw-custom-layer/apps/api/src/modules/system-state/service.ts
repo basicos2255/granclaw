@@ -1,13 +1,15 @@
 /**
  * System State Service
  * FIX 123: OpenClaw Persistent Setup & Pairing Flow
+ * FIX 123.1: OpenClaw Setup Hardening & Scoped Reauthorization
  *
  * Manages persistent system state stored in data/system-state.json
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
-import { join, dirname } from 'path'
-import type { SystemState, PendingAction, OpenClawSetupStatus } from './types'
+import { join } from 'path'
+import { randomUUID } from 'crypto'
+import type { SystemState, PendingAction, OpenClawSetupStatus, OpenClawSetupRequirement, OpenClawScopeKey } from './types'
 import { DEFAULT_SYSTEM_STATE } from './types'
 
 // Path to persistent state file
@@ -46,11 +48,22 @@ function loadState(): SystemState {
     const raw = readFileSync(STATE_FILE, 'utf-8')
     const parsed = JSON.parse(raw) as Partial<SystemState>
 
+    // FIX 123.1: Migrate from v1 to v2
+    if (!parsed.version || parsed.version < 2) {
+      console.log('[SystemState] Migrating from v1 to v2')
+      parsed.setupRequirements = []
+      parsed.version = 2
+    }
+
     // Merge with defaults for any missing fields
     cachedState = {
       ...DEFAULT_SYSTEM_STATE,
-      ...parsed
+      ...parsed,
+      setupRequirements: parsed.setupRequirements || []
     }
+
+    // FIX 123.1: Derive openclawRequiresSetup from active requirements
+    cachedState.openclawRequiresSetup = cachedState.setupRequirements.some(r => r.status === 'active')
 
     return cachedState
   } catch (err) {
@@ -99,55 +112,224 @@ export function getOpenClawSetupStatus(): OpenClawSetupStatus {
 }
 
 /**
- * Mark OpenClaw as requiring setup
+ * Mark OpenClaw as requiring setup (legacy - creates generic requirement)
  */
 export function markOpenClawRequiresSetup(error: string): void {
-  const state = loadState()
-
-  state.openclawRequiresSetup = true
-  state.openclawSetupStatus = 'setup_required'
-  state.lastError = error
-  state.lastChecked = Date.now()
-
-  saveState(state)
-
-  console.log(`[SystemState] OpenClaw marked as requiring setup: ${error}`)
+  addSetupRequirement({
+    scopeKey: 'openclaw:unknown_scope',
+    reason: error,
+    originalError: error
+  })
 }
 
 /**
- * Mark OpenClaw as ready (setup complete)
+ * FIX 123.1: Add a granular setup requirement
  */
-export function markOpenClawReady(): void {
+export function addSetupRequirement(params: {
+  scopeKey: OpenClawScopeKey
+  capabilityKey?: string
+  reason: string
+  originalError?: string
+}): OpenClawSetupRequirement {
   const state = loadState()
 
-  state.openclawRequiresSetup = false
-  state.openclawSetupStatus = 'ready'
-  state.lastError = undefined
+  // Check if similar requirement already exists (active)
+  const existing = state.setupRequirements.find(
+    r => r.status === 'active' &&
+         r.scopeKey === params.scopeKey &&
+         r.capabilityKey === params.capabilityKey
+  )
+
+  if (existing) {
+    // Update existing requirement
+    existing.updatedAt = new Date().toISOString()
+    existing.reason = params.reason
+    existing.originalError = params.originalError
+    saveState(state)
+    console.log(`[SystemState] Updated setup requirement: ${params.scopeKey}`)
+    return existing
+  }
+
+  // Create new requirement
+  const requirement: OpenClawSetupRequirement = {
+    id: randomUUID(),
+    scopeKey: params.scopeKey,
+    capabilityKey: params.capabilityKey,
+    provider: 'openclaw',
+    reason: params.reason,
+    originalError: params.originalError,
+    status: 'active',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  }
+
+  state.setupRequirements.push(requirement)
+  state.openclawRequiresSetup = true
+  state.openclawSetupStatus = 'setup_required'
+  state.lastError = params.reason
   state.lastChecked = Date.now()
-  state.lastSuccessfulExecution = Date.now()
 
   saveState(state)
 
-  console.log('[SystemState] OpenClaw marked as ready')
+  console.log(`[SystemState] Added setup requirement: ${params.scopeKey} (${requirement.id})`)
+  return requirement
+}
+
+/**
+ * FIX 123.1: Get active setup requirements
+ */
+export function getActiveRequirements(): OpenClawSetupRequirement[] {
+  const state = loadState()
+  return state.setupRequirements.filter(r => r.status === 'active')
+}
+
+/**
+ * FIX 123.1: Resolve a specific setup requirement
+ */
+export function resolveSetupRequirement(params: {
+  id?: string
+  scopeKey?: OpenClawScopeKey
+  capabilityKey?: string
+}): boolean {
+  const state = loadState()
+  let resolved = false
+
+  for (const req of state.setupRequirements) {
+    if (req.status !== 'active') continue
+
+    // Match by id, scopeKey, or capabilityKey
+    const matchesId = params.id && req.id === params.id
+    const matchesScope = params.scopeKey && req.scopeKey === params.scopeKey
+    const matchesCapability = params.capabilityKey && req.capabilityKey === params.capabilityKey
+
+    if (matchesId || matchesScope || matchesCapability) {
+      req.status = 'resolved'
+      req.resolvedAt = new Date().toISOString()
+      req.updatedAt = new Date().toISOString()
+      resolved = true
+      console.log(`[SystemState] Resolved requirement: ${req.scopeKey} (${req.id})`)
+    }
+  }
+
+  if (resolved) {
+    // Update derived state
+    const hasActiveReqs = state.setupRequirements.some(r => r.status === 'active')
+    state.openclawRequiresSetup = hasActiveReqs
+    if (!hasActiveReqs) {
+      state.openclawSetupStatus = 'ready'
+      state.lastError = undefined
+    }
+    saveState(state)
+  }
+
+  return resolved
+}
+
+/**
+ * FIX 123.1: Resolve all setup requirements
+ */
+export function resolveAllRequirements(): number {
+  const state = loadState()
+  let count = 0
+
+  for (const req of state.setupRequirements) {
+    if (req.status === 'active') {
+      req.status = 'resolved'
+      req.resolvedAt = new Date().toISOString()
+      req.updatedAt = new Date().toISOString()
+      count++
+    }
+  }
+
+  if (count > 0) {
+    state.openclawRequiresSetup = false
+    state.openclawSetupStatus = 'ready'
+    state.lastError = undefined
+    saveState(state)
+    console.log(`[SystemState] Resolved ${count} setup requirements`)
+  }
+
+  return count
+}
+
+/**
+ * FIX 123.1: Check if execution should be blocked for specific scope/capability
+ */
+export function shouldBlockExecution(params: {
+  scopeKey?: OpenClawScopeKey
+  capabilityKey?: string
+}): { blocked: boolean; requirement?: OpenClawSetupRequirement } {
+  const state = loadState()
+  const activeReqs = state.setupRequirements.filter(r => r.status === 'active')
+
+  if (activeReqs.length === 0) {
+    return { blocked: false }
+  }
+
+  // Check for exact capabilityKey match
+  if (params.capabilityKey) {
+    const matchingReq = activeReqs.find(r => r.capabilityKey === params.capabilityKey)
+    if (matchingReq) {
+      return { blocked: true, requirement: matchingReq }
+    }
+  }
+
+  // Check for scopeKey match
+  if (params.scopeKey) {
+    const matchingReq = activeReqs.find(r => r.scopeKey === params.scopeKey)
+    if (matchingReq) {
+      return { blocked: true, requirement: matchingReq }
+    }
+  }
+
+  // Check for generic unknown_scope (blocks everything)
+  const genericReq = activeReqs.find(r => r.scopeKey === 'openclaw:unknown_scope')
+  if (genericReq) {
+    return { blocked: true, requirement: genericReq }
+  }
+
+  return { blocked: false }
+}
+
+/**
+ * Mark OpenClaw as ready (verified - resolves all requirements)
+ * FIX 123.1: Now requires verification via check-auth
+ */
+export function markOpenClawReady(): void {
+  resolveAllRequirements()
+
+  const state = loadState()
+  state.lastSuccessfulExecution = Date.now()
+  state.lastChecked = Date.now()
+  saveState(state)
+
+  console.log('[SystemState] OpenClaw marked as ready (all requirements resolved)')
 }
 
 /**
  * Record successful OpenClaw execution
+ * FIX 123.1: Now resolves specific scope/capability requirement
  */
-export function recordSuccessfulExecution(): void {
+export function recordSuccessfulExecution(params?: {
+  scopeKey?: OpenClawScopeKey
+  capabilityKey?: string
+}): void {
   const state = loadState()
 
-  // If we were in setup_required and now succeeded, mark as ready
-  if (state.openclawRequiresSetup) {
-    state.openclawRequiresSetup = false
-    state.openclawSetupStatus = 'ready'
-    state.lastError = undefined
+  // Resolve specific requirement if provided
+  if (params?.scopeKey || params?.capabilityKey) {
+    resolveSetupRequirement({
+      scopeKey: params.scopeKey,
+      capabilityKey: params.capabilityKey
+    })
   }
 
   state.lastSuccessfulExecution = Date.now()
   state.lastChecked = Date.now()
 
   saveState(state)
+
+  console.log('[SystemState] Successful execution recorded')
 }
 
 /**

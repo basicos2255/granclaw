@@ -552,11 +552,21 @@ export const api = {
     return requestProtected<PendingActionData | null>('/system/pending-action')
   },
 
-  markOpenClawReady: async (): Promise<ApiResponse<{ message: string }>> => {
+  // FIX 123.1: markOpenClawReady now returns verification result
+  markOpenClawReady: async (): Promise<ApiResponse<{
+    verified: boolean
+    message: string
+    resolvedCount?: number
+    authStatus?: {
+      ws: 'ok' | 'fail' | 'skip'
+      rest: 'ok' | 'fail' | 'skip'
+      tools: 'ok' | 'fail' | 'skip'
+    }
+  }>> => {
     if (!isAuthenticated()) {
       return { success: false, data: null, error: 'Debes iniciar sesion' }
     }
-    return postRequestProtected<ApiResponse<{ message: string }>>('/system/mark-openclaw-ready', {})
+    return postRequestProtected('/system/mark-openclaw-ready', {})
   },
 
   checkOpenClawAuth: async (): Promise<ApiResponse<OpenClawCheckAuthResult>> => {
@@ -584,7 +594,29 @@ export interface CleanupResult {
 }
 
 // FIX 123: System State types
+// FIX 123.1: Granular setup requirements
 export type OpenClawSetupStatus = 'ready' | 'setup_required' | 'unknown'
+
+export type OpenClawScopeKey =
+  | 'os:open_app'
+  | 'os:install'
+  | 'os:filesystem'
+  | 'os:browser'
+  | 'os:system'
+  | 'openclaw:unknown_scope'
+
+export interface OpenClawSetupRequirement {
+  id: string
+  scopeKey: OpenClawScopeKey
+  capabilityKey?: string
+  provider: 'openclaw'
+  reason: string
+  originalError?: string
+  status: 'active' | 'resolved'
+  createdAt: string
+  updatedAt: string
+  resolvedAt?: string
+}
 
 export interface SystemStateData {
   openclawRequiresSetup: boolean
@@ -594,6 +626,9 @@ export interface SystemStateData {
   lastSuccessfulExecution?: number
   hasPendingAction: boolean
   pendingActionInput?: string
+  // FIX 123.1: Granular requirements
+  activeRequirements?: OpenClawSetupRequirement[]
+  activeRequirementCount?: number
 }
 
 export interface PendingActionData {
@@ -602,6 +637,7 @@ export interface PendingActionData {
   userId: string
   timestamp: number
   capabilityKey?: string
+  scopeKey?: OpenClawScopeKey
   age: number
 }
 
@@ -623,12 +659,17 @@ export interface OpenClawCheckAuthResult {
     lastError?: string
     lastChecked?: number
   }
+  // FIX 123.1: Granular requirements
+  activeRequirements?: OpenClawSetupRequirement[]
+  resolvedRequirements?: OpenClawSetupRequirement[]
+  resolvedCount?: number
   summary: {
     wsOk: boolean
     restOk: boolean
     toolsOk: boolean
     hasPairingError: boolean
     isReady: boolean
+    activeRequirementCount?: number
   }
 }
 

@@ -519,6 +519,22 @@ export const api = {
       return { success: false, data: null, error: 'Debes iniciar sesion' }
     }
     return requestProtected<OSToolInfo[]>('/os-tools')
+  },
+
+  // FEATURE 120: Execution Policy
+  getExecutionPolicy: async (): Promise<ApiResponse<ExecutionPolicyConfig>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<ExecutionPolicyConfig>('/execution-policy')
+  },
+
+  setExecutionPolicy: async (config: Partial<ExecutionPolicyConfigInput>): Promise<ApiResponse<ExecutionPolicyConfig>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    const response = await postRequest<ApiResponse<ExecutionPolicyConfig>>('/execution-policy', config)
+    return response
   }
 }
 
@@ -599,6 +615,29 @@ export interface OSToolInfo {
   requiresConfirmation: boolean
   platformSupported: boolean
   currentPlatform: string
+}
+
+// FEATURE 120: Execution Policy types
+export type ExecutionProvider = 'auto' | 'openclaw' | 'local'
+
+export interface ExecutionPolicyConfig {
+  tenantId: string
+  provider: ExecutionProvider
+  preferOpenClawForNewActions: boolean
+  allowLocalFallback: boolean
+  avoidAiForLearnedActions: boolean
+  requireConfirmationForOsToolsInStrict: boolean
+  requireConfirmationForHighRiskInFree: boolean
+  updatedAt: string
+}
+
+export interface ExecutionPolicyConfigInput {
+  provider?: ExecutionProvider
+  preferOpenClawForNewActions?: boolean
+  allowLocalFallback?: boolean
+  avoidAiForLearnedActions?: boolean
+  requireConfirmationForOsToolsInStrict?: boolean
+  requireConfirmationForHighRiskInFree?: boolean
 }
 
 async function deleteRequest<T>(endpoint: string): Promise<T> {

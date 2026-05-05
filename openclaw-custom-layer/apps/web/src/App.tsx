@@ -16,7 +16,7 @@ import { ChatPage } from './pages/chat'
 import { LoginPage } from './pages/login'
 import { RegisterPage } from './pages/register'
 import { DebugPage } from './pages/debug'
-import { Execute, Clientes, Dashboard as ControlDashboard, Historial, Tools } from './pages/control'
+import { Execute, Clientes, Dashboard as ControlDashboard, Historial, Tools, Settings } from './pages/control'
 
 type Route = string
 
@@ -45,6 +45,7 @@ function Router({ path }: { path: Route }) {
   if (path === '/control/dashboard') return <ControlDashboard />
   if (path === '/control/historial') return <Historial />
   if (path === '/control/tools') return <Tools />
+  if (path === '/control/settings') return <Settings />
 
   // Rutas dev
   if (path === '/dev/dashboard') return <DashboardPage />
@@ -75,7 +76,8 @@ function ProductHeader({ currentPath, navigate, userEmail, onLogout }: ProductHe
     { path: '/control', label: 'Control' },
     { path: '/control/clientes', label: 'Politicas' },
     { path: '/control/historial', label: 'Historial' },
-    { path: '/control/tools', label: 'Tools' }
+    { path: '/control/tools', label: 'Tools' },
+    { path: '/control/settings', label: 'Config' }
   ]
 
   const isActive = (path: string) => {

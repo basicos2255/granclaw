@@ -52,6 +52,8 @@ import { handleGetToolProposals, handleGetToolProposalById, handleApproveToolPro
 import { handleGetCapabilities, handleGetCapabilityById, handleEnableCapability, handleDisableCapability, handleDeleteCapability } from './modules/capabilities'
 // FIX 113: OS Tools routes
 import { handleGetOSTools, handleGetPendingConfirmations, handleConfirmOSTool, handleCleanupOSTools } from './modules/os-tools'
+// FEATURE 120: Execution Policy routes
+import { handleGetExecutionPolicy, handleSetExecutionPolicy } from './modules/execution-policy'
 import { handleAudit } from './modules/audit'
 import { handleOpenClawStatus, handleOpenClawWsStatus, handleWebhookTest, handleWsRpcStatus, handleToolsStatus, handleAuthStatus } from './modules/openclaw'
 import { handleOrchestratorRun, handleOrchestratorRunStream } from './modules/orchestrator'
@@ -105,7 +107,9 @@ const getRoutes: Record<string, RouteHandler> = {
   '/granclaw-hub/config': handleGetAllConfig,
   // FIX 113: OS Tools routes
   '/os-tools': handleGetOSTools,
-  '/os-tools/pending': wrapPendingConfirmationsHandler
+  '/os-tools/pending': wrapPendingConfirmationsHandler,
+  // FEATURE 120: Execution Policy
+  '/execution-policy': handleGetExecutionPolicy
 }
 
 // POST routes
@@ -121,7 +125,9 @@ const postRoutes: Record<string, RouteHandler> = {
   '/orchestrator/run-stream': handleOrchestratorRunStream,
   // FIX 113: OS Tools routes
   '/os-tools/confirm': handleConfirmOSTool,
-  '/os-tools/cleanup': handleCleanupOSTools
+  '/os-tools/cleanup': handleCleanupOSTools,
+  // FEATURE 120: Execution Policy
+  '/execution-policy': handleSetExecutionPolicy
 }
 
 // Rutas dinámicas con parámetros
@@ -306,5 +312,8 @@ server.listen(PORT, () => {
   console.log('  GET /os-tools/pending?sessionId=xxx')
   console.log('  POST /os-tools/confirm')
   console.log('  POST /os-tools/cleanup')
+  // FEATURE 120: Execution Policy endpoints
+  console.log('  GET /execution-policy')
+  console.log('  POST /execution-policy')
 })
 

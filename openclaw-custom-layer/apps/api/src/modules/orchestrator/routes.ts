@@ -8,6 +8,8 @@
  * FEATURE 075: Debug Snapshot & Bottom Status Bar
  * FEATURE 080: Task System v1
  * FEATURE 090: Tool Proposal System v1
+ * FEATURE 120: Hybrid Execution Policy v1
+ * FIX 121: Authoritative Hybrid Router & Intent Classification
  */
 
 import type { IncomingMessage, ServerResponse } from 'http'
@@ -22,6 +24,14 @@ import { detectMissingCapability, createToolProposal, findExistingProposal, coun
 import { getEnabledCapabilityByKey, getCapabilityByKey, normalizeCapabilityKey, countCapabilitiesByKey, dispatchCapabilityExecution, type ExecutionMode } from '../capabilities'
 // FEATURE 110: OS Tools - keeping imports for whitelist check
 import { isOSToolCapability, getOSToolConfig } from '../os-tools'
+// FEATURE 120 + FIX 121: Hybrid Execution Policy with Intent Classification
+import {
+  getExecutionPolicy,
+  decideExecutionRoute,
+  classifyIntent,
+  type ExecutionRouteDecision,
+  type IntentClassification
+} from '../execution-policy'
 
 /**
  * FIX 111: Capability execution is now handled by capability-dispatcher.ts
@@ -155,17 +165,31 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
       trace.hubAllowed(context.tenant.id)
       trace.orchestratorStart()
 
-      // FEATURE 090/091 + FIX 104/105: Detectar capacidad con lookup robusto
-      const missingCapability = detectMissingCapability(input.message)
-      if (missingCapability) {
-        // FIX 104: Usar capabilityKey normalizada para lookup
-        const capabilityKey = missingCapability.capabilityKey || normalizeCapabilityKey(missingCapability.proposedToolName)
+      // FIX 121: STEP 1 - Classify intent FIRST (BEFORE capability detection)
+      const intent: IntentClassification = classifyIntent(input.message)
+      console.log(`[Intent Classifier] kind=${intent.kind} confidence=${intent.confidence} needsAi=${intent.needsAi} needsAgent=${intent.needsAgent}`)
+      console.log(`[Intent Classifier] isMultiStep=${intent.isMultiStep} isDeterministic=${intent.isDeterministic}`)
+      console.log(`[Intent Classifier] reason="${intent.reason}" signals=[${intent.signals.join(', ')}]`)
 
-        // FIX 105: Diagnostic logs y lookup completo
-        const capabilityAny = getCapabilityByKey(context.tenant.id, capabilityKey)
-        const capabilityEnabled = getEnabledCapabilityByKey(context.tenant.id, capabilityKey)
-        const proposalCount = countDuplicateProposals(context.tenant.id, capabilityKey)
-        const capabilityCount = countCapabilitiesByKey(context.tenant.id, capabilityKey)
+      // FIX 121: Get hub config and execution policy
+      const hubConfig = hub.getConfig(context.tenant.id)
+      const executionPolicy = getExecutionPolicy(context.tenant.id)
+
+      // FIX 121: STEP 2 - Capability detection (only provides signals)
+      const missingCapability = detectMissingCapability(input.message)
+      const capabilityKey = missingCapability?.capabilityKey || (missingCapability ? normalizeCapabilityKey(missingCapability.proposedToolName) : undefined)
+
+      // FIX 121: Capability lookup if we have a key
+      let capabilityAny = null
+      let capabilityEnabled = null
+      let proposalCount = 0
+      let capabilityCount = 0
+
+      if (capabilityKey) {
+        capabilityAny = getCapabilityByKey(context.tenant.id, capabilityKey)
+        capabilityEnabled = getEnabledCapabilityByKey(context.tenant.id, capabilityKey)
+        proposalCount = countDuplicateProposals(context.tenant.id, capabilityKey)
+        capabilityCount = countCapabilitiesByKey(context.tenant.id, capabilityKey)
 
         console.log(`[Capability Lookup] tenantId=${context.tenant.id}`)
         console.log(`[Capability Lookup] capabilityKey=${capabilityKey}`)
@@ -173,14 +197,138 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         console.log(`[Capability Lookup] enabled=${capabilityAny?.enabled ?? false}`)
         console.log(`[Capability Lookup] proposalCount=${proposalCount}`)
         console.log(`[Capability Lookup] duplicateCapabilities=${capabilityCount}`)
+      } else {
+        console.log(`[Capability Lookup] No capability detected from message`)
+      }
 
-        // Case A: Capability exists and enabled - execute via dispatcher (FIX 111)
-        if (capabilityEnabled) {
-          console.log(`[GranClaw] Executing approved capability: ${capabilityEnabled.toolName} (key: ${capabilityKey})`)
+      // FIX 121: STEP 3 - AUTHORITATIVE router decision
+      const routeDecision: ExecutionRouteDecision = decideExecutionRoute({
+        tenantId: context.tenant.id,
+        userId: context.user.id,
+        message: input.message,
+        mode: hubConfig.mode === 'passthrough' ? 'passthrough' : 'strict',
+        hubAllowed: true,
+        intent, // FIX 121: Include intent classification
+        detectedCapabilityKey: capabilityKey,
+        approvedCapability: capabilityEnabled && capabilityKey ? {
+          id: capabilityEnabled.id,
+          capabilityKey: capabilityEnabled.capabilityKey || capabilityKey,
+          enabled: capabilityEnabled.enabled,
+          riskLevel: capabilityEnabled.riskLevel || 'medium'
+        } : undefined,
+        policyConfig: executionPolicy
+      })
+
+      console.log(`[Execution Router] AUTHORITATIVE provider=${routeDecision.provider} reason="${routeDecision.reason}"`)
+      console.log(`[Execution Router] needsAi=${routeDecision.needsAi} tokenSaving=${routeDecision.tokenSaving}`)
+      if (routeDecision.intent) {
+        console.log(`[Execution Router] intentKind=${routeDecision.intent.kind}`)
+      }
+
+      // FIX 121: STEP 4 - Execute based on router decision
+      // Provider 'openclaw' - delegate to OpenClaw (skips capability handling)
+      if (routeDecision.provider === 'openclaw') {
+        console.log(`[GranClaw] Delegating to OpenClaw: ${routeDecision.reason}`)
+
+        trace.addStep({
+          stage: 'orchestrator',
+          status: 'success',
+          label: 'Delegado a OpenClaw',
+          detail: routeDecision.reason
+        })
+
+        // Go to OpenClaw execution
+        const taskInput: RunTaskInput = {
+          ...input,
+          tenantId: context.tenant.id,
+          message: hubResult.modifiedMessage || input.message
+        }
+
+        const result = await runSimpleAgentTask(taskInput)
+
+        if (result.success) {
+          trace.orchestratorSuccess()
+          if (result.source) {
+            trace.resultSource(result.source)
+          }
+        } else {
+          trace.orchestratorError(result.error || 'Error desconocido')
+        }
+
+        const hasRealResult = result.success && result.result !== null && result.result !== undefined
+        const source = result.source || 'openclaw'
+
+        const debugSnapshot = trace.getDebugSnapshot()
+        debugSnapshot.source = 'openclaw'
+        logDebug(debugSnapshot)
+
+        const tracePresent = trace.getSteps().length > 0
+        let warning: string | undefined
+        if (!tracePresent) {
+          warning = 'No se recibio trazabilidad real de esta ejecucion'
+        } else if (result.success && !hasRealResult) {
+          warning = 'No execution result available'
+        }
+
+        const finalSuccess = result.success && debugSnapshot.executionConfirmed
+
+        let taskStatus: TaskStatus
+        if (!result.success) {
+          taskStatus = 'error'
+        } else if (!debugSnapshot.executionConfirmed) {
+          taskStatus = 'unconfirmed'
+        } else {
+          taskStatus = 'success'
+        }
+
+        completeTask(
+          task.id,
+          taskStatus,
+          result.result,
+          source,
+          trace.getSteps(),
+          debugSnapshot,
+          trace.getTotalDurationMs(),
+          undefined,
+          result.error
+        )
+
+        ok(res, {
+          ...result,
+          success: finalSuccess,
+          ...(result.success && !debugSnapshot.executionConfirmed ? {
+            message: 'Permitido, pero no se pudo confirmar la ejecucion real'
+          } : {}),
+          warning,
+          meta: {
+            requestId: trace.requestId,
+            taskId: task.id,
+            hubDecision: hubResult.decisionLog,
+            executionTrace: trace.getSteps(),
+            executionDurationMs: trace.getTotalDurationMs(),
+            tenantId: context.tenant.id,
+            source,
+            adapterStatus,
+            debugSnapshot,
+            // FIX 121: Include router decision info
+            routerDecision: {
+              provider: routeDecision.provider,
+              reason: routeDecision.reason,
+              intentKind: intent.kind,
+              needsAi: routeDecision.needsAi,
+              tokenSaving: routeDecision.tokenSaving
+            }
+          }
+        })
+        return
+      }
+
+      // FIX 121: Provider 'local' - execute via capability (requires approved capability)
+      if (routeDecision.provider === 'local' && capabilityKey && capabilityEnabled) {
+          console.log(`[GranClaw] Executing approved capability: ${capabilityEnabled.toolName} (key: ${capabilityKey}) via ${routeDecision.provider}`)
 
           // FIX 111: Use dispatcher instead of direct execution
-          // FIX 112: Get mode from hub config, not hubResult
-          const hubConfig = hub.getConfig(context.tenant.id)
+          // FIX 112/FEATURE 120: hubConfig already loaded above
           const executionMode: ExecutionMode = hubConfig.mode === 'passthrough' ? 'passthrough' : 'strict'
 
           const dispatchResult = await dispatchCapabilityExecution(capabilityEnabled, {
@@ -246,7 +394,7 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
             stage: 'tool',
             status: dispatchResult.success ? 'success' : 'error',
             label: dispatchResult.success ? 'Capacidad ejecutada' : 'Error en ejecucion',
-            detail: `Capability: ${capabilityEnabled.toolName} via dispatcher`
+            detail: `Capability: ${capabilityEnabled.toolName} via ${routeDecision.provider}`
           })
 
           const debugSnapshot = trace.getDebugSnapshot()
@@ -283,77 +431,87 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
               source: dispatchResult.source,
               adapterStatus,
               debugSnapshot,
+              // FIX 121: Include router decision
+              routerDecision: {
+                provider: routeDecision.provider,
+                reason: routeDecision.reason,
+                intentKind: intent.kind,
+                needsAi: routeDecision.needsAi,
+                tokenSaving: routeDecision.tokenSaving
+              },
               ...dispatchResult.meta
             }
           })
           return
-        }
+      }
 
-        // FIX 105 Case B: Capability exists but disabled - inform user
-        if (capabilityAny && !capabilityAny.enabled) {
-          console.log(`[GranClaw] Capability disabled: ${capabilityAny.toolName} (key: ${capabilityKey})`)
+      // FIX 121: Provider 'local' but capability is disabled
+      if (routeDecision.provider === 'local' && capabilityKey && capabilityAny && !capabilityAny.enabled) {
+        console.log(`[GranClaw] Capability disabled: ${capabilityAny.toolName} (key: ${capabilityKey})`)
 
-          trace.addStep({
-            stage: 'tool',
-            status: 'blocked',
-            label: 'Capacidad desactivada',
-            detail: `Capability ${capabilityAny.toolName} existe pero esta desactivada`
-          })
+        trace.addStep({
+          stage: 'tool',
+          status: 'blocked',
+          label: 'Capacidad desactivada',
+          detail: `Capability ${capabilityAny.toolName} existe pero esta desactivada`
+        })
 
-          const debugSnapshot = trace.getDebugSnapshot()
-          debugSnapshot.toolCalled = false
-          debugSnapshot.executionConfirmed = false
-          debugSnapshot.source = 'granclaw'
-          debugSnapshot.error = 'Capability disabled'
-          logDebug(debugSnapshot)
+        const debugSnapshot = trace.getDebugSnapshot()
+        debugSnapshot.toolCalled = false
+        debugSnapshot.executionConfirmed = false
+        debugSnapshot.source = 'granclaw'
+        debugSnapshot.error = 'Capability disabled'
+        logDebug(debugSnapshot)
 
-          completeTask(
-            task.id,
-            'blocked',
-            undefined,
-            'granclaw',
-            trace.getSteps(),
+        completeTask(
+          task.id,
+          'blocked',
+          undefined,
+          'granclaw',
+          trace.getSteps(),
+          debugSnapshot,
+          trace.getTotalDurationMs(),
+          'Capacidad desactivada'
+        )
+
+        ok(res, {
+          success: false,
+          error: 'Capability disabled',
+          message: 'Esta capacidad esta aprobada pero desactivada. Activala en Herramientas.',
+          meta: {
+            requestId: trace.requestId,
+            taskId: task.id,
+            capabilityId: capabilityAny.id,
+            capabilityKey,
+            capabilityName: capabilityAny.toolName,
+            hubDecision: hubResult.decisionLog,
+            executionTrace: trace.getSteps(),
+            executionDurationMs: trace.getTotalDurationMs(),
+            tenantId: context.tenant.id,
+            source: 'granclaw',
+            adapterStatus,
             debugSnapshot,
-            trace.getTotalDurationMs(),
-            'Capacidad desactivada'
-          )
-
-          ok(res, {
-            success: false,
-            error: 'Capability disabled',
-            message: 'Esta capacidad esta aprobada pero desactivada. Activala en Herramientas.',
-            meta: {
-              requestId: trace.requestId,
-              taskId: task.id,
-              capabilityId: capabilityAny.id,
-              capabilityKey,
-              capabilityName: capabilityAny.toolName,
-              hubDecision: hubResult.decisionLog,
-              executionTrace: trace.getSteps(),
-              executionDurationMs: trace.getTotalDurationMs(),
-              tenantId: context.tenant.id,
-              source: 'granclaw',
-              adapterStatus,
-              debugSnapshot
+            routerDecision: {
+              provider: routeDecision.provider,
+              reason: routeDecision.reason,
+              intentKind: intent.kind
             }
-          })
-          return
-        }
+          }
+        })
+        return
+      }
 
-        // FIX 102 + FIX 104/105: Buscar proposal pendiente existente por capabilityKey
-        // Case C/D/E/F: No capability or deleted - check proposals
+      // FIX 121: Provider 'proposal' - create tool proposal
+      if (routeDecision.provider === 'proposal' && capabilityKey && missingCapability) {
+        console.log(`[GranClaw] Creating proposal for capabilityKey: ${capabilityKey}`)
+
+        // Check for existing proposal
         let proposal = findExistingProposal(context.tenant.id, capabilityKey, 'pending')
 
         if (proposal) {
           console.log(`[GranClaw] Found existing proposal ${proposal.id} for capabilityKey: ${capabilityKey}`)
         } else {
-          // Check if there's an approved proposal without capability (edge case D)
-          const approvedProposal = findExistingProposal(context.tenant.id, capabilityKey, 'approved')
-          if (approvedProposal) {
-            console.log(`[GranClaw] Found approved proposal without capability, this shouldn't happen: ${approvedProposal.id}`)
-          }
-
-          // FIX 104: No hay proposal existente: crear nueva con capabilityKey
+          // Create new proposal
           proposal = createToolProposal({
             tenantId: context.tenant.id,
             userId: context.user.id,
@@ -368,7 +526,6 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           })
         }
 
-        // Trazar como capacidad faltante
         trace.addStep({
           stage: 'tool',
           status: 'blocked',
@@ -383,7 +540,6 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         debugSnapshot.error = 'Missing capability'
         logDebug(debugSnapshot)
 
-        // Actualizar tarea como pendiente de capacidad
         completeTask(
           task.id,
           'unconfirmed',
@@ -405,7 +561,7 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
             toolProposalId: proposal.id,
             missingCapability: missingCapability.detectedCapability,
             proposedTool: proposal.proposedToolName,
-            capabilityKey, // FIX 104: Incluir para diagnóstico
+            capabilityKey,
             riskLevel: proposal.riskLevel,
             hubDecision: hubResult.decisionLog,
             executionTrace: trace.getSteps(),
@@ -413,26 +569,38 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
             tenantId: context.tenant.id,
             source: 'granclaw',
             adapterStatus,
-            debugSnapshot
+            debugSnapshot,
+            routerDecision: {
+              provider: routeDecision.provider,
+              reason: routeDecision.reason,
+              intentKind: intent.kind
+            }
           }
         })
         return
       }
 
-      // Añadir tenantId al input
+      // FIX 121: Fallback - if no provider matched, delegate to OpenClaw
+      // This should rarely happen as the router should always return a valid provider
+      console.log(`[GranClaw] Fallback to OpenClaw - provider=${routeDecision.provider} but no matching handler`)
+
+      trace.addStep({
+        stage: 'orchestrator',
+        status: 'success',
+        label: 'Fallback a OpenClaw',
+        detail: 'No se encontro handler para el provider'
+      })
+
       const taskInput: RunTaskInput = {
         ...input,
         tenantId: context.tenant.id,
-        // FEATURE 050: Usar mensaje modificado si el Hub lo cambió
         message: hubResult.modifiedMessage || input.message
       }
 
       const result = await runSimpleAgentTask(taskInput)
 
-      // FEATURE 073: Trazar resultado del orchestrator
       if (result.success) {
         trace.orchestratorSuccess()
-        // Trazar source de la respuesta
         if (result.source) {
           trace.resultSource(result.source)
         }
@@ -440,15 +608,13 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         trace.orchestratorError(result.error || 'Error desconocido')
       }
 
-      // FEATURE 074/075: Verificar que hay resultado real
       const hasRealResult = result.success && result.result !== null && result.result !== undefined
-      const source = result.source || 'unknown'
+      const source = result.source || 'openclaw-fallback'
 
-      // FEATURE 075: Debug snapshot y logs
       const debugSnapshot = trace.getDebugSnapshot()
+      debugSnapshot.source = 'openclaw'
       logDebug(debugSnapshot)
 
-      // FEATURE 075: Determinar warnings
       const tracePresent = trace.getSteps().length > 0
       let warning: string | undefined
       if (!tracePresent) {
@@ -457,10 +623,8 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         warning = 'No execution result available'
       }
 
-      // FEATURE 075: Corregir success falso
       const finalSuccess = result.success && debugSnapshot.executionConfirmed
 
-      // FEATURE 080: Determinar estado de tarea y actualizar
       let taskStatus: TaskStatus
       if (!result.success) {
         taskStatus = 'error'
@@ -482,11 +646,10 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         result.error
       )
 
-      // FEATURE 051/073/074/075/080: Respuesta completa
+      // FIX 121: Fallback response with router decision
       ok(res, {
         ...result,
         success: finalSuccess,
-        // Si success original pero no confirmado, cambiar mensaje
         ...(result.success && !debugSnapshot.executionConfirmed ? {
           message: 'Permitido, pero no se pudo confirmar la ejecucion real'
         } : {}),
@@ -500,7 +663,14 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           tenantId: context.tenant.id,
           source,
           adapterStatus,
-          debugSnapshot
+          debugSnapshot,
+          routerDecision: {
+            provider: routeDecision.provider,
+            reason: routeDecision.reason,
+            intentKind: intent.kind,
+            needsAi: routeDecision.needsAi,
+            tokenSaving: routeDecision.tokenSaving
+          }
         }
       })
     } catch (err) {
@@ -658,32 +828,98 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
       trace.hubAllowed(context.tenant.id)
       trace.orchestratorStart()
 
-      // FEATURE 090/091 + FIX 104/105: Detectar capacidad con lookup robusto
+      // FIX 121: STEP 1 - Classify intent FIRST (BEFORE capability detection)
+      const intent: IntentClassification = classifyIntent(input.message)
+      console.log(`[Intent Classifier Stream] kind=${intent.kind} confidence=${intent.confidence} needsAi=${intent.needsAi}`)
+
+      // FIX 121: Get hub config and execution policy
+      const hubConfig = hub.getConfig(context.tenant.id)
+      const executionPolicy = getExecutionPolicy(context.tenant.id)
+
+      // FIX 121: STEP 2 - Capability detection (only provides signals)
       const missingCapability = detectMissingCapability(input.message)
-      if (missingCapability) {
-        // FIX 104: Usar capabilityKey normalizada para lookup
-        const capabilityKey = missingCapability.capabilityKey || normalizeCapabilityKey(missingCapability.proposedToolName)
+      const capabilityKey = missingCapability?.capabilityKey || (missingCapability ? normalizeCapabilityKey(missingCapability.proposedToolName) : undefined)
 
-        // FIX 105: Diagnostic logs y lookup completo
-        const capabilityAny = getCapabilityByKey(context.tenant.id, capabilityKey)
-        const capabilityEnabled = getEnabledCapabilityByKey(context.tenant.id, capabilityKey)
-        const proposalCount = countDuplicateProposals(context.tenant.id, capabilityKey)
-        const capabilityCount = countCapabilitiesByKey(context.tenant.id, capabilityKey)
+      // FIX 121: Capability lookup if we have a key
+      let capabilityAny = null
+      let capabilityEnabled = null
+      let proposalCount = 0
+      let capabilityCount = 0
 
-        console.log(`[Capability Lookup] tenantId=${context.tenant.id}`)
-        console.log(`[Capability Lookup] capabilityKey=${capabilityKey}`)
-        console.log(`[Capability Lookup] capabilityFound=${!!capabilityAny}`)
-        console.log(`[Capability Lookup] enabled=${capabilityAny?.enabled ?? false}`)
-        console.log(`[Capability Lookup] proposalCount=${proposalCount}`)
-        console.log(`[Capability Lookup] duplicateCapabilities=${capabilityCount}`)
+      if (capabilityKey) {
+        capabilityAny = getCapabilityByKey(context.tenant.id, capabilityKey)
+        capabilityEnabled = getEnabledCapabilityByKey(context.tenant.id, capabilityKey)
+        proposalCount = countDuplicateProposals(context.tenant.id, capabilityKey)
+        capabilityCount = countCapabilitiesByKey(context.tenant.id, capabilityKey)
 
-        // Case A: Capability exists and enabled - execute via dispatcher (FIX 111)
-        if (capabilityEnabled) {
-          console.log(`[GranClaw] Executing approved capability: ${capabilityEnabled.toolName} (key: ${capabilityKey})`)
+        console.log(`[Capability Lookup Stream] capabilityKey=${capabilityKey} found=${!!capabilityAny} enabled=${capabilityAny?.enabled ?? false}`)
+      }
+
+      // FIX 121: STEP 3 - AUTHORITATIVE router decision
+      const routeDecision: ExecutionRouteDecision = decideExecutionRoute({
+        tenantId: context.tenant.id,
+        userId: context.user.id,
+        message: input.message,
+        mode: hubConfig.mode === 'passthrough' ? 'passthrough' : 'strict',
+        hubAllowed: true,
+        intent,
+        detectedCapabilityKey: capabilityKey,
+        approvedCapability: capabilityEnabled && capabilityKey ? {
+          id: capabilityEnabled.id,
+          capabilityKey: capabilityEnabled.capabilityKey || capabilityKey,
+          enabled: capabilityEnabled.enabled,
+          riskLevel: capabilityEnabled.riskLevel || 'medium'
+        } : undefined,
+        policyConfig: executionPolicy
+      })
+
+      console.log(`[Execution Router Stream] AUTHORITATIVE provider=${routeDecision.provider} reason="${routeDecision.reason}"`)
+
+      // FIX 121: Provider 'openclaw' - delegate to OpenClaw streaming
+      if (routeDecision.provider === 'openclaw') {
+        console.log(`[GranClaw Stream] Delegating to OpenClaw: ${routeDecision.reason}`)
+
+        trace.addStep({
+          stage: 'orchestrator',
+          status: 'success',
+          label: 'Delegado a OpenClaw (stream)',
+          detail: routeDecision.reason
+        })
+
+        // Use streaming task for OpenClaw
+        const taskInput: StreamTaskInput = {
+          ...input,
+          tenantId: context.tenant.id,
+          message: hubResult.modifiedMessage || input.message
+        }
+
+        const result = await runStreamingTask(taskInput)
+
+        const debugSnapshot = trace.getDebugSnapshot()
+        debugSnapshot.source = 'openclaw'
+
+        completeTask(
+          task.id,
+          result.success ? 'success' : 'error',
+          result.result,
+          'openclaw',
+          trace.getSteps(),
+          debugSnapshot,
+          trace.getTotalDurationMs(),
+          undefined,
+          result.error
+        )
+
+        // Response already sent by runStreamingTask
+        return
+      }
+
+      // FIX 121: Provider 'local' - execute via capability (streaming response)
+      if (routeDecision.provider === 'local' && capabilityKey && capabilityEnabled) {
+          console.log(`[GranClaw] Executing approved capability: ${capabilityEnabled.toolName} (key: ${capabilityKey}) via ${routeDecision.provider}`)
 
           // FIX 111: Use dispatcher instead of direct execution
-          // FIX 112: Get mode from hub config, not hubResult
-          const hubConfig = hub.getConfig(context.tenant.id)
+          // FIX 112/FEATURE 120: hubConfig already loaded above
           const executionMode: ExecutionMode = hubConfig.mode === 'passthrough' ? 'passthrough' : 'strict'
 
           const dispatchResult = await dispatchCapabilityExecution(capabilityEnabled, {
@@ -749,7 +985,7 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
             stage: 'tool',
             status: dispatchResult.success ? 'success' : 'error',
             label: dispatchResult.success ? 'Capacidad ejecutada' : 'Error en ejecucion',
-            detail: `Capability: ${capabilityEnabled.toolName} via dispatcher`
+            detail: `Capability: ${capabilityEnabled.toolName} via ${routeDecision.provider}`
           })
 
           const debugSnapshot = trace.getDebugSnapshot()
@@ -786,77 +1022,58 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
               source: dispatchResult.source,
               adapterStatus,
               debugSnapshot,
+              routerDecision: {
+                provider: routeDecision.provider,
+                reason: routeDecision.reason,
+                intentKind: intent.kind
+              },
               ...dispatchResult.meta
             }
           })
           return
-        }
+      }
 
-        // FIX 105 Case B: Capability exists but disabled - inform user
-        if (capabilityAny && !capabilityAny.enabled) {
-          console.log(`[GranClaw] Capability disabled: ${capabilityAny.toolName} (key: ${capabilityKey})`)
+      // FIX 121: Provider 'local' but capability disabled
+      if (routeDecision.provider === 'local' && capabilityKey && capabilityAny && !capabilityAny.enabled) {
+        console.log(`[GranClaw Stream] Capability disabled: ${capabilityAny.toolName}`)
 
-          trace.addStep({
-            stage: 'tool',
-            status: 'blocked',
-            label: 'Capacidad desactivada',
-            detail: `Capability ${capabilityAny.toolName} existe pero esta desactivada`
-          })
+        trace.addStep({
+          stage: 'tool',
+          status: 'blocked',
+          label: 'Capacidad desactivada',
+          detail: `Capability ${capabilityAny.toolName} desactivada`
+        })
 
-          const debugSnapshot = trace.getDebugSnapshot()
-          debugSnapshot.toolCalled = false
-          debugSnapshot.executionConfirmed = false
-          debugSnapshot.source = 'granclaw'
-          debugSnapshot.error = 'Capability disabled'
-          logDebug(debugSnapshot)
+        const debugSnapshot = trace.getDebugSnapshot()
+        debugSnapshot.toolCalled = false
+        debugSnapshot.executionConfirmed = false
+        debugSnapshot.source = 'granclaw'
+        debugSnapshot.error = 'Capability disabled'
+        logDebug(debugSnapshot)
 
-          completeTask(
-            task.id,
-            'blocked',
-            undefined,
-            'granclaw',
-            trace.getSteps(),
-            debugSnapshot,
-            trace.getTotalDurationMs(),
-            'Capacidad desactivada'
-          )
+        completeTask(task.id, 'blocked', undefined, 'granclaw', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Capacidad desactivada')
 
-          ok(res, {
-            success: false,
-            error: 'Capability disabled',
-            message: 'Esta capacidad esta aprobada pero desactivada. Activala en Herramientas.',
-            meta: {
-              requestId: trace.requestId,
-              taskId: task.id,
-              capabilityId: capabilityAny.id,
-              capabilityKey,
-              capabilityName: capabilityAny.toolName,
-              hubDecision: hubResult.decisionLog,
-              executionTrace: trace.getSteps(),
-              executionDurationMs: trace.getTotalDurationMs(),
-              tenantId: context.tenant.id,
-              source: 'granclaw',
-              adapterStatus,
-              debugSnapshot
-            }
-          })
-          return
-        }
-
-        // FIX 102 + FIX 104/105: Buscar proposal pendiente existente por capabilityKey
-        // Case C/D/E/F: No capability or deleted - check proposals
-        let proposal = findExistingProposal(context.tenant.id, capabilityKey, 'pending')
-
-        if (proposal) {
-          console.log(`[GranClaw] Found existing proposal ${proposal.id} for capabilityKey: ${capabilityKey}`)
-        } else {
-          // Check if there's an approved proposal without capability (edge case D)
-          const approvedProposal = findExistingProposal(context.tenant.id, capabilityKey, 'approved')
-          if (approvedProposal) {
-            console.log(`[GranClaw] Found approved proposal without capability, this shouldn't happen: ${approvedProposal.id}`)
+        ok(res, {
+          success: false,
+          error: 'Capability disabled',
+          message: 'Esta capacidad esta aprobada pero desactivada.',
+          meta: {
+            requestId: trace.requestId,
+            taskId: task.id,
+            capabilityKey,
+            source: 'granclaw',
+            debugSnapshot
           }
+        })
+        return
+      }
 
-          // FIX 104: No hay proposal existente: crear nueva con capabilityKey
+      // FIX 121: Provider 'proposal' - create tool proposal
+      if (routeDecision.provider === 'proposal' && capabilityKey && missingCapability) {
+        console.log(`[GranClaw Stream] Creating proposal for capabilityKey: ${capabilityKey}`)
+
+        let proposal = findExistingProposal(context.tenant.id, capabilityKey, 'pending')
+        if (!proposal) {
           proposal = createToolProposal({
             tenantId: context.tenant.id,
             userId: context.user.id,
@@ -871,66 +1088,50 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
           })
         }
 
-        // Trazar como capacidad faltante
         trace.addStep({
           stage: 'tool',
           status: 'blocked',
           label: 'Capacidad no disponible',
-          detail: `Se genero propuesta de tool: ${proposal.proposedToolName}`
+          detail: `Propuesta: ${proposal.proposedToolName}`
         })
 
         const debugSnapshot = trace.getDebugSnapshot()
-        debugSnapshot.toolCalled = false
-        debugSnapshot.executionConfirmed = false
         debugSnapshot.source = 'granclaw'
-        debugSnapshot.error = 'Missing capability'
         logDebug(debugSnapshot)
 
-        // Actualizar tarea como pendiente de capacidad
-        completeTask(
-          task.id,
-          'unconfirmed',
-          undefined,
-          'granclaw',
-          trace.getSteps(),
-          debugSnapshot,
-          trace.getTotalDurationMs(),
-          'Capacidad no disponible - propuesta creada'
-        )
+        completeTask(task.id, 'unconfirmed', undefined, 'granclaw', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Propuesta creada')
 
         ok(res, {
           success: false,
           error: 'Missing capability',
-          message: 'GranClaw no tiene todavia una herramienta para ejecutar esta accion.',
+          message: 'GranClaw no tiene todavia una herramienta para esta accion.',
           meta: {
             requestId: trace.requestId,
             taskId: task.id,
             toolProposalId: proposal.id,
-            missingCapability: missingCapability.detectedCapability,
-            proposedTool: proposal.proposedToolName,
-            capabilityKey, // FIX 104: Incluir para diagnóstico
-            riskLevel: proposal.riskLevel,
-            hubDecision: hubResult.decisionLog,
-            executionTrace: trace.getSteps(),
-            executionDurationMs: trace.getTotalDurationMs(),
-            tenantId: context.tenant.id,
+            capabilityKey,
             source: 'granclaw',
-            adapterStatus,
-            debugSnapshot
+            debugSnapshot,
+            routerDecision: {
+              provider: routeDecision.provider,
+              reason: routeDecision.reason,
+              intentKind: intent.kind
+            }
           }
         })
         return
       }
 
-      // Añadir tenantId al input
-      const taskInput: StreamTaskInput = {
+      // FIX 121: Fallback to streaming OpenClaw
+      console.log(`[GranClaw Stream] Fallback to OpenClaw streaming`)
+
+      const taskInputFallback: StreamTaskInput = {
         ...input,
         tenantId: context.tenant.id,
-        // FEATURE 050: Usar mensaje modificado si el Hub lo cambió
         message: hubResult.modifiedMessage || input.message
       }
 
-      const result = await runStreamingTask(taskInput)
+      const result = await runStreamingTask(taskInputFallback)
 
       // FEATURE 073: Trazar resultado
       let source: string = 'unknown'

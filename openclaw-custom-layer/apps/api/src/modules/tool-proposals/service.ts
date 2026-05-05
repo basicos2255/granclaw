@@ -284,32 +284,57 @@ export function deduplicateProposals(
 
 /**
  * FIX 102 + FIX 104: Detector ampliado de capacidad faltante
+ * FIX 121: Guard against install/download false positives
+ *
  * Se ejecuta ANTES del orchestrator/OpenClaw
  * Cubre: editor, navegador, calculadora, aplicaciones, comandos, archivos
  * FIX 104: Incluye capabilityKey normalizada
+ *
+ * IMPORTANT: This detector only provides SIGNALS, not decisions.
+ * The execution-router makes the final call.
  */
 export function detectMissingCapability(message: string): MissingCapability | null {
   const lowerMessage = message.toLowerCase()
 
+  // FIX 121: Check for install/download/complex patterns FIRST
+  // If these patterns exist, we should NOT return simple tool proposals
+  // because these actions require agent orchestration
+  const hasInstallDownloadSignals = (
+    /\b(descarga|descargar|baja|bajar)\b/.test(lowerMessage) ||
+    /\b(instala|instalar|instalador|installer)\b/.test(lowerMessage) ||
+    /\b(setup|install|download)\b/.test(lowerMessage) ||
+    /\b(actualiza|actualizar|update|upgrade)\b/.test(lowerMessage) ||
+    /\b(npm\s+install|yarn\s+add|pip\s+install|brew\s+install)\b/.test(lowerMessage) ||
+    /\b(e\s+instala|y\s+configura|y\s+ejecuta)\b/.test(lowerMessage)
+  )
+
+  // FIX 121: If install/download signals present, return null
+  // These should go to OpenClaw, not create local tool proposals
+  if (hasInstallDownloadSignals) {
+    console.log('[detectMissingCapability] Install/download signals detected - returning null to let intent classifier handle')
+    return null
+  }
+
   // ==========================================
   // EDITOR DE TEXTO
+  // FIX 121: More restrictive patterns to avoid false positives
   // ==========================================
-  if (
-    lowerMessage.includes('abre editor') ||
-    lowerMessage.includes('abrir editor') ||
-    lowerMessage.includes('abre el editor') ||
-    lowerMessage.includes('abrir el editor') ||
-    lowerMessage.includes('editor de texto') ||
-    lowerMessage.includes('editor de notas') ||
-    lowerMessage.includes('bloc de notas') ||
-    (lowerMessage.includes('notas') && lowerMessage.includes('abre')) ||
-    lowerMessage.includes('textedit') ||
-    lowerMessage.includes('notepad') ||
-    lowerMessage.includes('vscode') ||
-    lowerMessage.includes('visual studio code') ||
-    lowerMessage.includes('sublime') ||
-    lowerMessage.includes('atom editor')
-  ) {
+  const isEditorAction = (
+    // Exact patterns for opening editor
+    /^abre\s+(el\s+)?editor/.test(lowerMessage) ||
+    /^abrir\s+(el\s+)?editor/.test(lowerMessage) ||
+    lowerMessage === 'abre notas' ||
+    lowerMessage === 'abre el bloc de notas' ||
+    /^abre\s+bloc\s+de\s+notas/.test(lowerMessage) ||
+    // Specific editor names at start
+    /^(abre|abrir)\s+(notepad|textedit|vscode|sublime)/.test(lowerMessage) ||
+    // "editor de texto" or "editor de notas" as main action
+    /^(abre|abrir)\s+.*(editor\s+de\s+(texto|notas))/.test(lowerMessage) ||
+    // "crea una nota" as main action (but NOT "descarga las notas")
+    (/^crea\s+una?\s+nota/.test(lowerMessage) && !hasInstallDownloadSignals)
+  )
+
+  if (isEditorAction) {
     return {
       detectedCapability: 'open_text_editor',
       proposedToolName: 'open_text_editor',

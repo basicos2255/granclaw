@@ -3905,3 +3905,207 @@ Completar la integración de OS Tools con confirmación en UI y output humano li
 - ✅ Orchestrator usa dispatcher
 - ✅ URL validation para navegador
 - ✅ Debug/trace preservado
+
+---
+
+## FEATURE 120 - Hybrid Execution Policy v1
+
+**Fecha**: 2026-05-05
+**Estado**: Completado
+
+### Objetivo
+
+Crear sistema de políticas de ejecución híbrida que:
+1. Decide cuándo ejecutar localmente vs delegar a OpenClaw
+2. Evita consumo innecesario de tokens IA para acciones aprendidas/determinísticas
+3. Permite fallback local cuando OpenClaw falla
+4. Prepara base para futuras tareas complejas
+
+**Principio clave**: GranClaw no sustituye a OpenClaw. GranClaw = seguridad + cache + router. OpenClaw = motor agente.
+
+### Implementación
+
+1. **Módulo execution-policy** (apps/api/src/modules/execution-policy/):
+   - types.ts: ExecutionProvider, ExecutionRoute, ExecutionPolicyConfig, ExecutionRouteDecision
+   - service.ts: CRUD para políticas por tenant (file-db)
+   - execution-router.ts: Lógica de decisión decideExecutionRoute()
+   - routes.ts: GET/POST /execution-policy
+   - index.ts: Exports
+
+2. **Tipos definidos**:
+   - ExecutionProvider: 'auto' | 'openclaw' | 'local'
+   - ExecutionRoute: 'local' | 'openclaw' | 'proposal'
+   - ExecutionPolicyConfig: provider, preferOpenClawForNewActions, allowLocalFallback, avoidAiForLearnedActions, requireConfirmationForOsToolsInStrict, requireConfirmationForHighRiskInFree
+
+3. **Execution Router** (execution-router.ts):
+   - decideExecutionRoute(): Decisión principal
+   - containsAiRequiredKeywords(): Detecta "analiza", "investiga", "decide", etc.
+   - isDeterministicCapability(): open_calculator, open_web_browser, etc.
+   - requestsOpenClaw(): Detecta "usando openclaw", "con ia", etc.
+   - createExecutionPlanPreview(): Preparación para tareas multi-step (futuro)
+
+4. **Lógica de decisión**:
+   - Si usuario pide explícitamente OpenClaw → openclaw
+   - Si proveedor = 'local' → local
+   - Si proveedor = 'openclaw' → openclaw
+   - Si modo auto:
+     - Si capability determinística + avoidAiForLearnedActions → local
+     - Si mensaje tiene keywords IA → openclaw
+     - Si preferOpenClawForNewActions + no tiene capability → openclaw
+     - Default → local (ahorro de tokens)
+
+5. **Integración orchestrator** (apps/api/src/modules/orchestrator/routes.ts):
+   - Import de getExecutionPolicy, decideExecutionRoute
+   - Decisión después de lookup de capability
+   - Log: `[Execution Router] provider=X reason="Y"`
+   - Detalle en respuesta incluye proveedor usado
+
+6. **UI Settings** (apps/web/src/pages/control/Settings.tsx):
+   - Selector de proveedor (auto/openclaw/local)
+   - Checkboxes para opciones avanzadas
+   - Sección seguridad (confirmaciones)
+   - Explicación de política híbrida
+   - Persistencia via api.setExecutionPolicy
+
+7. **API Frontend** (apps/web/src/services/api.ts):
+   - ExecutionPolicyConfig, ExecutionProvider types
+   - api.getExecutionPolicy(): GET /execution-policy
+   - api.setExecutionPolicy(): POST /execution-policy
+
+### Endpoints nuevos
+
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| GET | /execution-policy | Obtiene política del tenant actual |
+| POST | /execution-policy | Guarda política del tenant |
+
+### Archivos creados
+
+| Archivo | Propósito |
+|---------|-----------|
+| apps/api/src/modules/execution-policy/types.ts | Tipos y constantes |
+| apps/api/src/modules/execution-policy/service.ts | CRUD file-db |
+| apps/api/src/modules/execution-policy/execution-router.ts | Lógica decisión |
+| apps/api/src/modules/execution-policy/routes.ts | Handlers HTTP |
+| apps/api/src/modules/execution-policy/index.ts | Exports |
+| apps/web/src/pages/control/Settings.tsx | UI configuración |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/index.ts | Rutas execution-policy |
+| apps/api/src/modules/orchestrator/routes.ts | Integración router |
+| apps/web/src/services/api.ts | Métodos execution-policy |
+| apps/web/src/pages/control/index.ts | Export Settings |
+| apps/web/src/App.tsx | Ruta /control/settings, nav item |
+
+### Casos de uso
+
+| Input | Provider | Capability | Resultado |
+|-------|----------|------------|-----------|
+| "abre la calculadora" | auto | open_calculator | local (determinístico) |
+| "analiza este código" | auto | - | openclaw (keyword IA) |
+| "abre la calc con IA" | auto | open_calculator | openclaw (usuario pidió) |
+| "busca X" | local | - | local (política forzada) |
+| "abre chrome" | openclaw | open_web_browser | openclaw (política forzada) |
+
+### Verificaciones
+
+- ✅ Módulo execution-policy creado
+- ✅ Execution router con lógica completa
+- ✅ Rutas registradas en index.ts
+- ✅ Integración en orchestrator
+- ✅ UI Settings creada
+- ✅ API frontend completa
+- ✅ Ruta /control/settings registrada
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+
+---
+
+## FIX 121 - Authoritative Hybrid Router & Intent Classification
+
+**Fecha**: 2026-05-05
+**Estado**: Completado
+
+### Problema
+
+- El execution-router existía pero era decorativo
+- El detector de missing capabilities dominaba el flujo prematuramente
+- Frases como "descarga X e instala" se clasificaban mal como editor/nota
+- Acciones complejas no se delegaban correctamente a OpenClaw
+
+### Solución
+
+1. **Intent Classifier** (apps/api/src/modules/execution-policy/intent-classifier.ts):
+   - Se ejecuta PRIMERO, antes de capability detection
+   - Clasifica intención: install_download_action, complex_agent_task, analysis_task, deterministic_action, etc.
+   - Previene falsos positivos de editor cuando hay señales de install/download
+   - Funciones: classifyIntent(), shouldBlockLocalProposal(), requiresOpenClaw()
+
+2. **Execution Router Autoritativo** (execution-router.ts):
+   - Recibe intent classification como input
+   - Decisión jerárquica con prioridades claras
+   - Install/download/complex → siempre OpenClaw (nunca editor)
+   - Deterministic + avoidAi → siempre local (ahorro tokens)
+   - La decisión del router es FINAL
+
+3. **Detector como señal** (tool-proposals/service.ts):
+   - detectMissingCapability() ahora verifica install/download patterns
+   - Si hay señales de install/download, retorna null para evitar falsos positivos
+   - Solo proporciona información, no decide
+
+4. **Orchestrator reordenado** (orchestrator/routes.ts):
+   - Orden nuevo: Hub → classifyIntent → detectMissingCapability → decideExecutionRoute → Ejecutar
+   - El router decide provider: 'openclaw' | 'local' | 'proposal'
+   - Se ejecuta exactamente la ruta elegida por el router
+   - routerDecision incluido en meta de respuestas
+
+### Intent Types
+
+| IntentKind | needsAi | needsAgent | isMultiStep | Provider |
+|------------|---------|------------|-------------|----------|
+| install_download_action | true | true | true | openclaw |
+| complex_agent_task | true | true | true | openclaw |
+| analysis_task | true | true/false | false | openclaw |
+| deterministic_action | false | false | false | local |
+| os_action | false | false | false | local/proposal |
+| simple_question | true | false | false | openclaw |
+
+### Archivos creados
+
+| Archivo | Propósito |
+|---------|-----------|
+| apps/api/src/modules/execution-policy/intent-classifier.ts | Clasificador de intención |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/modules/execution-policy/types.ts | IntentClassification en types |
+| apps/api/src/modules/execution-policy/execution-router.ts | Router autoritativo con intent |
+| apps/api/src/modules/execution-policy/index.ts | Exports intent-classifier |
+| apps/api/src/modules/tool-proposals/service.ts | Guard install/download en detector |
+| apps/api/src/modules/orchestrator/routes.ts | Flujo reordenado FIX 121 |
+
+### Casos de prueba
+
+| Input | Intent | Provider | Resultado |
+|-------|--------|----------|-----------|
+| "abre la calculadora" | deterministic_action | local | Ejecuta localmente, ahorra tokens |
+| "descarga Chrome e instala" | install_download_action | openclaw | NO es editor, va a OpenClaw |
+| "descarga X e instala" | install_download_action | openclaw | Agent multistep |
+| "crea una nota con hola" | file_action | local/proposal | Editor solo si no hay install |
+| "analiza qué necesito instalar" | analysis_task | openclaw | IA necesaria |
+| "abre photoshop" | os_action | proposal | Capability no aprobada |
+
+### Verificaciones
+
+- ✅ Intent classifier creado
+- ✅ Execution router autoritativo
+- ✅ Guard install/download en detector
+- ✅ Orchestrator reordenado
+- ✅ routerDecision en meta
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso

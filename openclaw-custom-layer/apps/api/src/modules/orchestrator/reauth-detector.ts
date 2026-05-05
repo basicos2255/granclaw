@@ -1,10 +1,21 @@
 /**
  * Reauthorization Detector
  * FIX 122: OpenClaw Reauthorization Handling
+ * FIX 123: OpenClaw Persistent Setup & Pairing Flow
  *
  * Detects when OpenClaw responses indicate permission/authorization errors
  * that require the user to reauthorize the device or request more scopes.
+ *
+ * FIX 123: Now updates persistent system state when reauth is detected.
  */
+
+import {
+  markOpenClawRequiresSetup,
+  openclawRequiresSetup,
+  storePendingAction,
+  recordSuccessfulExecution,
+  type PendingAction
+} from '../system-state'
 
 /**
  * Patterns that indicate reauthorization is required
@@ -203,6 +214,78 @@ export function detectReauthRequired(response: {
   }
 
   return { requiresReauth: false }
+}
+
+/**
+ * FIX 123: Detect reauth AND update system state
+ */
+export function detectAndMarkReauthRequired(
+  response: Parameters<typeof detectReauthRequired>[0],
+  pendingAction?: Omit<PendingAction, 'timestamp'>
+): ReauthDetectionResult {
+  const result = detectReauthRequired(response)
+
+  if (result.requiresReauth) {
+    // Mark system state as requiring setup
+    markOpenClawRequiresSetup(result.matchedText || 'Authorization required')
+
+    // Store pending action if provided
+    if (pendingAction) {
+      storePendingAction({
+        ...pendingAction,
+        timestamp: Date.now()
+      })
+    }
+  }
+
+  return result
+}
+
+/**
+ * FIX 123: Check if setup is required before executing
+ */
+export function shouldBlockForSetup(): boolean {
+  return openclawRequiresSetup()
+}
+
+/**
+ * FIX 123: Record successful execution (clears setup_required if set)
+ */
+export function recordOpenClawSuccess(): void {
+  recordSuccessfulExecution()
+}
+
+/**
+ * FIX 123: Create setup required response
+ */
+export function createSetupRequiredResponse(
+  requestId: string,
+  taskId: string,
+  pendingInput?: string
+): {
+  success: boolean
+  executionStatus: 'setup_required'
+  error: string
+  message: string
+  meta: {
+    requestId: string
+    taskId: string
+    source: string
+    hasPendingAction: boolean
+  }
+} {
+  return {
+    success: false,
+    executionStatus: 'setup_required',
+    error: 'OpenClaw requiere configuración',
+    message: 'OpenClaw necesita permisos adicionales para funcionar correctamente. Por favor, completa la configuración.',
+    meta: {
+      requestId,
+      taskId,
+      source: 'setup-required',
+      hasPendingAction: !!pendingInput
+    }
+  }
 }
 
 /**

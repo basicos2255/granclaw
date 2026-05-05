@@ -4215,3 +4215,130 @@ const REAUTH_PATTERNS = [
 - ✅ OutputViewer con ReauthorizationOutput
 - ✅ npm run check sin errores
 - ✅ npm run build exitoso
+
+---
+
+## FIX 123 - OpenClaw Persistent Setup & Pairing Flow
+
+**Fecha**: 2026-05-05
+**Estado**: Completado
+
+### Problema
+
+- El pairing NO es un error transitorio, es un estado PERSISTENTE del sistema
+- Si OpenClaw requiere pairing, TODAS las solicitudes deben bloquearse hasta resolver
+- Las acciones ejecutadas durante setup_required se perdían
+- No había visibilidad global del estado de configuración de OpenClaw
+- El estado de setup no sobrevivía a reinicios del servidor
+
+### Principio clave
+
+El pairing es un **estado del sistema**, no un error de una solicitud específica:
+- Debe sobrevivir reinicios
+- No depende de sesiones
+- Es visible en todo el sistema
+- Bloquea ejecución OpenClaw hasta resolverse
+- Almacena acciones pendientes para reintentar después del setup
+
+### Solución
+
+1. **System State Module** (apps/api/src/modules/system-state/):
+   - types.ts: SystemState, PendingAction, OpenClawSetupStatus
+   - service.ts: Persistencia en data/system-state.json
+   - routes.ts: API endpoints para gestión de estado
+   - Funciones: getSystemState, markOpenClawReady, markOpenClawRequiresSetup, storePendingAction, consumePendingAction
+
+2. **Reauth Detector Updates** (orchestrator/reauth-detector.ts):
+   - detectAndMarkReauthRequired(): Detecta reauth Y actualiza system state
+   - shouldBlockForSetup(): Verifica si OpenClaw requiere setup
+   - recordOpenClawSuccess(): Registra ejecución exitosa (limpia setup_required)
+   - createSetupRequiredResponse(): Respuesta estandarizada para setup_required
+
+3. **Orchestrator Blocking** (orchestrator/routes.ts):
+   - Verifica shouldBlockForSetup() antes de cada llamada a OpenClaw
+   - Si requiere setup: almacena pending action y retorna setup_required
+   - Si éxito: llama recordOpenClawSuccess() para limpiar estado
+   - Aplica a: provider=openclaw, fallback, y streaming
+
+4. **Check Auth Endpoint** (openclaw/routes.ts → handleCheckAuth):
+   - GET /openclaw/check-auth
+   - Verifica estado de todas las superficies (WS, REST, Tools)
+   - Detecta errores de pairing/authorization
+   - Actualiza system state automáticamente
+
+5. **Setup Page** (pages/control/Setup.tsx):
+   - Muestra estado actual de OpenClaw
+   - Botón "Verificar conexión" (llama check-auth)
+   - Botón "Marcar como listo" (manual override)
+   - Muestra acciones pendientes
+   - Botón "Reintentar acción"
+   - Instrucciones de configuración
+
+6. **API Client Updates** (services/api.ts):
+   - getSystemState(): Obtiene estado del sistema
+   - getPendingAction(): Obtiene acción pendiente
+   - markOpenClawReady(): Marca OpenClaw como listo
+   - checkOpenClawAuth(): Verifica autenticación
+   - consumePendingAction(): Obtiene y limpia acción pendiente
+
+### Archivos creados
+
+| Archivo | Propósito |
+|---------|-----------|
+| apps/api/src/modules/system-state/types.ts | Tipos del sistema |
+| apps/api/src/modules/system-state/service.ts | Persistencia de estado |
+| apps/api/src/modules/system-state/routes.ts | API endpoints |
+| apps/api/src/modules/system-state/index.ts | Exports del módulo |
+| apps/web/src/pages/control/Setup.tsx | Página de configuración |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/modules/orchestrator/reauth-detector.ts | detectAndMarkReauthRequired, shouldBlockForSetup, recordOpenClawSuccess |
+| apps/api/src/modules/orchestrator/routes.ts | Blocking antes de OpenClaw execution |
+| apps/api/src/modules/orchestrator/trace.ts | Source type 'setup-required' |
+| apps/api/src/modules/openclaw/routes.ts | handleCheckAuth endpoint |
+| apps/api/src/index.ts | Rutas system-state y check-auth |
+| apps/web/src/services/api.ts | Métodos y tipos system state |
+| apps/web/src/pages/control/index.ts | Export Setup |
+| apps/web/src/App.tsx | Route /control/setup |
+
+### API Endpoints
+
+| Endpoint | Método | Propósito |
+|----------|--------|-----------|
+| /system/state | GET | Estado actual del sistema |
+| /system/pending-action | GET | Acción pendiente |
+| /system/clear-pending-action | POST | Limpiar acción pendiente |
+| /system/consume-pending-action | POST | Obtener y limpiar acción |
+| /system/mark-openclaw-ready | POST | Marcar OpenClaw como listo |
+| /openclaw/check-auth | GET | Verificar auth y actualizar estado |
+
+### Flujo de bloqueo
+
+```
+1. Usuario envía acción a orchestrator
+2. shouldBlockForSetup() verifica system state
+3. Si openclawRequiresSetup === true:
+   a. storePendingAction() guarda la acción
+   b. Retorna executionStatus: 'setup_required'
+   c. Frontend detecta y muestra banner/mensaje
+4. Si no requiere setup:
+   a. Ejecuta acción normalmente
+   b. Si éxito: recordOpenClawSuccess() limpia estado
+   c. Si reauth error: detectAndMarkReauthRequired() marca setup_required
+```
+
+### Verificaciones
+
+- ✅ System state module creado
+- ✅ Persistencia en JSON funcional
+- ✅ Reauth detector integrado con system state
+- ✅ Orchestrator bloquea antes de OpenClaw
+- ✅ Check-auth endpoint funcional
+- ✅ Setup page creada
+- ✅ API routes registradas
+- ✅ Source type 'setup-required' añadido
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso

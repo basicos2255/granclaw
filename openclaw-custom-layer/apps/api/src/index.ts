@@ -55,7 +55,9 @@ import { handleGetOSTools, handleGetPendingConfirmations, handleConfirmOSTool, h
 // FEATURE 120: Execution Policy routes
 import { handleGetExecutionPolicy, handleSetExecutionPolicy } from './modules/execution-policy'
 import { handleAudit } from './modules/audit'
-import { handleOpenClawStatus, handleOpenClawWsStatus, handleWebhookTest, handleWsRpcStatus, handleToolsStatus, handleAuthStatus } from './modules/openclaw'
+import { handleOpenClawStatus, handleOpenClawWsStatus, handleWebhookTest, handleWsRpcStatus, handleToolsStatus, handleAuthStatus, handleCheckAuth } from './modules/openclaw'
+// FIX 123: System State routes
+import { handleGetSystemState, handleGetPendingAction, handleClearPendingAction, handleConsumePendingAction, handleMarkOpenClawReady } from './modules/system-state'
 import { handleOrchestratorRun, handleOrchestratorRunStream } from './modules/orchestrator'
 import { handleLogin, handleGetMe, handleRegister, handleLogout } from './modules/auth'
 import { handleListTools, handleGetTool } from './modules/tools'
@@ -103,6 +105,10 @@ const getRoutes: Record<string, RouteHandler> = {
   '/openclaw/ws-rpc-status': wrapHandler(handleWsRpcStatus),
   '/openclaw/tools-status': wrapHandler(handleToolsStatus),
   '/openclaw/auth-status': wrapHandler(handleAuthStatus),
+  '/openclaw/check-auth': wrapHandler(handleCheckAuth),
+  // FIX 123: System State routes
+  '/system/state': handleGetSystemState,
+  '/system/pending-action': handleGetPendingAction,
   '/auth/me': wrapHandler(handleGetMe),
   '/granclaw-hub/config': handleGetAllConfig,
   // FIX 113: OS Tools routes
@@ -127,7 +133,11 @@ const postRoutes: Record<string, RouteHandler> = {
   '/os-tools/confirm': handleConfirmOSTool,
   '/os-tools/cleanup': handleCleanupOSTools,
   // FEATURE 120: Execution Policy
-  '/execution-policy': handleSetExecutionPolicy
+  '/execution-policy': handleSetExecutionPolicy,
+  // FIX 123: System State routes
+  '/system/clear-pending-action': handleClearPendingAction,
+  '/system/consume-pending-action': handleConsumePendingAction,
+  '/system/mark-openclaw-ready': handleMarkOpenClawReady
 }
 
 // Rutas dinámicas con parámetros

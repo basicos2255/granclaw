@@ -46,7 +46,7 @@ export interface DebugSnapshot {
   orchestratorCalled: boolean
   openclawCalled?: boolean
   toolCalled?: boolean
-  source?: 'openclaw' | 'tool' | 'mock' | 'fallback' | 'unknown' | 'granclaw' | 'error'
+  source?: 'openclaw' | 'tool' | 'mock' | 'fallback' | 'unknown' | 'granclaw' | 'error' | 'setup-required'
   executionConfirmed: boolean
   tracePresent: boolean
   error?: string

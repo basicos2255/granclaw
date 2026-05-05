@@ -16,7 +16,16 @@ import type { IncomingMessage, ServerResponse } from 'http'
 import { ok, badRequest, unauthorized } from '../../shared/response'
 import { runSimpleAgentTask, runStreamingTask, getAdapterStatus } from './service'
 // FIX 122: Reauthorization detection for OpenClaw responses
-import { detectReauthRequired, createReauthRequiredResponse } from './reauth-detector'
+// FIX 123: Setup required blocking and persistent state
+import {
+  detectReauthRequired,
+  createReauthRequiredResponse,
+  detectAndMarkReauthRequired,
+  shouldBlockForSetup,
+  recordOpenClawSuccess,
+  createSetupRequiredResponse
+} from './reauth-detector'
+import { storePendingAction, getSystemState } from '../system-state'
 import type { RunTaskInput, StreamTaskInput } from './types'
 import type { AuthContext } from '../auth'
 import { getGranClawHubService } from '../granclaw-hub'
@@ -232,6 +241,48 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
       if (routeDecision.provider === 'openclaw') {
         console.log(`[GranClaw] Delegating to OpenClaw: ${routeDecision.reason}`)
 
+        // FIX 123: Check if OpenClaw requires setup before executing
+        if (shouldBlockForSetup()) {
+          console.log(`[GranClaw] OpenClaw requires setup - blocking execution`)
+
+          // Store pending action for retry after setup
+          storePendingAction({
+            input: input.message,
+            tenantId: context.tenant.id,
+            userId: context.user.id,
+            timestamp: Date.now(),
+            capabilityKey: capabilityKey
+          })
+
+          trace.addStep({
+            stage: 'orchestrator',
+            status: 'blocked',
+            label: 'Configuración requerida',
+            detail: 'OpenClaw necesita configuración antes de ejecutar'
+          })
+
+          const debugSnapshot = trace.getDebugSnapshot()
+          debugSnapshot.source = 'setup-required'
+          debugSnapshot.executionConfirmed = false
+          debugSnapshot.error = 'Setup required'
+          logDebug(debugSnapshot)
+
+          completeTask(task.id, 'blocked', undefined, 'setup-required', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Configuración requerida')
+
+          const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, input.message)
+          ok(res, {
+            ...setupResponse,
+            meta: {
+              ...setupResponse.meta,
+              hubDecision: hubResult.decisionLog,
+              executionTrace: trace.getSteps(),
+              tenantId: context.tenant.id,
+              systemState: getSystemState()
+            }
+          })
+          return
+        }
+
         trace.addStep({
           stage: 'orchestrator',
           status: 'success',
@@ -248,8 +299,13 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
 
         const result = await runSimpleAgentTask(taskInput)
 
-        // FIX 122: Detect if reauthorization is required
-        const reauthDetection = detectReauthRequired(result)
+        // FIX 122 + FIX 123: Detect reauth and update system state
+        const reauthDetection = detectAndMarkReauthRequired(result, {
+          input: input.message,
+          tenantId: context.tenant.id,
+          userId: context.user.id,
+          capabilityKey: capabilityKey
+        })
         if (reauthDetection.requiresReauth) {
           console.log(`[GranClaw] Reauth required detected: ${reauthDetection.matchedText} in ${reauthDetection.matchSource}`)
 
@@ -337,6 +393,8 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           taskStatus = 'unconfirmed'
         } else {
           taskStatus = 'success'
+          // FIX 123: Record successful execution (clears setup_required if set)
+          recordOpenClawSuccess()
         }
 
         completeTask(
@@ -642,6 +700,20 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
       // This should rarely happen as the router should always return a valid provider
       console.log(`[GranClaw] Fallback to OpenClaw - provider=${routeDecision.provider} but no matching handler`)
 
+      // FIX 123: Check if OpenClaw requires setup (fallback)
+      if (shouldBlockForSetup()) {
+        console.log(`[GranClaw Fallback] OpenClaw requires setup - blocking execution`)
+        storePendingAction({ input: input.message, tenantId: context.tenant.id, userId: context.user.id, timestamp: Date.now() })
+        trace.addStep({ stage: 'orchestrator', status: 'blocked', label: 'Configuración requerida', detail: 'OpenClaw necesita configuración' })
+        const debugSnapshot = trace.getDebugSnapshot()
+        debugSnapshot.source = 'setup-required'
+        debugSnapshot.executionConfirmed = false
+        completeTask(task.id, 'blocked', undefined, 'setup-required', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Configuración requerida')
+        const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, input.message)
+        ok(res, { ...setupResponse, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState() } })
+        return
+      }
+
       trace.addStep({
         stage: 'orchestrator',
         status: 'success',
@@ -657,8 +729,12 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
 
       const result = await runSimpleAgentTask(taskInput)
 
-      // FIX 122: Detect if reauthorization is required (fallback path)
-      const reauthDetectionFallback = detectReauthRequired(result)
+      // FIX 122 + FIX 123: Detect reauth and update system state (fallback)
+      const reauthDetectionFallback = detectAndMarkReauthRequired(result, {
+        input: input.message,
+        tenantId: context.tenant.id,
+        userId: context.user.id
+      })
       if (reauthDetectionFallback.requiresReauth) {
         console.log(`[GranClaw Fallback] Reauth required: ${reauthDetectionFallback.matchedText}`)
 
@@ -731,6 +807,8 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         taskStatus = 'unconfirmed'
       } else {
         taskStatus = 'success'
+        // FIX 123: Record successful execution (fallback)
+        recordOpenClawSuccess()
       }
 
       completeTask(
@@ -978,6 +1056,20 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
       if (routeDecision.provider === 'openclaw') {
         console.log(`[GranClaw Stream] Delegating to OpenClaw: ${routeDecision.reason}`)
 
+        // FIX 123: Check if OpenClaw requires setup (streaming)
+        if (shouldBlockForSetup()) {
+          console.log(`[GranClaw Stream] OpenClaw requires setup - blocking execution`)
+          storePendingAction({ input: input.message, tenantId: context.tenant.id, userId: context.user.id, timestamp: Date.now(), capabilityKey: capabilityKey })
+          trace.addStep({ stage: 'orchestrator', status: 'blocked', label: 'Configuración requerida', detail: 'OpenClaw necesita configuración' })
+          const debugSnapshot = trace.getDebugSnapshot()
+          debugSnapshot.source = 'setup-required'
+          debugSnapshot.executionConfirmed = false
+          completeTask(task.id, 'blocked', undefined, 'setup-required', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Configuración requerida')
+          const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, input.message)
+          ok(res, { ...setupResponse, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState() } })
+          return
+        }
+
         trace.addStep({
           stage: 'orchestrator',
           status: 'success',
@@ -994,8 +1086,13 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
 
         const result = await runStreamingTask(taskInput)
 
-        // FIX 122: Detect if reauthorization is required (stream)
-        const reauthDetectionStream = detectReauthRequired(result)
+        // FIX 122 + FIX 123: Detect reauth and update system state (stream)
+        const reauthDetectionStream = detectAndMarkReauthRequired(result, {
+          input: input.message,
+          tenantId: context.tenant.id,
+          userId: context.user.id,
+          capabilityKey: capabilityKey
+        })
         if (reauthDetectionStream.requiresReauth) {
           console.log(`[GranClaw Stream] Reauth required: ${reauthDetectionStream.matchedText}`)
 
@@ -1031,6 +1128,11 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
 
         const debugSnapshot = trace.getDebugSnapshot()
         debugSnapshot.source = 'openclaw'
+
+        // FIX 123: Record successful execution (streaming openclaw)
+        if (result.success) {
+          recordOpenClawSuccess()
+        }
 
         completeTask(
           task.id,
@@ -1259,6 +1361,20 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
       // FIX 121: Fallback to streaming OpenClaw
       console.log(`[GranClaw Stream] Fallback to OpenClaw streaming`)
 
+      // FIX 123: Check if OpenClaw requires setup (streaming fallback)
+      if (shouldBlockForSetup()) {
+        console.log(`[GranClaw Stream Fallback] OpenClaw requires setup - blocking execution`)
+        storePendingAction({ input: input.message, tenantId: context.tenant.id, userId: context.user.id, timestamp: Date.now() })
+        trace.addStep({ stage: 'orchestrator', status: 'blocked', label: 'Configuración requerida', detail: 'OpenClaw necesita configuración' })
+        const debugSnapshot = trace.getDebugSnapshot()
+        debugSnapshot.source = 'setup-required'
+        debugSnapshot.executionConfirmed = false
+        completeTask(task.id, 'blocked', undefined, 'setup-required', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Configuración requerida')
+        const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, input.message)
+        ok(res, { ...setupResponse, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState() } })
+        return
+      }
+
       const taskInputFallback: StreamTaskInput = {
         ...input,
         tenantId: context.tenant.id,
@@ -1267,8 +1383,12 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
 
       const result = await runStreamingTask(taskInputFallback)
 
-      // FIX 122: Detect if reauthorization is required (stream fallback)
-      const reauthDetectionStreamFb = detectReauthRequired(result)
+      // FIX 122 + FIX 123: Detect reauth and update system state (stream fallback)
+      const reauthDetectionStreamFb = detectAndMarkReauthRequired(result, {
+        input: input.message,
+        tenantId: context.tenant.id,
+        userId: context.user.id
+      })
       if (reauthDetectionStreamFb.requiresReauth) {
         console.log(`[GranClaw Stream Fallback] Reauth required: ${reauthDetectionStreamFb.matchedText}`)
 
@@ -1348,6 +1468,8 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
         taskStatus = 'unconfirmed'
       } else {
         taskStatus = 'success'
+        // FIX 123: Record successful execution (streaming fallback)
+        recordOpenClawSuccess()
       }
 
       completeTask(

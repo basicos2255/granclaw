@@ -16,7 +16,7 @@ import { ChatPage } from './pages/chat'
 import { LoginPage } from './pages/login'
 import { RegisterPage } from './pages/register'
 import { DebugPage } from './pages/debug'
-import { Execute, Clientes, Dashboard as ControlDashboard, Historial, Tools, Settings } from './pages/control'
+import { Execute, Clientes, Dashboard as ControlDashboard, Historial, Tools, Settings, Setup } from './pages/control'
 
 type Route = string
 
@@ -46,6 +46,7 @@ function Router({ path }: { path: Route }) {
   if (path === '/control/historial') return <Historial />
   if (path === '/control/tools') return <Tools />
   if (path === '/control/settings') return <Settings />
+  if (path === '/control/setup') return <Setup />
 
   // Rutas dev
   if (path === '/dev/dashboard') return <DashboardPage />

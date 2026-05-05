@@ -3,6 +3,7 @@
  * FEATURE 061: UI orientada a caso de uso
  * FEATURE 090: Tool Proposals
  * FEATURE 120: Hybrid Execution Policy
+ * FIX 123: OpenClaw Setup & Pairing
  */
 
 export { Execute, getHistory } from './Execute'
@@ -11,3 +12,4 @@ export { Dashboard } from './Dashboard'
 export { Historial } from './Historial'
 export { Tools } from './Tools'
 export { Settings } from './Settings'
+export { Setup } from './Setup'

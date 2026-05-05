@@ -535,6 +535,42 @@ export const api = {
     }
     const response = await postRequest<ApiResponse<ExecutionPolicyConfig>>('/execution-policy', config)
     return response
+  },
+
+  // FIX 123: System State
+  getSystemState: async (): Promise<ApiResponse<SystemStateData>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<SystemStateData>('/system/state')
+  },
+
+  getPendingAction: async (): Promise<ApiResponse<PendingActionData | null>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<PendingActionData | null>('/system/pending-action')
+  },
+
+  markOpenClawReady: async (): Promise<ApiResponse<{ message: string }>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return postRequestProtected<ApiResponse<{ message: string }>>('/system/mark-openclaw-ready', {})
+  },
+
+  checkOpenClawAuth: async (): Promise<ApiResponse<OpenClawCheckAuthResult>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<OpenClawCheckAuthResult>('/openclaw/check-auth')
+  },
+
+  consumePendingAction: async (): Promise<ApiResponse<PendingActionData | null>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return postRequestProtected<ApiResponse<PendingActionData | null>>('/system/consume-pending-action', {})
   }
 }
 
@@ -545,6 +581,55 @@ export interface CleanupResult {
   keptCapabilities: number
   keptProposals: number
   message: string
+}
+
+// FIX 123: System State types
+export type OpenClawSetupStatus = 'ready' | 'setup_required' | 'unknown'
+
+export interface SystemStateData {
+  openclawRequiresSetup: boolean
+  openclawSetupStatus: OpenClawSetupStatus
+  lastError?: string
+  lastChecked?: number
+  lastSuccessfulExecution?: number
+  hasPendingAction: boolean
+  pendingActionInput?: string
+}
+
+export interface PendingActionData {
+  input: string
+  tenantId: string
+  userId: string
+  timestamp: number
+  capabilityKey?: string
+  age: number
+}
+
+export interface OpenClawCheckAuthResult {
+  success: boolean
+  authStatus: {
+    ws: 'ok' | 'fail' | 'skip'
+    rest: 'ok' | 'fail' | 'skip'
+    tools: 'ok' | 'fail' | 'skip'
+    details: {
+      wsError?: string
+      restError?: string
+      toolsError?: string
+    }
+  }
+  systemState: {
+    openclawRequiresSetup: boolean
+    openclawSetupStatus: OpenClawSetupStatus
+    lastError?: string
+    lastChecked?: number
+  }
+  summary: {
+    wsOk: boolean
+    restOk: boolean
+    toolsOk: boolean
+    hasPairingError: boolean
+    isReady: boolean
+  }
 }
 
 // Hub types

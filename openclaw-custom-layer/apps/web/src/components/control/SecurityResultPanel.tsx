@@ -10,10 +10,11 @@
  * FIX 111: Soporte confirmation_required para OS tools
  * FIX 122: OpenClaw Reauthorization Handling
  * FIX 124: Final Execution Status Resolution
+ * FIX 125: Pairing Auto-Repair Action Button
  */
 
 import { useState } from 'react'
-import { api } from '../../services/api'
+import { api, type OpenClawScopeKey } from '../../services/api'
 import { OutputViewer } from './OutputViewer'
 // FIX 112: normalizeOutput removed - OutputViewer handles normalization internally
 
@@ -50,6 +51,14 @@ interface OSConfirmationInfo {
   message?: string
 }
 
+// FIX 125: Repair info
+interface RepairInfo {
+  scopeKey: OpenClawScopeKey
+  capabilityKey?: string
+  originalInput: string
+  error?: string
+}
+
 interface SecurityResultPanelProps {
   allowed: boolean
   result?: string
@@ -69,14 +78,21 @@ interface SecurityResultPanelProps {
   osConfirmationInfo?: OSConfirmationInfo
   onConfirmOsAction?: (confirmationId: string, capabilityKey: string) => void
   onCancelOsAction?: () => void
+  // FIX 125: Repair info for pairing/scope errors
+  repairInfo?: RepairInfo
+  onStartRepair?: (repairInfo: RepairInfo) => void
+  onLocalFallback?: () => void
 }
 
-export function SecurityResultPanel({ allowed, result, rawResult, reason, decisionLog, status, statusResolution, toolProposalInfo, onRetry, osConfirmationInfo, onConfirmOsAction, onCancelOsAction }: SecurityResultPanelProps) {
+export function SecurityResultPanel({ allowed, result, rawResult, reason, decisionLog, status, statusResolution, toolProposalInfo, onRetry, osConfirmationInfo, onConfirmOsAction, onCancelOsAction, repairInfo, onStartRepair, onLocalFallback }: SecurityResultPanelProps) {
   const [showDetails, setShowDetails] = useState(false)
   // FIX 103: Estados para aprobar inline
   const [approving, setApproving] = useState(false)
   const [approveResult, setApproveResult] = useState<'success' | 'error' | null>(null)
   const [approveError, setApproveError] = useState<string | null>(null)
+  // FIX 125: Estados para repair
+  const [startingRepair, setStartingRepair] = useState(false)
+  const [repairError, setRepairError] = useState<string | null>(null)
 
   // FIX 077 + FIX 124: Determinar estado real
   // FIX 124: statusResolution.finalUiStatus takes precedence
@@ -212,6 +228,33 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
       setApproveError('Error de conexión')
     } finally {
       setApproving(false)
+    }
+  }
+
+  // FIX 125: Handler para iniciar reparación
+  const handleStartRepair = async () => {
+    if (!repairInfo || startingRepair) return
+    setStartingRepair(true)
+    setRepairError(null)
+    try {
+      const response = await api.startRepair({
+        scopeKey: repairInfo.scopeKey,
+        capabilityKey: repairInfo.capabilityKey,
+        originalInput: repairInfo.originalInput,
+        error: repairInfo.error
+      })
+      if (response.success && response.data?.setupUrl) {
+        // Navegar a la página de setup con el repairSessionId
+        window.history.pushState({}, '', response.data.setupUrl)
+        window.dispatchEvent(new PopStateEvent('popstate'))
+        onStartRepair?.(repairInfo)
+      } else {
+        setRepairError(response.data?.error || response.error || 'Error al iniciar reparación')
+      }
+    } catch {
+      setRepairError('Error de conexión')
+    } finally {
+      setStartingRepair(false)
     }
   }
 
@@ -439,7 +482,7 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
           </>
         )}
 
-        {/* FIX 124: Setup required section */}
+        {/* FIX 124 + FIX 125: Setup required section with repair button */}
         {effectiveStatus === 'setup_required' && (
           <>
             <div style={{ ...resultLabelStyle, color: colors.dark }}>
@@ -478,7 +521,41 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
                   Detalle: {reason || statusResolution?.reason}
                 </div>
               )}
-              <div style={{ marginTop: '8px' }}>
+              {repairError && (
+                <div style={{
+                  fontSize: '13px',
+                  color: '#dc2626',
+                  backgroundColor: '#fef2f2',
+                  padding: '12px',
+                  borderRadius: '8px'
+                }}>
+                  {repairError}
+                </div>
+              )}
+              <div style={{ marginTop: '8px', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                {/* FIX 125: Botón principal de reparación */}
+                {repairInfo && (
+                  <button
+                    onClick={handleStartRepair}
+                    disabled={startingRepair}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 20px',
+                      backgroundColor: '#2563eb',
+                      color: 'white',
+                      borderRadius: '8px',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      border: 'none',
+                      cursor: startingRepair ? 'not-allowed' : 'pointer',
+                      opacity: startingRepair ? 0.7 : 1
+                    }}
+                  >
+                    {startingRepair ? '⏳ Iniciando...' : '🔧 Resolver permisos de OpenClaw'}
+                  </button>
+                )}
                 <a
                   href="/control/setup"
                   style={{
@@ -486,12 +563,13 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
                     alignItems: 'center',
                     gap: '8px',
                     padding: '10px 20px',
-                    backgroundColor: rose,
-                    color: 'white',
+                    backgroundColor: repairInfo ? '#f3f4f6' : rose,
+                    color: repairInfo ? '#374151' : 'white',
                     borderRadius: '8px',
                     fontSize: '14px',
-                    fontWeight: '600',
-                    textDecoration: 'none'
+                    fontWeight: repairInfo ? '500' : '600',
+                    textDecoration: 'none',
+                    border: repairInfo ? '1px solid #d1d5db' : 'none'
                   }}
                   onClick={(e) => {
                     e.preventDefault()
@@ -499,14 +577,35 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
                     window.dispatchEvent(new PopStateEvent('popstate'))
                   }}
                 >
-                  🔧 Ir a Configuración →
+                  {repairInfo ? 'Ir a Configuración' : '🔧 Ir a Configuración →'}
                 </a>
+                {/* FIX 125: Fallback local si está disponible */}
+                {onLocalFallback && (
+                  <button
+                    onClick={onLocalFallback}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 20px',
+                      backgroundColor: 'white',
+                      color: '#374151',
+                      borderRadius: '8px',
+                      fontSize: '14px',
+                      fontWeight: '500',
+                      border: '1px solid #d1d5db',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    💻 Ejecutar localmente
+                  </button>
+                )}
               </div>
             </div>
           </>
         )}
 
-        {/* FIX 122: Reauthorization required section */}
+        {/* FIX 122 + FIX 125: Reauthorization required section with repair button */}
         {effectiveStatus === 'reauthorization_required' && (
           <>
             <div style={{ ...resultLabelStyle, color: colors.dark }}>
@@ -533,7 +632,7 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
                 El dispositivo o la acción solicitada requiere permisos que no han sido otorgados.
                 Por favor, reautoriza OpenClaw para continuar.
               </div>
-              {reason && (
+              {(reason || statusResolution?.reason) && (
                 <div style={{
                   fontSize: '13px',
                   color: '#6b7280',
@@ -542,29 +641,88 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
                   borderRadius: '8px',
                   fontFamily: 'ui-monospace, monospace'
                 }}>
-                  Detalle: {reason}
+                  Detalle: {reason || statusResolution?.reason}
                 </div>
               )}
-              <div style={{ marginTop: '8px' }}>
+              {repairError && (
+                <div style={{
+                  fontSize: '13px',
+                  color: '#dc2626',
+                  backgroundColor: '#fef2f2',
+                  padding: '12px',
+                  borderRadius: '8px'
+                }}>
+                  {repairError}
+                </div>
+              )}
+              <div style={{ marginTop: '8px', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                {/* FIX 125: Botón principal de reparación */}
+                {repairInfo && (
+                  <button
+                    onClick={handleStartRepair}
+                    disabled={startingRepair}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 20px',
+                      backgroundColor: '#2563eb',
+                      color: 'white',
+                      borderRadius: '8px',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      border: 'none',
+                      cursor: startingRepair ? 'not-allowed' : 'pointer',
+                      opacity: startingRepair ? 0.7 : 1
+                    }}
+                  >
+                    {startingRepair ? '⏳ Iniciando...' : '🔧 Resolver permisos de OpenClaw'}
+                  </button>
+                )}
                 <a
-                  href="https://openclaw.app/settings"
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  href="/control/setup"
                   style={{
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: '8px',
                     padding: '10px 20px',
-                    backgroundColor: rose,
-                    color: 'white',
+                    backgroundColor: repairInfo ? '#f3f4f6' : rose,
+                    color: repairInfo ? '#374151' : 'white',
                     borderRadius: '8px',
                     fontSize: '14px',
-                    fontWeight: '600',
-                    textDecoration: 'none'
+                    fontWeight: repairInfo ? '500' : '600',
+                    textDecoration: 'none',
+                    border: repairInfo ? '1px solid #d1d5db' : 'none'
+                  }}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    window.history.pushState({}, '', '/control/setup')
+                    window.dispatchEvent(new PopStateEvent('popstate'))
                   }}
                 >
-                  🔑 Reautorizar en OpenClaw →
+                  {repairInfo ? 'Ir a Configuración' : '🔑 Ir a Configuración →'}
                 </a>
+                {/* FIX 125: Fallback local si está disponible */}
+                {onLocalFallback && (
+                  <button
+                    onClick={onLocalFallback}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 20px',
+                      backgroundColor: 'white',
+                      color: '#374151',
+                      borderRadius: '8px',
+                      fontSize: '14px',
+                      fontWeight: '500',
+                      border: '1px solid #d1d5db',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    💻 Ejecutar localmente
+                  </button>
+                )}
               </div>
             </div>
           </>

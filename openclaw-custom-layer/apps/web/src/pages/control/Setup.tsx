@@ -2,10 +2,11 @@
  * Setup Page - OpenClaw Configuration & Pairing
  * FIX 123: OpenClaw Persistent Setup & Pairing Flow
  * FIX 123.1: Granular requirements display
+ * FIX 125: Pairing Auto-Repair Action Button
  */
 
 import { useState, useEffect } from 'react'
-import { api, isAuthenticated, type SystemStateData, type OpenClawCheckAuthResult, type PendingActionData, type OpenClawSetupRequirement } from '../../services/api'
+import { api, isAuthenticated, type SystemStateData, type OpenClawCheckAuthResult, type PendingActionData, type OpenClawSetupRequirement, type RepairSessionData } from '../../services/api'
 
 export function Setup() {
   const [loading, setLoading] = useState(true)
@@ -15,8 +16,21 @@ export function Setup() {
   const [pendingAction, setPendingAction] = useState<PendingActionData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  // FIX 125: Repair session state
+  const [repairSessionId, setRepairSessionId] = useState<string | null>(null)
+  const [repairSession, setRepairSession] = useState<RepairSessionData | null>(null)
+  const [checkingRepair, setCheckingRepair] = useState(false)
+  const [repairCanRetry, setRepairCanRetry] = useState(false)
+  const [repairInstructions, setRepairInstructions] = useState<string | null>(null)
 
   useEffect(() => {
+    // FIX 125: Check for repairSessionId in URL
+    const params = new URLSearchParams(window.location.search)
+    const sessionId = params.get('repairSessionId')
+    if (sessionId) {
+      setRepairSessionId(sessionId)
+      loadRepairSession(sessionId)
+    }
     loadState()
   }, [])
 
@@ -39,6 +53,91 @@ export function Setup() {
       setError('Error al cargar el estado del sistema')
     } finally {
       setLoading(false)
+    }
+  }
+
+  // FIX 125: Load repair session details
+  const loadRepairSession = async (sessionId: string) => {
+    try {
+      const response = await api.getRepairSession(sessionId)
+      if (response.success && response.data) {
+        const data = response.data as { repairSession?: RepairSessionData; instructions?: string }
+        if (data.repairSession) {
+          setRepairSession(data.repairSession)
+          setRepairCanRetry(data.repairSession.status === 'ready')
+        }
+        if (data.instructions) {
+          setRepairInstructions(data.instructions)
+        }
+      }
+    } catch {
+      console.error('Error loading repair session')
+    }
+  }
+
+  // FIX 125: Check repair authorization
+  const checkRepairAuth = async () => {
+    if (!repairSessionId) return
+    setCheckingRepair(true)
+    setError(null)
+    setSuccess(null)
+    try {
+      const response = await api.checkRepair(repairSessionId)
+      if (response.success && response.data) {
+        if (response.data.canRetry) {
+          setRepairCanRetry(true)
+          setSuccess('OpenClaw autorizado correctamente. Puedes reintentar la accion.')
+          if (response.data.repairSession) {
+            setRepairSession(response.data.repairSession)
+          }
+        } else {
+          setError(response.data.message || 'OpenClaw aun requiere autorizacion')
+          if (response.data.instructions) {
+            setRepairInstructions(response.data.instructions)
+          }
+        }
+      } else {
+        setError(response.error || 'Error al verificar autorizacion')
+      }
+    } catch {
+      setError('Error de conexion')
+    } finally {
+      setCheckingRepair(false)
+    }
+  }
+
+  // FIX 125: Retry after repair
+  const retryAfterRepair = async () => {
+    if (!repairSessionId || !repairSession) return
+    setError(null)
+    try {
+      const response = await api.retryRepair(repairSessionId)
+      if (response.success && response.data?.originalInput) {
+        // Navigate to execute page with the original input
+        setSuccess('Redirigiendo para reintentar la accion...')
+        // Store in session for Execute page to pick up
+        sessionStorage.setItem('retryInput', response.data.originalInput)
+        window.history.pushState({}, '', '/control')
+        window.dispatchEvent(new PopStateEvent('popstate'))
+      }
+    } catch {
+      setError('Error al reintentar')
+    }
+  }
+
+  // FIX 125: Cancel repair
+  const cancelRepair = async () => {
+    if (!repairSessionId) return
+    try {
+      await api.cancelRepair(repairSessionId)
+      // Clear URL params and reload
+      window.history.pushState({}, '', '/control/setup')
+      setRepairSessionId(null)
+      setRepairSession(null)
+      setRepairCanRetry(false)
+      setRepairInstructions(null)
+    } catch {
+      setError('Error al cancelar')
     }
   }
 
@@ -300,6 +399,83 @@ export function Setup() {
             )}
           </div>
         </div>
+
+        {/* FIX 125: Repair Session Card */}
+        {repairSession && (
+          <div style={{ ...cardStyle, borderColor: repairCanRetry ? '#16a34a' : '#f59e0b', borderWidth: '2px' }}>
+            <h2 style={{ ...titleStyle, fontSize: '18px', color: repairCanRetry ? '#16a34a' : '#d97706' }}>
+              {repairCanRetry ? 'OpenClaw Autorizado' : 'Reparacion en progreso'}
+            </h2>
+            <p style={subtitleStyle}>
+              {repairCanRetry
+                ? 'OpenClaw ha sido autorizado correctamente. Puedes reintentar tu accion.'
+                : 'Sigue las instrucciones para autorizar OpenClaw.'}
+            </p>
+
+            <div style={infoRowStyle}>
+              <span style={labelStyle}>Permiso requerido</span>
+              <span style={valueStyle}>{formatScopeKey(repairSession.scopeKey)}</span>
+            </div>
+            {repairSession.capabilityKey && (
+              <div style={infoRowStyle}>
+                <span style={labelStyle}>Capability</span>
+                <span style={valueStyle}>{repairSession.capabilityKey}</span>
+              </div>
+            )}
+            <div style={infoRowStyle}>
+              <span style={labelStyle}>Accion original</span>
+              <span style={valueStyle}>
+                {repairSession.originalInput.substring(0, 80)}
+                {repairSession.originalInput.length > 80 && '...'}
+              </span>
+            </div>
+            <div style={infoRowStyle}>
+              <span style={labelStyle}>Estado</span>
+              <span style={statusBadgeStyle(repairSession.status === 'ready')}>
+                {repairSession.status === 'ready' ? 'Listo' : repairSession.status === 'waiting_user' ? 'Esperando autorizacion' : repairSession.status}
+              </span>
+            </div>
+            {repairSession.originalError && (
+              <div style={{ ...alertStyle('warning'), marginTop: '16px' }}>
+                <strong>Error original:</strong> {repairSession.originalError}
+              </div>
+            )}
+
+            {/* Instructions */}
+            {repairInstructions && !repairCanRetry && (
+              <div style={{
+                marginTop: '16px',
+                padding: '16px',
+                backgroundColor: '#f0f9ff',
+                borderRadius: '8px',
+                border: '1px solid #bae6fd'
+              }}>
+                <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#0369a1', marginBottom: '8px' }}>
+                  Instrucciones de autorizacion
+                </h3>
+                <div style={{ fontSize: '14px', color: '#0c4a6e', whiteSpace: 'pre-wrap', lineHeight: '1.6' }}>
+                  {repairInstructions}
+                </div>
+              </div>
+            )}
+
+            {/* Buttons */}
+            <div style={{ marginTop: '24px', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              {repairCanRetry ? (
+                <button style={buttonStyle('primary')} onClick={retryAfterRepair}>
+                  Reintentar accion
+                </button>
+              ) : (
+                <button style={buttonStyle('primary')} onClick={checkRepairAuth} disabled={checkingRepair}>
+                  {checkingRepair ? 'Verificando...' : 'Ya autorice, comprobar'}
+                </button>
+              )}
+              <button style={buttonStyle('secondary')} onClick={cancelRepair}>
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Auth Check Results */}
         {checkResult && (

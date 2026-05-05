@@ -58,6 +58,16 @@ import { handleAudit } from './modules/audit'
 import { handleOpenClawStatus, handleOpenClawWsStatus, handleWebhookTest, handleWsRpcStatus, handleToolsStatus, handleAuthStatus, handleCheckAuth } from './modules/openclaw'
 // FIX 123: System State routes
 import { handleGetSystemState, handleGetPendingAction, handleClearPendingAction, handleConsumePendingAction, handleMarkOpenClawReady } from './modules/system-state'
+// FIX 125: OpenClaw Repair routes
+import {
+  handleStartRepair,
+  handleGetRepairSession,
+  handleCheckRepair,
+  handleCancelRepair,
+  handleRetryRepair,
+  handleGetActiveRepairs,
+  handleGetRepairHistory
+} from './modules/openclaw-repair'
 import { handleOrchestratorRun, handleOrchestratorRunStream } from './modules/orchestrator'
 import { handleLogin, handleGetMe, handleRegister, handleLogout } from './modules/auth'
 import { handleListTools, handleGetTool } from './modules/tools'
@@ -85,6 +95,20 @@ const wrapPendingConfirmationsHandler: RouteHandler = (req, res, context) => {
   const url = new URL(req.url || '/', `http://localhost:${PORT}`)
   const sessionId = url.searchParams.get('sessionId') || undefined
   handleGetPendingConfirmations(req, res, context, sessionId)
+}
+
+// FIX 125: Wrappers for repair handlers (swap param/context order)
+const wrapRepairGetHandler: DynamicRouteHandler = (req, res, param, context) => {
+  handleGetRepairSession(req, res, context, param)
+}
+const wrapRepairCheckHandler: DynamicRouteHandler = (req, res, param, context) => {
+  handleCheckRepair(req, res, context, param)
+}
+const wrapRepairCancelHandler: DynamicRouteHandler = (req, res, param, context) => {
+  handleCancelRepair(req, res, context, param)
+}
+const wrapRepairRetryHandler: DynamicRouteHandler = (req, res, param, context) => {
+  handleRetryRepair(req, res, context, param)
 }
 
 // GET routes - public endpoints usan wrapper sin contexto
@@ -115,7 +139,10 @@ const getRoutes: Record<string, RouteHandler> = {
   '/os-tools': handleGetOSTools,
   '/os-tools/pending': wrapPendingConfirmationsHandler,
   // FEATURE 120: Execution Policy
-  '/execution-policy': handleGetExecutionPolicy
+  '/execution-policy': handleGetExecutionPolicy,
+  // FIX 125: OpenClaw Repair routes
+  '/openclaw/repair/active': handleGetActiveRepairs,
+  '/openclaw/repair/history': handleGetRepairHistory
 }
 
 // POST routes
@@ -137,7 +164,9 @@ const postRoutes: Record<string, RouteHandler> = {
   // FIX 123: System State routes
   '/system/clear-pending-action': handleClearPendingAction,
   '/system/consume-pending-action': handleConsumePendingAction,
-  '/system/mark-openclaw-ready': handleMarkOpenClawReady
+  '/system/mark-openclaw-ready': handleMarkOpenClawReady,
+  // FIX 125: OpenClaw Repair routes
+  '/openclaw/repair/start': handleStartRepair
 }
 
 // Rutas dinámicas con parámetros
@@ -170,6 +199,11 @@ const getDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/granclaw-hub\/config\/([^/]+)$/,
     handler: handleGetTenantConfig
+  },
+  // FIX 125: OpenClaw Repair
+  {
+    pattern: /^\/openclaw\/repair\/([^/]+)$/,
+    handler: wrapRepairGetHandler
   }
 ]
 
@@ -201,6 +235,19 @@ const postDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/granclaw-hub\/config\/([^/]+)$/,
     handler: handleSetTenantConfig
+  },
+  // FIX 125: OpenClaw Repair
+  {
+    pattern: /^\/openclaw\/repair\/([^/]+)\/check$/,
+    handler: wrapRepairCheckHandler
+  },
+  {
+    pattern: /^\/openclaw\/repair\/([^/]+)\/cancel$/,
+    handler: wrapRepairCancelHandler
+  },
+  {
+    pattern: /^\/openclaw\/repair\/([^/]+)\/retry$/,
+    handler: wrapRepairRetryHandler
   }
 ]
 

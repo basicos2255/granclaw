@@ -4769,3 +4769,96 @@ El contenido textual de la respuesta de OpenClaw tiene **prioridad** sobre los f
 - ✅ UI muestra warning (rosa) en lugar de success (verde) para fallos semánticos
 - ✅ npm run check sin errores
 - ✅ npm run build exitoso
+
+---
+
+## FIX 125 - Pairing Auto-Repair Action Button
+
+**Fecha**: 2026-05-05
+**Estado**: Completado
+
+### Problema
+
+Después de FIX 124.3, el sistema detecta respuestas negativas de OpenClaw y evita falso "EJECUTADO".
+Pero faltaba UX/flujo resolutivo cuando aparece:
+- setup_required
+- reauthorization_required
+- pairing required / more scopes
+
+El usuario no tenía una forma clara de resolver el problema y reintentar la acción.
+
+### Solución
+
+1. **Módulo openclaw-repair** (nuevo):
+   - `types.ts`: RepairSession, RepairSessionStatus, StartRepairInput, CheckRepairResult
+   - `service.ts`: CRUD de sesiones, verificación de auth, instrucciones de pairing
+   - `routes.ts`: Endpoints POST/GET para repair flow
+   - Persistencia en `data/openclaw-repair-sessions.json`
+   - Historial de eventos en `data/openclaw-repair-history.json`
+
+2. **Endpoints API**:
+   - `POST /openclaw/repair/start` - Inicia sesión de reparación
+   - `GET /openclaw/repair/:id` - Obtiene sesión por ID
+   - `POST /openclaw/repair/:id/check` - Verifica autorización
+   - `POST /openclaw/repair/:id/cancel` - Cancela sesión
+   - `POST /openclaw/repair/:id/retry` - Marca como reintentada
+   - `GET /openclaw/repair/active` - Sesiones activas
+   - `GET /openclaw/repair/history` - Historial de eventos
+
+3. **PendingAction actualizada** (system-state/types.ts):
+   - Campo `repairSessionId` para tracking
+   - Campo `createdAt` para display
+
+4. **SecurityResultPanel mejorado**:
+   - Botón "Resolver permisos de OpenClaw" en setup_required/reauthorization_required
+   - Botón "Ejecutar localmente" si hay fallback disponible
+   - Inicia repair session y navega a /control/setup?repairSessionId=...
+
+5. **Setup Page mejorada**:
+   - Lee `repairSessionId` de URL
+   - Muestra detalles de la sesión de reparación
+   - Instrucciones específicas por scope (os:open_app, os:filesystem, etc.)
+   - Botón "Ya autoricé, comprobar" para verificar
+   - Botón "Reintentar acción" cuando está listo
+   - Botón "Cancelar" para abortar
+
+6. **Instrucciones de pairing por scope**:
+   - `os:open_app`: Control de aplicaciones
+   - `os:filesystem`: Acceso a archivos
+   - `os:browser`: Control de navegador
+   - `os:install`: Instalación de software
+   - `os:system`: Control del sistema
+
+7. **Historial de eventos repair**:
+   - `repair_started`, `repair_checked`, `repair_ready`
+   - `repair_failed`, `repair_cancelled`, `retry_after_repair`
+
+### Archivos creados
+
+| Archivo | Descripción |
+|---------|-------------|
+| apps/api/src/modules/openclaw-repair/types.ts | Tipos para repair sessions |
+| apps/api/src/modules/openclaw-repair/service.ts | Lógica de repair sessions |
+| apps/api/src/modules/openclaw-repair/routes.ts | Endpoints HTTP |
+| apps/api/src/modules/openclaw-repair/index.ts | Exports del módulo |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/index.ts | Nuevas rutas /openclaw/repair/* |
+| apps/api/src/modules/system-state/types.ts | +repairSessionId, +createdAt en PendingAction |
+| apps/web/src/services/api.ts | Endpoints y tipos repair |
+| apps/web/src/components/control/SecurityResultPanel.tsx | Botón "Resolver permisos", "Ejecutar localmente" |
+| apps/web/src/pages/control/Setup.tsx | UI de repair session con instrucciones |
+
+### Verificaciones
+
+- ✅ Módulo openclaw-repair creado con tipos, service, routes
+- ✅ Endpoints funcionando (start, check, cancel, retry)
+- ✅ Botón "Resolver permisos" visible en setup_required/reauth
+- ✅ Setup page muestra sesión de reparación con instrucciones
+- ✅ Verificación real de autorización (checkRepair)
+- ✅ Retry después de verificación exitosa
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso

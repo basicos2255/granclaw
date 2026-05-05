@@ -581,6 +581,53 @@ export const api = {
       return { success: false, data: null, error: 'Debes iniciar sesion' }
     }
     return postRequestProtected<ApiResponse<PendingActionData | null>>('/system/consume-pending-action', {})
+  },
+
+  // FIX 125: OpenClaw Repair
+  startRepair: async (params: StartRepairParams): Promise<ApiResponse<StartRepairResult>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    const response = await postRequest<ApiResponse<StartRepairResult>>('/openclaw/repair/start', params)
+    return response
+  },
+
+  getRepairSession: async (id: string): Promise<ApiResponse<RepairSessionData>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<RepairSessionData>(`/openclaw/repair/${id}`)
+  },
+
+  checkRepair: async (id: string): Promise<ApiResponse<CheckRepairResult>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    const response = await postRequest<ApiResponse<CheckRepairResult>>(`/openclaw/repair/${id}/check`, {})
+    return response
+  },
+
+  cancelRepair: async (id: string): Promise<ApiResponse<RepairSessionData>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    const response = await postRequest<ApiResponse<RepairSessionData>>(`/openclaw/repair/${id}/cancel`, {})
+    return response
+  },
+
+  retryRepair: async (id: string): Promise<ApiResponse<RetryRepairResult>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    const response = await postRequest<ApiResponse<RetryRepairResult>>(`/openclaw/repair/${id}/retry`, {})
+    return response
+  },
+
+  getActiveRepairs: async (): Promise<ApiResponse<{ sessions: RepairSessionData[]; count: number }>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<{ sessions: RepairSessionData[]; count: number }>('/openclaw/repair/active')
   }
 }
 
@@ -786,4 +833,53 @@ async function deleteRequestProtected<T>(endpoint: string): Promise<T> {
     return { success: false, error: 'Debes iniciar sesion' } as T
   }
   return deleteRequest<T>(endpoint)
+}
+
+// FIX 125: OpenClaw Repair types
+export type RepairSessionStatus = 'pending' | 'waiting_user' | 'checking' | 'ready' | 'failed' | 'cancelled'
+
+export interface RepairSessionData {
+  id: string
+  tenantId: string
+  userId: string
+  scopeKey: OpenClawScopeKey
+  capabilityKey?: string
+  originalInput: string
+  status: RepairSessionStatus
+  originalError?: string
+  lastCheckError?: string
+  checkAttempts: number
+  createdAt: string
+  updatedAt: string
+  readyAt?: string
+  retriedAt?: string
+}
+
+export interface StartRepairParams {
+  scopeKey: OpenClawScopeKey
+  capabilityKey?: string
+  originalInput: string
+  error?: string
+}
+
+export interface StartRepairResult {
+  success: boolean
+  repairSession?: RepairSessionData
+  setupUrl?: string
+  instructions?: string
+  error?: string
+}
+
+export interface CheckRepairResult {
+  success: boolean
+  repairSession?: RepairSessionData
+  canRetry: boolean
+  message: string
+  instructions?: string
+}
+
+export interface RetryRepairResult {
+  success: boolean
+  repairSession?: RepairSessionData
+  originalInput?: string
 }

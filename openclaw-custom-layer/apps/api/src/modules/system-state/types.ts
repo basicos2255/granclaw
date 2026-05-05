@@ -2,6 +2,7 @@
  * System State Types
  * FIX 123: OpenClaw Persistent Setup & Pairing Flow
  * FIX 123.1: OpenClaw Setup Hardening & Scoped Reauthorization
+ * FIX 125: Pairing Auto-Repair Action Button
  *
  * Global system state that persists across restarts.
  */
@@ -40,6 +41,7 @@ export interface OpenClawSetupRequirement {
 
 /**
  * Pending action stored for retry after setup
+ * FIX 125: Added repairSessionId for tracking repair flow
  */
 export interface PendingAction {
   input: string
@@ -48,6 +50,10 @@ export interface PendingAction {
   timestamp: number
   capabilityKey?: string
   scopeKey?: OpenClawScopeKey
+  /** FIX 125: Associated repair session ID */
+  repairSessionId?: string
+  /** FIX 125: ISO timestamp for display */
+  createdAt?: string
 }
 
 /**

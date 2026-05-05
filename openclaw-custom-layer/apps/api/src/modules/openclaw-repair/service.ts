@@ -1,6 +1,7 @@
 /**
  * OpenClaw Repair Service
  * FIX 125: Pairing Auto-Repair Action Button
+ * FIX 125.1: Setup Page Robustness & Repair Data Normalization
  *
  * Manages repair sessions for OpenClaw pairing/scope recovery.
  */
@@ -25,6 +26,26 @@ import {
   getActiveRequirements,
   type OpenClawScopeKey
 } from '../system-state'
+
+// FIX 125.1: Normalize repair session for legacy data
+function normalizeRepairSession(session: Partial<RepairSession>, index: number): RepairSession {
+  return {
+    id: session.id ?? `legacy-session-${index}-${Date.now()}`,
+    tenantId: session.tenantId ?? 'unknown',
+    userId: session.userId ?? 'unknown',
+    scopeKey: (session.scopeKey ?? 'openclaw:unknown_scope') as OpenClawScopeKey,
+    capabilityKey: session.capabilityKey,
+    originalInput: session.originalInput ?? '',
+    originalError: session.originalError,
+    status: (session.status ?? 'pending') as RepairSessionStatus,
+    lastCheckError: session.lastCheckError,
+    checkAttempts: session.checkAttempts ?? 0,
+    createdAt: session.createdAt ?? new Date().toISOString(),
+    updatedAt: session.updatedAt ?? new Date().toISOString(),
+    readyAt: session.readyAt,
+    retriedAt: session.retriedAt
+  }
+}
 
 // Path to persistent state file
 const DATA_DIR = join(process.cwd(), 'data')
@@ -64,10 +85,16 @@ function loadSessions(): RepairSessionsState {
     const raw = readFileSync(SESSIONS_FILE, 'utf-8')
     const parsed = JSON.parse(raw) as Partial<RepairSessionsState>
 
+    // FIX 125.1: Normalize all sessions (handle legacy data)
+    const rawSessions = parsed.sessions || []
+    const normalizedSessions = rawSessions.map((session, index) =>
+      normalizeRepairSession(session, index)
+    )
+
     cachedState = {
       ...DEFAULT_REPAIR_SESSIONS_STATE,
       ...parsed,
-      sessions: parsed.sessions || []
+      sessions: normalizedSessions
     }
 
     return cachedState

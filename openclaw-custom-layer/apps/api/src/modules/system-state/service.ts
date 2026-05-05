@@ -2,6 +2,7 @@
  * System State Service
  * FIX 123: OpenClaw Persistent Setup & Pairing Flow
  * FIX 123.1: OpenClaw Setup Hardening & Scoped Reauthorization
+ * FIX 125.1: Setup Page Robustness & Repair Data Normalization
  *
  * Manages persistent system state stored in data/system-state.json
  */
@@ -11,6 +12,29 @@ import { join } from 'path'
 import { randomUUID } from 'crypto'
 import type { SystemState, PendingAction, OpenClawSetupStatus, OpenClawSetupRequirement, OpenClawScopeKey } from './types'
 import { DEFAULT_SYSTEM_STATE } from './types'
+
+// FIX 125.1: Safe substring helper
+function safeSubstring(value: string | undefined | null, maxLen: number): string {
+  if (!value || typeof value !== 'string') return ''
+  if (value.length <= maxLen) return value
+  return value.substring(0, maxLen) + '...'
+}
+
+// FIX 125.1: Normalize requirement for legacy data migration
+function normalizeRequirement(req: Partial<OpenClawSetupRequirement>, index: number): OpenClawSetupRequirement {
+  return {
+    id: req.id ?? `legacy-req-${index}-${Date.now()}`,
+    scopeKey: (req.scopeKey ?? 'openclaw:unknown_scope') as OpenClawScopeKey,
+    capabilityKey: req.capabilityKey,
+    provider: req.provider ?? 'openclaw',
+    reason: req.reason ?? 'OpenClaw requiere configuración',
+    originalError: req.originalError,
+    status: req.status ?? 'active',
+    createdAt: req.createdAt ?? new Date().toISOString(),
+    updatedAt: req.updatedAt ?? new Date().toISOString(),
+    resolvedAt: req.resolvedAt
+  }
+}
 
 // Path to persistent state file
 const DATA_DIR = join(process.cwd(), 'data')
@@ -55,11 +79,17 @@ function loadState(): SystemState {
       parsed.version = 2
     }
 
+    // FIX 125.1: Normalize all requirements (handle legacy data)
+    const rawRequirements = parsed.setupRequirements || []
+    const normalizedRequirements = rawRequirements.map((req, index) =>
+      normalizeRequirement(req, index)
+    )
+
     // Merge with defaults for any missing fields
     cachedState = {
       ...DEFAULT_SYSTEM_STATE,
       ...parsed,
-      setupRequirements: parsed.setupRequirements || []
+      setupRequirements: normalizedRequirements
     }
 
     // FIX 123.1: Derive openclawRequiresSetup from active requirements
@@ -343,6 +373,7 @@ export function recordSuccessfulExecution(params?: {
 
 /**
  * Store pending action for retry after setup
+ * FIX 125.1: Safe substring
  */
 export function storePendingAction(action: PendingAction): void {
   const state = loadState()
@@ -351,7 +382,7 @@ export function storePendingAction(action: PendingAction): void {
 
   saveState(state)
 
-  console.log(`[SystemState] Pending action stored: "${action.input.substring(0, 50)}..."`)
+  console.log(`[SystemState] Pending action stored: "${safeSubstring(action.input, 50)}"`)
 }
 
 /**

@@ -3,10 +3,74 @@
  * FIX 123: OpenClaw Persistent Setup & Pairing Flow
  * FIX 123.1: Granular requirements display
  * FIX 125: Pairing Auto-Repair Action Button
+ * FIX 125.1: Setup Page Robustness & Repair Data Normalization
  */
 
 import { useState, useEffect } from 'react'
 import { api, isAuthenticated, type SystemStateData, type OpenClawCheckAuthResult, type PendingActionData, type OpenClawSetupRequirement, type RepairSessionData } from '../../services/api'
+
+// FIX 125.1: Safe helpers for undefined values
+function safeText(value: string | undefined | null, fallback = 'N/D'): string {
+  return value && typeof value === 'string' ? value : fallback
+}
+
+function shortId(value: string | undefined | null, fallback = 'sin-id'): string {
+  if (!value || typeof value !== 'string') return fallback
+  return value.length > 10 ? value.substring(0, 10) + '…' : value
+}
+
+function safeSubstring(value: string | undefined | null, maxLen: number, fallback = ''): string {
+  if (!value || typeof value !== 'string') return fallback
+  if (value.length <= maxLen) return value
+  return value.substring(0, maxLen) + '...'
+}
+
+function safeDate(value: string | number | undefined | null): string {
+  if (!value) return 'Fecha no disponible'
+  try {
+    const date = new Date(value)
+    if (isNaN(date.getTime())) return 'Fecha inválida'
+    return date.toLocaleString()
+  } catch {
+    return 'Fecha inválida'
+  }
+}
+
+// FIX 125.1: Normalize requirement data
+function normalizeRequirement(req: Partial<OpenClawSetupRequirement>, index: number): OpenClawSetupRequirement {
+  return {
+    id: req.id ?? `req-${index}`,
+    scopeKey: req.scopeKey ?? 'openclaw:unknown_scope' as OpenClawSetupRequirement['scopeKey'],
+    capabilityKey: req.capabilityKey,
+    provider: req.provider ?? 'openclaw',
+    reason: req.reason ?? 'OpenClaw requiere configuración',
+    originalError: req.originalError,
+    status: req.status ?? 'active',
+    createdAt: req.createdAt ?? new Date().toISOString(),
+    updatedAt: req.updatedAt ?? new Date().toISOString(),
+    resolvedAt: req.resolvedAt
+  }
+}
+
+// FIX 125.1: Normalize repair session data
+function normalizeRepairSession(session: Partial<RepairSessionData>): RepairSessionData {
+  return {
+    id: session.id ?? 'unknown',
+    tenantId: session.tenantId ?? 'unknown',
+    userId: session.userId ?? 'unknown',
+    scopeKey: session.scopeKey ?? 'openclaw:unknown_scope' as RepairSessionData['scopeKey'],
+    capabilityKey: session.capabilityKey,
+    originalInput: session.originalInput ?? '',
+    status: session.status ?? 'pending',
+    originalError: session.originalError,
+    lastCheckError: session.lastCheckError,
+    checkAttempts: session.checkAttempts ?? 0,
+    createdAt: session.createdAt ?? new Date().toISOString(),
+    updatedAt: session.updatedAt ?? new Date().toISOString(),
+    readyAt: session.readyAt,
+    retriedAt: session.retriedAt
+  }
+}
 
 export function Setup() {
   const [loading, setLoading] = useState(true)
@@ -57,21 +121,27 @@ export function Setup() {
   }
 
   // FIX 125: Load repair session details
+  // FIX 125.1: Normalize data to prevent crashes
   const loadRepairSession = async (sessionId: string) => {
     try {
       const response = await api.getRepairSession(sessionId)
       if (response.success && response.data) {
-        const data = response.data as { repairSession?: RepairSessionData; instructions?: string }
+        const data = response.data as { repairSession?: Partial<RepairSessionData>; instructions?: string }
         if (data.repairSession) {
-          setRepairSession(data.repairSession)
-          setRepairCanRetry(data.repairSession.status === 'ready')
+          const normalized = normalizeRepairSession(data.repairSession)
+          setRepairSession(normalized)
+          setRepairCanRetry(normalized.status === 'ready')
         }
         if (data.instructions) {
           setRepairInstructions(data.instructions)
         }
+      } else {
+        // FIX 125.1: Handle invalid session
+        setError(`Sesión de reparación no encontrada: ${shortId(sessionId)}`)
       }
     } catch {
       console.error('Error loading repair session')
+      setError('Error al cargar la sesión de reparación')
     }
   }
 
@@ -192,8 +262,9 @@ export function Setup() {
       // Consume pending action to clear it
       const response = await api.consumePendingAction()
       if (response.success && response.data) {
-        // Redirect to execute page or run the action
-        setSuccess(`Accion pendiente recuperada: "${response.data.input.substring(0, 50)}..."`)
+        // FIX 125.1: Safe substring
+        const inputPreview = safeSubstring(response.data.input, 50, 'acción desconocida')
+        setSuccess(`Accion pendiente recuperada: "${inputPreview}"`)
         setPendingAction(null)
         // Optionally trigger the action via orchestrator
       }
@@ -303,7 +374,9 @@ export function Setup() {
   })
 
   // FIX 123.1: Format scope key for display
-  const formatScopeKey = (scopeKey: string): string => {
+  // FIX 125.1: Handle undefined scopeKey safely
+  const formatScopeKey = (scopeKey: string | undefined | null): string => {
+    if (!scopeKey) return 'Permiso desconocido'
     const scopeLabels: Record<string, string> = {
       'os:open_app': 'Abrir aplicaciones',
       'os:install': 'Instalar aplicaciones',
@@ -313,6 +386,14 @@ export function Setup() {
       'openclaw:unknown_scope': 'Permiso desconocido'
     }
     return scopeLabels[scopeKey] || scopeKey
+  }
+
+  // FIX 125.1: Get explanation for os:install
+  const getInstallExplanation = (scopeKey: string | undefined | null): string | null => {
+    if (scopeKey === 'os:install') {
+      return 'OpenClaw necesita autorización para instalar o modificar aplicaciones. Aunque otra instalación haya funcionado, esta acción puede requerir permisos adicionales o una nueva aprobación del nodo.'
+    }
+    return null
   }
 
   if (!isAuthenticated()) {
@@ -425,8 +506,7 @@ export function Setup() {
             <div style={infoRowStyle}>
               <span style={labelStyle}>Accion original</span>
               <span style={valueStyle}>
-                {repairSession.originalInput.substring(0, 80)}
-                {repairSession.originalInput.length > 80 && '...'}
+                {safeSubstring(repairSession.originalInput, 80, 'Acción no especificada')}
               </span>
             </div>
             <div style={infoRowStyle}>
@@ -534,6 +614,7 @@ export function Setup() {
         )}
 
         {/* FIX 123.1: Active Requirements */}
+        {/* FIX 125.1: Normalize requirements and use safe accessors */}
         {systemState?.activeRequirements && systemState.activeRequirements.length > 0 && (
           <div style={{ ...cardStyle, borderColor: '#dc2626', borderWidth: '2px' }}>
             <h2 style={{ ...titleStyle, fontSize: '18px', color: '#dc2626' }}>
@@ -543,27 +624,37 @@ export function Setup() {
               Los siguientes permisos requieren autorizacion en OpenClaw.
             </p>
             <div style={{ marginTop: '16px' }}>
-              {systemState.activeRequirements.map((req: OpenClawSetupRequirement) => (
-                <div key={req.id} style={{ ...infoRowStyle, flexDirection: 'column', alignItems: 'flex-start', gap: '8px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                    <span style={{ ...valueStyle, fontWeight: '600' }}>{formatScopeKey(req.scopeKey)}</span>
-                    <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-                      {new Date(req.createdAt).toLocaleString()}
-                    </span>
+              {systemState.activeRequirements.map((rawReq, index) => {
+                const req = normalizeRequirement(rawReq, index)
+                const installExplanation = getInstallExplanation(req.scopeKey)
+                return (
+                  <div key={req.id} style={{ ...infoRowStyle, flexDirection: 'column', alignItems: 'flex-start', gap: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                      <span style={{ ...valueStyle, fontWeight: '600' }}>{formatScopeKey(req.scopeKey)}</span>
+                      <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                        {safeDate(req.createdAt)}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: '13px', color: '#64748b' }}>{safeText(req.reason, 'OpenClaw requiere configuración')}</span>
+                    {installExplanation && (
+                      <span style={{ fontSize: '12px', color: '#d97706', backgroundColor: '#fffbeb', padding: '8px', borderRadius: '4px', width: '100%' }}>
+                        {installExplanation}
+                      </span>
+                    )}
+                    {req.capabilityKey && (
+                      <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                        Capability: {req.capabilityKey}
+                      </span>
+                    )}
                   </div>
-                  <span style={{ fontSize: '13px', color: '#64748b' }}>{req.reason}</span>
-                  {req.capabilityKey && (
-                    <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-                      Capability: {req.capabilityKey}
-                    </span>
-                  )}
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         )}
 
         {/* Pending Action */}
+        {/* FIX 125.1: Safe accessors for pending action */}
         {pendingAction && (
           <div style={{ ...cardStyle, borderColor: '#f59e0b', borderWidth: '2px' }}>
             <h2 style={{ ...titleStyle, fontSize: '18px', color: '#d97706' }}>
@@ -573,17 +664,21 @@ export function Setup() {
               Hay una accion que quedo pendiente debido a la configuracion requerida.
             </p>
             <div style={{ ...alertStyle('warning'), marginTop: '16px' }}>
-              <strong>Accion:</strong> {pendingAction.input.substring(0, 100)}
-              {pendingAction.input.length > 100 && '...'}
+              <strong>Accion:</strong> {safeSubstring(pendingAction.input, 100, 'Acción no especificada')}
             </div>
             <div style={infoRowStyle}>
               <span style={labelStyle}>Antigüedad</span>
-              <span style={valueStyle}>{Math.round(pendingAction.age / 1000 / 60)} minutos</span>
+              <span style={valueStyle}>{Math.round((pendingAction.age ?? 0) / 1000 / 60)} minutos</span>
             </div>
             {pendingAction.scopeKey && (
               <div style={infoRowStyle}>
                 <span style={labelStyle}>Scope</span>
                 <span style={valueStyle}>{formatScopeKey(pendingAction.scopeKey)}</span>
+              </div>
+            )}
+            {getInstallExplanation(pendingAction.scopeKey) && (
+              <div style={{ ...alertStyle('warning'), marginTop: '8px', backgroundColor: '#fffbeb' }}>
+                {getInstallExplanation(pendingAction.scopeKey)}
               </div>
             )}
             <button style={buttonStyle('primary')} onClick={retryPendingAction}>

@@ -4972,3 +4972,84 @@ Ejemplos: "descarga vlc y instálalo" podría fallar por timeout en la descarga.
 - ✅ Endpoint /tasks/execute-steps ejecuta secuencialmente
 - ✅ npm run check sin errores
 - ✅ npm run build exitoso
+
+---
+
+## FIX 125.1 - Setup Page Robustness & Repair Data Normalization
+
+**Fecha**: 2026-05-05
+**Estado**: Completado
+
+### Problema
+
+Al pulsar "Ir a Configuración" desde CONFIGURACIÓN REQUERIDA, la ruta `/control/setup` quedaba en blanco con error:
+
+```
+Uncaught TypeError: Cannot read properties of undefined (reading 'substring')
+at Setup.tsx:576
+```
+
+Causas:
+- Llamadas a `.substring()` sobre valores undefined (pendingAction.input, repairSession.originalInput, etc.)
+- Requirements legacy sin id/scopeKey/createdAt
+- Repair sessions con datos incompletos
+- No había manejo de error para sesiones inválidas
+
+### Solución
+
+1. **Helpers seguros** (Setup.tsx):
+   - `safeText(value, fallback)`: Devuelve valor o fallback
+   - `shortId(value, fallback)`: Acorta IDs de forma segura
+   - `safeSubstring(value, maxLen, fallback)`: Substring seguro
+   - `safeDate(value)`: Parsea fechas sin crash
+
+2. **Normalización frontend** (Setup.tsx):
+   - `normalizeRequirement(raw, index)`: Completa campos faltantes
+   - `normalizeRepairSession(session)`: Completa campos faltantes
+   - Se aplica a todos los datos antes de render
+
+3. **Normalización backend**:
+   - `system-state/service.ts`: Normaliza requirements al cargar JSON
+   - `openclaw-repair/service.ts`: Normaliza sessions al cargar JSON
+   - Migración automática de datos legacy
+
+4. **UI mejorada**:
+   - Error visible cuando repair session no existe
+   - Mensaje claro para os:install ("Aunque otra instalación haya funcionado...")
+   - Nunca queda en blanco
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/web/src/pages/control/Setup.tsx | +helpers seguros, +normalización, +os:install message, +error handling |
+| apps/api/src/modules/system-state/service.ts | +safeSubstring, +normalizeRequirement, +migración datos |
+| apps/api/src/modules/openclaw-repair/service.ts | +normalizeRepairSession, +migración datos |
+
+### Helpers añadidos
+
+```typescript
+// Frontend (Setup.tsx)
+safeText(value, fallback = 'N/D')
+shortId(value, fallback = 'sin-id')
+safeSubstring(value, maxLen, fallback = '')
+safeDate(value)
+normalizeRequirement(raw, index)
+normalizeRepairSession(session)
+getInstallExplanation(scopeKey)
+
+// Backend
+safeSubstring(value, maxLen)  // system-state
+normalizeRequirement(req, index)  // system-state
+normalizeRepairSession(session, index)  // openclaw-repair
+```
+
+### Verificaciones
+
+- ✅ /control/setup sin repairSessionId: muestra requirements o "sin setup pendiente"
+- ✅ /control/setup?repairSessionId=invalid: muestra "sesión no encontrada"
+- ✅ Requirement sin scopeKey: muestra "Permiso desconocido"
+- ✅ Requirement os:install: muestra mensaje explicativo
+- ✅ Pulsar "Ir a Configuración" desde CONFIGURACIÓN REQUERIDA: navega correctamente
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso

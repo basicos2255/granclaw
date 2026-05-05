@@ -9,6 +9,7 @@
  * FIX 103: Aprobar inline + callback de reintentar
  * FIX 111: Soporte confirmation_required para OS tools
  * FIX 122: OpenClaw Reauthorization Handling
+ * FIX 124: Final Execution Status Resolution
  */
 
 import { useState } from 'react'
@@ -16,8 +17,21 @@ import { api } from '../../services/api'
 import { OutputViewer } from './OutputViewer'
 // FIX 112: normalizeOutput removed - OutputViewer handles normalization internally
 
-// FIX 077 + FEATURE 090 + FIX 111 + FIX 122: Estados posibles
-export type ResultStatus = 'allowed' | 'blocked' | 'error' | 'unconfirmed' | 'missing_capability' | 'confirmation_required' | 'reauthorization_required'
+// FIX 077 + FEATURE 090 + FIX 111 + FIX 122 + FIX 124: Estados posibles
+export type ResultStatus = 'allowed' | 'blocked' | 'error' | 'unconfirmed' | 'missing_capability' | 'confirmation_required' | 'reauthorization_required' | 'setup_required' | 'executed' | 'partial' | 'pending_confirmation' | 'failed'
+
+// FIX 124: Status resolution from backend
+export interface StatusResolution {
+  hubDecision: 'allowed' | 'blocked'
+  executionStatus: string
+  finalUiStatus: 'allowed' | 'executed' | 'pending_confirmation' | 'setup_required' | 'reauthorization_required' | 'failed' | 'partial' | 'blocked'
+  executionConfirmed: boolean
+  isSuccess: boolean
+  severity: 'success' | 'warning' | 'error' | 'info'
+  title: string
+  message: string
+  reason: string
+}
 
 // FEATURE 090: Info de propuesta de tool
 interface ToolProposalInfo {
@@ -45,6 +59,8 @@ interface SecurityResultPanelProps {
   decisionLog?: string[]
   // FIX 077: Estado explícito (opcional para retrocompatibilidad)
   status?: ResultStatus
+  // FIX 124: Status resolution from backend (takes precedence)
+  statusResolution?: StatusResolution
   // FEATURE 090: Info de propuesta de tool
   toolProposalInfo?: ToolProposalInfo
   // FIX 103: Callback para reintentar después de aprobar
@@ -55,15 +71,16 @@ interface SecurityResultPanelProps {
   onCancelOsAction?: () => void
 }
 
-export function SecurityResultPanel({ allowed, result, rawResult, reason, decisionLog, status, toolProposalInfo, onRetry, osConfirmationInfo, onConfirmOsAction, onCancelOsAction }: SecurityResultPanelProps) {
+export function SecurityResultPanel({ allowed, result, rawResult, reason, decisionLog, status, statusResolution, toolProposalInfo, onRetry, osConfirmationInfo, onConfirmOsAction, onCancelOsAction }: SecurityResultPanelProps) {
   const [showDetails, setShowDetails] = useState(false)
   // FIX 103: Estados para aprobar inline
   const [approving, setApproving] = useState(false)
   const [approveResult, setApproveResult] = useState<'success' | 'error' | null>(null)
   const [approveError, setApproveError] = useState<string | null>(null)
 
-  // FIX 077: Determinar estado real
-  const effectiveStatus: ResultStatus = status || (allowed ? 'allowed' : 'blocked')
+  // FIX 077 + FIX 124: Determinar estado real
+  // FIX 124: statusResolution.finalUiStatus takes precedence
+  const effectiveStatus: ResultStatus = statusResolution?.finalUiStatus || status || (allowed ? 'allowed' : 'blocked')
 
   // FEATURE 064: Colores modernos
   const green = '#059669'
@@ -92,45 +109,86 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
   const roseBg = '#fff1f2'
   const roseDark = '#9f1239'
 
-  // FIX 077 + FEATURE 090 + FIX 111 + FIX 122: Determinar colores según estado
+  // FIX 077 + FEATURE 090 + FIX 111 + FIX 122 + FIX 124: Determinar colores según estado
   const getColors = () => {
     switch (effectiveStatus) {
       case 'allowed':
         return { main: green, bg: greenBg, dark: greenDark }
+      case 'executed':  // FIX 124
+        return { main: green, bg: greenBg, dark: greenDark }
       case 'blocked':
         return { main: red, bg: redBg, dark: redDark }
       case 'error':
+      case 'failed':  // FIX 124
         return { main: gray, bg: grayBg, dark: grayDark }
       case 'unconfirmed':
+      case 'partial':  // FIX 124
         return { main: orange, bg: orangeBg, dark: orangeDark }
       case 'missing_capability':
         return { main: purple, bg: purpleBg, dark: purpleDark }
       case 'confirmation_required':
+      case 'pending_confirmation':  // FIX 124
         return { main: amber, bg: amberBg, dark: amberDark }
       case 'reauthorization_required':
+      case 'setup_required':  // FIX 124
         return { main: rose, bg: roseBg, dark: roseDark }
+      default:
+        return { main: gray, bg: grayBg, dark: grayDark }
     }
   }
 
   const colors = getColors()
 
-  // FIX 077 + FEATURE 090 + FIX 111 + FIX 122: Textos según estado
+  // FIX 077 + FEATURE 090 + FIX 111 + FIX 122 + FIX 124: Textos según estado
+  // FIX 124: If statusResolution provided, use its title/message
   const getTexts = () => {
+    // FIX 124: Use statusResolution title/message if available
+    if (statusResolution) {
+      const iconMap: Record<string, string> = {
+        'executed': '✓',
+        'allowed': '✓',
+        'blocked': '✕',
+        'failed': '✕',
+        'error': '⚠',
+        'partial': '⚠',
+        'pending_confirmation': '⚠️',
+        'confirmation_required': '⚠️',
+        'setup_required': '🔧',
+        'reauthorization_required': '🔐'
+      }
+      return {
+        icon: iconMap[statusResolution.finalUiStatus] || '?',
+        title: statusResolution.title,
+        message: statusResolution.message
+      }
+    }
+
     switch (effectiveStatus) {
       case 'allowed':
         return { icon: '✓', title: 'PERMITIDO', message: 'La empresa PERMITE esta acción' }
+      case 'executed':  // FIX 124
+        return { icon: '✓', title: 'EJECUTADO', message: 'La acción se ejecutó correctamente' }
       case 'blocked':
         return { icon: '✕', title: 'BLOQUEADO', message: 'La empresa BLOQUEA esta acción' }
       case 'error':
         return { icon: '⚠', title: 'ERROR', message: 'Ocurrió un error durante la ejecución' }
+      case 'failed':  // FIX 124
+        return { icon: '✕', title: 'ERROR DE EJECUCIÓN', message: 'La ejecución falló con un error' }
       case 'unconfirmed':
         return { icon: '?', title: 'SIN CONFIRMAR', message: 'Permitido, pero la ejecución no pudo confirmarse' }
+      case 'partial':  // FIX 124
+        return { icon: '⚠', title: 'EJECUCIÓN PARCIAL', message: 'La acción se completó parcialmente' }
       case 'missing_capability':
         return { icon: '🧩', title: 'CAPACIDAD NO DISPONIBLE', message: 'GranClaw no tiene todavía una herramienta para ejecutar esta acción' }
       case 'confirmation_required':
+      case 'pending_confirmation':  // FIX 124
         return { icon: '⚠️', title: 'CONFIRMACIÓN REQUERIDA', message: 'Esta acción necesita confirmación del usuario' }
       case 'reauthorization_required':
         return { icon: '🔐', title: 'REAUTORIZACIÓN REQUERIDA', message: 'OpenClaw necesita permisos adicionales para completar esta acción' }
+      case 'setup_required':  // FIX 124
+        return { icon: '🔧', title: 'CONFIGURACIÓN REQUERIDA', message: 'OpenClaw necesita configuración antes de completar esta acción' }
+      default:
+        return { icon: '?', title: 'DESCONOCIDO', message: 'Estado desconocido' }
     }
   }
 
@@ -281,8 +339,8 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
     }
   }
 
-  // FIX 077 + FIX 111: Mostrar result si hay resultado (allowed o unconfirmed)
-  const showResult = (effectiveStatus === 'allowed' || effectiveStatus === 'unconfirmed') && result
+  // FIX 077 + FIX 111 + FIX 124: Mostrar result si hay resultado (allowed, executed, unconfirmed, partial)
+  const showResult = (effectiveStatus === 'allowed' || effectiveStatus === 'executed' || effectiveStatus === 'unconfirmed' || effectiveStatus === 'partial') && result
   // FIX 111: Use OutputViewer if rawResult provided
   const useOutputViewer = rawResult !== undefined
   // FIX 112: Removed unused normalizedResult/isHumanReadable - OutputViewer handles normalization internally
@@ -376,6 +434,73 @@ export function SecurityResultPanel({ allowed, result, rawResult, reason, decisi
                 >
                   Cancelar
                 </button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* FIX 124: Setup required section */}
+        {effectiveStatus === 'setup_required' && (
+          <>
+            <div style={{ ...resultLabelStyle, color: colors.dark }}>
+              <span style={{ ...dividerStyle, backgroundColor: '#fecdd3' }} />
+              <span>OpenClaw requiere configuración</span>
+              <span style={{ ...dividerStyle, backgroundColor: '#fecdd3' }} />
+            </div>
+            <div style={{
+              backgroundColor: roseBg,
+              padding: '20px 24px',
+              borderRadius: '12px',
+              border: `1px solid ${rose}`,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span style={{ fontSize: '28px' }}>🔧</span>
+                <span style={{ fontSize: '15px', fontWeight: '600', color: roseDark }}>
+                  Se requiere configuración adicional
+                </span>
+              </div>
+              <div style={{ fontSize: '14px', color: '#374151', lineHeight: '1.6' }}>
+                OpenClaw necesita ser configurado o emparejado antes de ejecutar esta acción.
+                Por favor, completa la configuración para continuar.
+              </div>
+              {(reason || statusResolution?.reason) && (
+                <div style={{
+                  fontSize: '13px',
+                  color: '#6b7280',
+                  backgroundColor: 'white',
+                  padding: '12px',
+                  borderRadius: '8px',
+                  fontFamily: 'ui-monospace, monospace'
+                }}>
+                  Detalle: {reason || statusResolution?.reason}
+                </div>
+              )}
+              <div style={{ marginTop: '8px' }}>
+                <a
+                  href="/control/setup"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '10px 20px',
+                    backgroundColor: rose,
+                    color: 'white',
+                    borderRadius: '8px',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    textDecoration: 'none'
+                  }}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    window.history.pushState({}, '', '/control/setup')
+                    window.dispatchEvent(new PopStateEvent('popstate'))
+                  }}
+                >
+                  🔧 Ir a Configuración →
+                </a>
               </div>
             </div>
           </>

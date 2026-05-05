@@ -4441,3 +4441,88 @@ FIX 123 tenía problemas de diseño:
 - ✅ UI muestra requirements granulares
 - ✅ npm run check sin errores
 - ✅ npm run build exitoso
+
+---
+
+## FIX 124 - Final Execution Status Resolution
+
+**Fecha**: 2026-05-05
+**Estado**: Completado
+
+### Problema
+
+La UI mostraba "PERMITIDO" aunque realmente:
+- OpenClaw no ejecutó la acción
+- executionConfirmed = false
+- requiresReauth = true
+- resultado fue setup_required / reauthorization_required / incomplete
+
+Problema clave: **Permitido ≠ Ejecutado**
+
+### Principio
+
+Separar siempre:
+1. **HubDecision**: allowed | blocked (decisión de política)
+2. **ExecutionStatus**: executed | setup_required | reauthorization_required | failed | partial | pending_confirmation | skipped | not_started
+3. **FinalUiStatus**: lo que se muestra al usuario (prioridad definida)
+
+### Prioridad de resolución
+
+1. Hub blocked → blocked
+2. Pending confirmation → pending_confirmation
+3. Requires setup → setup_required
+4. Requires reauth → reauthorization_required
+5. Execution failed → failed
+6. Execution confirmed → executed
+7. Hub allowed (no execution needed) → allowed
+8. Partial → partial
+
+### Solución
+
+1. **Módulo execution-status** (apps/api/src/modules/execution-status/):
+   - types.ts: HubDecisionStatus, ExecutionStatus, FinalUiStatus, ResolvedExecutionStatus
+   - status-resolver.ts: resolveFinalExecutionStatus()
+   - index.ts: exports
+
+2. **Orchestrator integration** (routes.ts):
+   - Todas las respuestas incluyen `statusResolution`
+   - El resolver determina finalUiStatus según prioridad
+   - Setup/reauth tiene prioridad visual sobre allowed
+
+3. **SecurityResultPanel actualizado**:
+   - Usa `statusResolution.finalUiStatus` como fuente principal
+   - Nuevos estados: executed, setup_required, failed, partial, pending_confirmation
+   - Texto y colores personalizados según statusResolution.title/message
+   - Sección visual para setup_required con link a /control/setup
+
+4. **Execute.tsx actualizado**:
+   - Extrae statusResolution de la respuesta
+   - Lo pasa a SecurityResultPanel
+
+### Archivos creados
+
+| Archivo | Propósito |
+|---------|-----------|
+| apps/api/src/modules/execution-status/types.ts | Tipos de status |
+| apps/api/src/modules/execution-status/status-resolver.ts | Resolver de status |
+| apps/api/src/modules/execution-status/index.ts | Exports |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/modules/orchestrator/routes.ts | Import resolver, añade statusResolution a respuestas |
+| apps/web/src/components/control/SecurityResultPanel.tsx | Usa statusResolution, nuevos estados |
+| apps/web/src/components/control/index.ts | Export StatusResolution |
+| apps/web/src/pages/control/Execute.tsx | Extrae y pasa statusResolution |
+
+### Verificaciones
+
+- ✅ Módulo execution-status creado
+- ✅ resolveFinalExecutionStatus implementado
+- ✅ Respuestas incluyen statusResolution
+- ✅ SecurityResultPanel usa finalUiStatus
+- ✅ Nuevos estados visuales funcionan
+- ✅ setup_required muestra link a configuración
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso

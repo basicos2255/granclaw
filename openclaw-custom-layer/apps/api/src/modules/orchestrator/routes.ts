@@ -10,6 +10,7 @@
  * FEATURE 090: Tool Proposal System v1
  * FEATURE 120: Hybrid Execution Policy v1
  * FIX 121: Authoritative Hybrid Router & Intent Classification
+ * FIX 124: Final Execution Status Resolution
  */
 
 import type { IncomingMessage, ServerResponse } from 'http'
@@ -45,6 +46,8 @@ import {
   type ExecutionRouteDecision,
   type IntentClassification
 } from '../execution-policy'
+// FIX 124: Final Execution Status Resolution
+import { resolveFinalExecutionStatus, type ResolvedExecutionStatus } from '../execution-status'
 
 /**
  * FIX 111: Capability execution is now handled by capability-dispatcher.ts
@@ -728,7 +731,14 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         debugSnapshot.executionConfirmed = false
         completeTask(task.id, 'blocked', undefined, 'setup-required', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Configuración requerida')
         const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, { pendingInput: input.message, scopeKey: fallbackScopeKey, requirement })
-        ok(res, { ...setupResponse, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState(), activeRequirements: getActiveRequirements() } })
+        // FIX 124: Add status resolution for setup_required
+        const setupStatusResolution = resolveFinalExecutionStatus({
+          hubAllowed: hubResult.allowed,
+          executionStatus: 'setup_required',
+          meta: { requiresSetup: true },
+          debugSnapshot
+        })
+        ok(res, { ...setupResponse, statusResolution: setupStatusResolution, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState(), activeRequirements: getActiveRequirements() } })
         return
       }
 
@@ -842,6 +852,20 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
       )
 
       // FIX 121: Fallback response with router decision
+      // FIX 124: Add status resolution
+      const statusResolution = resolveFinalExecutionStatus({
+        hubAllowed: hubResult.allowed,
+        hubBlocked: !hubResult.allowed,
+        hubReason: hubResult.decisionLog?.join(', '),
+        result,
+        error: result.error,
+        meta: {
+          executionConfirmed: debugSnapshot.executionConfirmed,
+          source
+        },
+        debugSnapshot
+      })
+
       ok(res, {
         ...result,
         success: finalSuccess,
@@ -849,6 +873,7 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           message: 'Permitido, pero no se pudo confirmar la ejecucion real'
         } : {}),
         warning,
+        statusResolution,
         meta: {
           requestId: trace.requestId,
           taskId: task.id,
@@ -890,9 +915,18 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
 
       console.error(`[GranClaw] Exception in request ${trace.requestId}:`, err)
 
+      // FIX 124: Add status resolution for error
+      const errorStatusResolution = resolveFinalExecutionStatus({
+        hubAllowed: undefined,
+        hubBlocked: undefined,
+        error: errorMessage,
+        debugSnapshot
+      })
+
       ok(res, {
         success: false,
         error: errorMessage,
+        statusResolution: errorStatusResolution,
         meta: {
           requestId: trace.requestId,
           taskId: task.id,
@@ -1088,7 +1122,14 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
           debugSnapshot.executionConfirmed = false
           completeTask(task.id, 'blocked', undefined, 'setup-required', trace.getSteps(), debugSnapshot, trace.getTotalDurationMs(), 'Configuración requerida')
           const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, { pendingInput: input.message, scopeKey: streamScopeKey, capabilityKey, requirement })
-          ok(res, { ...setupResponse, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState(), activeRequirements: getActiveRequirements() } })
+          // FIX 124: Add status resolution for setup_required (streaming)
+          const streamSetupStatusResolution = resolveFinalExecutionStatus({
+            hubAllowed: hubResult.allowed,
+            executionStatus: 'setup_required',
+            meta: { requiresSetup: true },
+            debugSnapshot
+          })
+          ok(res, { ...setupResponse, statusResolution: streamSetupStatusResolution, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState(), activeRequirements: getActiveRequirements() } })
           return
         }
 
@@ -1395,7 +1436,14 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
         setupDebugSnapshot.executionConfirmed = false
         completeTask(task.id, 'blocked', undefined, 'setup-required', trace.getSteps(), setupDebugSnapshot, trace.getTotalDurationMs(), 'Configuración requerida')
         const setupResponse = createSetupRequiredResponse(trace.requestId, task.id, { pendingInput: input.message, scopeKey: streamFbScopeKey, requirement })
-        ok(res, { ...setupResponse, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState(), activeRequirements: getActiveRequirements() } })
+        // FIX 124: Add status resolution for setup_required (streaming fallback)
+        const streamFbSetupStatusResolution = resolveFinalExecutionStatus({
+          hubAllowed: hubResult.allowed,
+          executionStatus: 'setup_required',
+          meta: { requiresSetup: true },
+          debugSnapshot: setupDebugSnapshot
+        })
+        ok(res, { ...setupResponse, statusResolution: streamFbSetupStatusResolution, meta: { ...setupResponse.meta, hubDecision: hubResult.decisionLog, tenantId: context.tenant.id, systemState: getSystemState(), activeRequirements: getActiveRequirements() } })
         return
       }
 
@@ -1509,6 +1557,20 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
       )
 
       // FEATURE 051/073/074/075/080: Respuesta completa
+      // FIX 124: Add status resolution (streaming fallback)
+      const streamFbStatusResolution = resolveFinalExecutionStatus({
+        hubAllowed: hubResult.allowed,
+        hubBlocked: !hubResult.allowed,
+        hubReason: hubResult.decisionLog?.join(', '),
+        result,
+        error: result.error,
+        meta: {
+          executionConfirmed: debugSnapshot.executionConfirmed,
+          source
+        },
+        debugSnapshot
+      })
+
       ok(res, {
         ...result,
         success: finalSuccess,
@@ -1517,6 +1579,7 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
           message: 'Permitido, pero no se pudo confirmar la ejecucion real'
         } : {}),
         warning,
+        statusResolution: streamFbStatusResolution,
         meta: {
           requestId: trace.requestId,
           taskId: task.id,
@@ -1551,9 +1614,18 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
 
       console.error(`[GranClaw] Exception in stream request ${trace.requestId}:`, err)
 
+      // FIX 124: Add status resolution for error (streaming)
+      const streamErrorStatusResolution = resolveFinalExecutionStatus({
+        hubAllowed: undefined,
+        hubBlocked: undefined,
+        error: errorMessage,
+        debugSnapshot
+      })
+
       ok(res, {
         success: false,
         error: errorMessage,
+        statusResolution: streamErrorStatusResolution,
         meta: {
           requestId: trace.requestId,
           taskId: task.id,

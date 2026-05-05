@@ -8,10 +8,11 @@
  * FEATURE 075: Debug Snapshot & Bottom Status Bar
  * FEATURE 090: Tool Proposal System v1
  * FIX 111: Complete OS Tools UI Confirmation
+ * FIX 124: Final Execution Status Resolution
  */
 
 import { useState, useEffect } from 'react'
-import { TaskInput, SecurityResultPanel, GlobalHeader, ExecutionTracePanel, StatusBar, DebugPanel, OutputViewer, type DebugSnapshot, type ResultStatus, type CapabilityOutput } from '../../components/control'
+import { TaskInput, SecurityResultPanel, GlobalHeader, ExecutionTracePanel, StatusBar, DebugPanel, OutputViewer, type DebugSnapshot, type ResultStatus, type CapabilityOutput, type StatusResolution } from '../../components/control'
 import { api, isAuthenticated } from '../../services/api'
 import { needsOSConfirmation, extractOSConfirmation } from '../../lib/output-normalizer'
 
@@ -85,6 +86,8 @@ interface ExecutionResult {
   osConfirmationInfo?: OSConfirmationInfo
   // FIX 111: Raw result for OutputViewer
   rawResult?: unknown
+  // FIX 124: Status resolution from backend
+  statusResolution?: StatusResolution
 }
 
 // Historial local (en memoria)
@@ -197,6 +200,9 @@ export function Execute() {
       // FEATURE 074: Extraer warning si existe
       const warning = (response as unknown as { warning?: string }).warning
 
+      // FIX 124: Extract statusResolution from response
+      const statusResolution = (response as unknown as { statusResolution?: StatusResolution }).statusResolution
+
       // FEATURE 075: Determinar si fue realmente permitido (con confirmación)
       const allowed = response.success !== false
       const executionConfirmed = debugSnapshot?.executionConfirmed ?? false
@@ -298,7 +304,7 @@ export function Execute() {
         }
       }
 
-      // FEATURE 073/074/075/090/091 + FIX 111: Incluir trace, source, diagnostico, debugSnapshot, toolProposalInfo, capabilityOutput y osConfirmationInfo
+      // FEATURE 073/074/075/090/091 + FIX 111 + FIX 124: Incluir trace, source, diagnostico, debugSnapshot, toolProposalInfo, capabilityOutput, osConfirmationInfo y statusResolution
       const execResult: ExecutionResult = {
         allowed,
         result: resultText,
@@ -318,7 +324,8 @@ export function Execute() {
         capabilityOutput,
         capabilityName,
         osConfirmationInfo,
-        rawResult: response.result
+        rawResult: response.result,
+        statusResolution
       }
 
       setResult(execResult)
@@ -607,7 +614,7 @@ export function Execute() {
 
           {result && !loading && (
             <div style={resultContainerStyle}>
-              {/* FIX 077 + FEATURE 090 + FIX 103 + FIX 111: Pasar status, toolProposalInfo, onRetry y OS confirmation handlers */}
+              {/* FIX 077 + FEATURE 090 + FIX 103 + FIX 111 + FIX 124: Pasar status, statusResolution, toolProposalInfo, onRetry y OS confirmation handlers */}
               <SecurityResultPanel
                 allowed={result.allowed}
                 result={result.capabilityOutput ? undefined : result.result}
@@ -615,6 +622,7 @@ export function Execute() {
                 reason={result.reason}
                 decisionLog={result.decisionLog}
                 status={result.status}
+                statusResolution={result.statusResolution}
                 toolProposalInfo={result.toolProposalInfo}
                 onRetry={result.status === 'missing_capability' ? handleRetry : undefined}
                 osConfirmationInfo={result.osConfirmationInfo}

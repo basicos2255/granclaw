@@ -7,9 +7,10 @@
  * FEATURE 075: Debug Snapshot & Bottom Status Bar
  * FIX 077: Execution error classification
  * FEATURE 091: OutputViewer for capability results
+ * FIX 124: Final Execution Status Resolution
  */
 
-export { SecurityResultPanel, type ResultStatus } from './SecurityResultPanel'
+export { SecurityResultPanel, type ResultStatus, type StatusResolution } from './SecurityResultPanel'
 export { TaskInput } from './TaskInput'
 export { TenantSelector } from './TenantSelector'
 export { ModeSelector } from './ModeSelector'

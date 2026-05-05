@@ -17,6 +17,37 @@ import { api, isAuthenticated } from '../../services/api'
 import { needsOSConfirmation, extractOSConfirmation } from '../../lib/output-normalizer'
 
 /**
+ * FIX 124.1: Helper seguro para extraer statusResolution de múltiples ubicaciones
+ */
+function getStatusResolution(response: unknown): StatusResolution | undefined {
+  if (!response || typeof response !== 'object') return undefined
+  const r = response as Record<string, unknown>
+
+  // Direct statusResolution
+  if (r.statusResolution && typeof r.statusResolution === 'object') {
+    return r.statusResolution as StatusResolution
+  }
+
+  // Inside data
+  if (r.data && typeof r.data === 'object') {
+    const data = r.data as Record<string, unknown>
+    if (data.statusResolution && typeof data.statusResolution === 'object') {
+      return data.statusResolution as StatusResolution
+    }
+  }
+
+  // Inside meta
+  if (r.meta && typeof r.meta === 'object') {
+    const meta = r.meta as Record<string, unknown>
+    if (meta.statusResolution && typeof meta.statusResolution === 'object') {
+      return meta.statusResolution as StatusResolution
+    }
+  }
+
+  return undefined
+}
+
+/**
  * FEATURE 073: Tipo de paso de ejecucion
  * FEATURE 074/075: Añadido durationMs y requestId
  */
@@ -200,8 +231,8 @@ export function Execute() {
       // FEATURE 074: Extraer warning si existe
       const warning = (response as unknown as { warning?: string }).warning
 
-      // FIX 124: Extract statusResolution from response
-      const statusResolution = (response as unknown as { statusResolution?: StatusResolution }).statusResolution
+      // FIX 124.1: Extract statusResolution using safe helper
+      const statusResolution = getStatusResolution(response)
 
       // FEATURE 075: Determinar si fue realmente permitido (con confirmación)
       const allowed = response.success !== false
@@ -249,20 +280,25 @@ export function Execute() {
         reason = response.error || (response as unknown as { reason?: string }).reason || 'Bloqueado por politicas de seguridad'
       }
 
-      // FIX 077 + FEATURE 090: Determinar status correcto
+      // FIX 077 + FEATURE 090 + FIX 124.1: Determinar status correcto
+      // FIX 124.1: statusResolution.finalUiStatus tiene prioridad absoluta
       let resultStatus: ResultStatus
-      // FEATURE 090: Detectar missing_capability primero
-      const isMissingCapability = response.error === 'Missing capability' || !!toolProposalId
-      if (isMissingCapability) {
-        resultStatus = 'missing_capability'
-      } else if (!allowed) {
-        // Diferenciar si fue bloqueado por Hub o error tecnico
-        const hubBlocked = debugSnapshot?.hubAllowed === false || reason?.includes('Hub') || reason?.includes('Blocked')
-        resultStatus = hubBlocked ? 'blocked' : 'error'
-      } else if (!executionConfirmed) {
-        resultStatus = 'unconfirmed'
+      if (statusResolution?.finalUiStatus) {
+        // FIX 124.1: Backend ya resolvió el estado correcto
+        resultStatus = statusResolution.finalUiStatus
       } else {
-        resultStatus = 'allowed'
+        // Fallback a lógica legacy solo si no hay statusResolution
+        const isMissingCapability = response.error === 'Missing capability' || !!toolProposalId
+        if (isMissingCapability) {
+          resultStatus = 'missing_capability'
+        } else if (!allowed) {
+          const hubBlocked = debugSnapshot?.hubAllowed === false || reason?.includes('Hub') || reason?.includes('Blocked')
+          resultStatus = hubBlocked ? 'blocked' : 'error'
+        } else if (!executionConfirmed) {
+          resultStatus = 'unconfirmed'
+        } else {
+          resultStatus = 'allowed'
+        }
       }
 
       // FEATURE 090: Construir toolProposalInfo si existe
@@ -659,14 +695,16 @@ export function Execute() {
           error={!result?.allowed && result?.reason ? result.reason : undefined}
           debugSnapshot={result?.debugSnapshot}
           requestId={result?.requestId}
+          statusResolution={result?.statusResolution}
         />
 
-        {/* FEATURE 075/080: DebugPanel al final con taskId */}
+        {/* FEATURE 075/080/FIX 124.1: DebugPanel al final con taskId y statusResolution */}
         {result && !loading && (
           <DebugPanel
             debugSnapshot={result.debugSnapshot}
             collapsed={true}
             taskId={result.taskId}
+            statusResolution={result.statusResolution}
           />
         )}
 

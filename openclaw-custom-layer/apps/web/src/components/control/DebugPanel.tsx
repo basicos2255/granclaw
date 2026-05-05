@@ -2,9 +2,11 @@
  * DebugPanel - Panel de depuracion de ejecucion
  * FEATURE 075: Debug Snapshot & Bottom Status Bar
  * FEATURE 080: Task System v1 - mostrar taskId
+ * FIX 124.1: Show statusResolution section
  */
 
 import { useState } from 'react'
+import type { StatusResolution } from './SecurityResultPanel'
 
 /**
  * FEATURE 075: Debug Snapshot del backend
@@ -33,6 +35,8 @@ interface DebugPanelProps {
   collapsed?: boolean
   // FEATURE 080: Task ID
   taskId?: string
+  // FIX 124.1: Status resolution
+  statusResolution?: StatusResolution
 }
 
 /**
@@ -57,7 +61,7 @@ function sourceText(source?: string): string {
   }
 }
 
-export function DebugPanel({ debugSnapshot, collapsed = true, taskId }: DebugPanelProps) {
+export function DebugPanel({ debugSnapshot, collapsed = true, taskId, statusResolution }: DebugPanelProps) {
   const [isCollapsed, setIsCollapsed] = useState(collapsed)
   const [showRaw, setShowRaw] = useState(false)
 
@@ -264,6 +268,54 @@ export function DebugPanel({ debugSnapshot, collapsed = true, taskId }: DebugPan
               <span style={{ color: '#dc2626', fontWeight: '500' }}>
                 {debugSnapshot.error}
               </span>
+            </div>
+          )}
+
+          {/* FIX 124.1: Status Resolution section */}
+          {statusResolution && (
+            <div style={{
+              marginTop: '12px',
+              padding: '12px',
+              backgroundColor: statusResolution.severity === 'success' ? '#ecfdf5' :
+                              statusResolution.severity === 'warning' ? '#fffbeb' :
+                              statusResolution.severity === 'error' ? '#fef2f2' : '#f8fafc',
+              borderRadius: '6px',
+              border: `1px solid ${
+                statusResolution.severity === 'success' ? '#a7f3d0' :
+                statusResolution.severity === 'warning' ? '#fde68a' :
+                statusResolution.severity === 'error' ? '#fecaca' : '#e2e8f0'
+              }`
+            }}>
+              <div style={{ ...labelStyle, marginBottom: '8px' }}>Status Resolution (FIX 124)</div>
+              <div style={rowStyle}>
+                <span style={labelStyle}>Hub Decision</span>
+                <span style={valueStyle(statusResolution.hubDecision === 'allowed')}>
+                  {statusResolution.hubDecision === 'allowed' ? 'Permitido' : 'Bloqueado'}
+                </span>
+              </div>
+              <div style={rowStyle}>
+                <span style={labelStyle}>Execution Status</span>
+                <span style={{ fontWeight: '500', color: '#475569' }}>
+                  {statusResolution.executionStatus}
+                </span>
+              </div>
+              <div style={rowStyle}>
+                <span style={labelStyle}>Final UI Status</span>
+                <span style={{
+                  fontWeight: '600',
+                  color: statusResolution.severity === 'success' ? '#059669' :
+                        statusResolution.severity === 'warning' ? '#d97706' :
+                        statusResolution.severity === 'error' ? '#dc2626' : '#475569'
+                }}>
+                  {statusResolution.title}
+                </span>
+              </div>
+              <div style={rowStyle}>
+                <span style={labelStyle}>Mensaje</span>
+                <span style={{ color: '#475569', fontSize: '12px' }}>
+                  {statusResolution.message}
+                </span>
+              </div>
             </div>
           )}
 

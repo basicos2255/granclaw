@@ -2,10 +2,12 @@
  * StatusBar - Barra de estado/debug al final del contenido
  * FEATURE 074: Execution Guarantees & Status Bar
  * FEATURE 075: Debug Snapshot & Bottom Status Bar (no fixed)
+ * FIX 124.1: Use statusResolution for status display
  */
 
 import { useState } from 'react'
 import type { DebugSnapshot } from './DebugPanel'
+import type { StatusResolution } from './SecurityResultPanel'
 
 /**
  * Estado del adaptador
@@ -47,6 +49,9 @@ interface StatusBarProps {
   // FEATURE 075: Debug snapshot
   debugSnapshot?: DebugSnapshot
   requestId?: string
+
+  // FIX 124.1: Status resolution from backend
+  statusResolution?: StatusResolution
 }
 
 /**
@@ -100,7 +105,8 @@ export function StatusBar({
   warning,
   error,
   debugSnapshot,
-  requestId
+  requestId,
+  statusResolution
 }: StatusBarProps) {
   const [expanded, setExpanded] = useState(false)
 
@@ -130,12 +136,24 @@ export function StatusBar({
   const hasWarning = !!warning || (hasResult && !hasTrace) || isMock || (hasResult && !executionConfirmed)
   const hasError = !!error || (hasResult && allowed === false)
 
-  // Colores
-  const bgColor = hasError ? '#fef2f2' : hasWarning ? '#fffbeb' : hasResult ? '#ecfdf5' : '#f8fafc'
-  const borderColor = hasError ? '#fecaca' : hasWarning ? '#fde68a' : hasResult ? '#a7f3d0' : '#e2e8f0'
-  const textColor = hasError ? '#dc2626' : hasWarning ? '#d97706' : hasResult ? '#059669' : '#64748b'
+  // Colores - FIX 124.1: Use statusResolution.severity if available
+  const getColorsFromSeverity = () => {
+    if (statusResolution) {
+      switch (statusResolution.severity) {
+        case 'success': return { bg: '#ecfdf5', border: '#a7f3d0', text: '#059669' }
+        case 'warning': return { bg: '#fffbeb', border: '#fde68a', text: '#d97706' }
+        case 'error': return { bg: '#fef2f2', border: '#fecaca', text: '#dc2626' }
+        default: return { bg: '#f8fafc', border: '#e2e8f0', text: '#64748b' }
+      }
+    }
+    return null
+  }
+  const severityColors = getColorsFromSeverity()
+  const bgColor = severityColors?.bg || (hasError ? '#fef2f2' : hasWarning ? '#fffbeb' : hasResult ? '#ecfdf5' : '#f8fafc')
+  const borderColor = severityColors?.border || (hasError ? '#fecaca' : hasWarning ? '#fde68a' : hasResult ? '#a7f3d0' : '#e2e8f0')
+  const textColor = severityColors?.text || (hasError ? '#dc2626' : hasWarning ? '#d97706' : hasResult ? '#059669' : '#64748b')
 
-  // Texto principal - FEATURE 075: resumen claro
+  // Texto principal - FEATURE 075 + FIX 124.1: resumen claro
   let statusParts: string[] = ['GranClaw']
 
   if (isExecuting) {
@@ -144,6 +162,15 @@ export function StatusBar({
       case 'connecting': statusParts.push('Conectando...'); break
       case 'executing': statusParts.push('Ejecutando...'); break
       default: statusParts.push('Procesando...')
+    }
+  } else if (statusResolution) {
+    // FIX 124.1: Use statusResolution.title as primary source
+    statusParts.push(statusResolution.title)
+    if (source && source !== 'unknown') {
+      statusParts.push(getSourceShort(source))
+    }
+    if (!statusResolution.executionConfirmed && statusResolution.finalUiStatus !== 'blocked') {
+      statusParts.push('Ejecución no confirmada')
     }
   } else if (hasError) {
     statusParts.push(allowed === false ? 'Bloqueado' : 'Error')
@@ -293,7 +320,7 @@ export function StatusBar({
             <div style={itemStyle}>
               <div style={labelStyle}>Estado</div>
               <div style={{ ...valueStyle, color: textColor }}>
-                {hasError ? (allowed === false ? 'Bloqueado' : 'Error') : 'Permitido'}
+                {statusResolution ? statusResolution.title : (hasError ? (allowed === false ? 'Bloqueado' : 'Error') : 'Permitido')}
               </div>
             </div>
 

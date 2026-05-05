@@ -4526,3 +4526,69 @@ Separar siempre:
 - ✅ setup_required muestra link a configuración
 - ✅ npm run check sin errores
 - ✅ npm run build exitoso
+
+---
+
+## FIX 124.1 - UI Status Binding to statusResolution
+
+**Fecha**: 2026-05-05
+**Estado**: Completado
+
+### Problema
+
+Aunque FIX 124 añadió statusResolution en backend, la pantalla /control seguía mostrando:
+- "PERMITIDO" cuando debería mostrar "CONFIGURACIÓN REQUERIDA"
+- "PERMITIDO" cuando debería mostrar "REAUTORIZACIÓN REQUERIDA"
+
+Causa: resultStatus se calculaba con lógica legacy antes de usar statusResolution.
+
+### Principio
+
+**statusResolution.finalUiStatus manda sobre decision.allowed**
+
+No debe mostrarse "PERMITIDO" si statusResolution indica:
+- setup_required
+- reauthorization_required
+- failed
+- pending_confirmation
+- partial
+
+### Solución
+
+1. **Helper getStatusResolution** (Execute.tsx):
+   - Busca statusResolution en múltiples ubicaciones: response.statusResolution, response.data?.statusResolution, response.meta?.statusResolution
+   - Seguro para tipos: valida que sea objeto antes de usarlo
+
+2. **resultStatus prioritiza statusResolution** (Execute.tsx):
+   - Si statusResolution?.finalUiStatus existe, se usa directamente
+   - Lógica legacy solo se usa como fallback
+
+3. **StatusBar actualizado**:
+   - Nueva prop: statusResolution
+   - Usa statusResolution.title en lugar de inferir de allowed/blocked
+   - Colores basados en statusResolution.severity
+
+4. **DebugPanel actualizado**:
+   - Nueva prop: statusResolution
+   - Sección "Status Resolution (FIX 124)" con:
+     - Hub Decision
+     - Execution Status
+     - Final UI Status
+     - Mensaje
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/web/src/pages/control/Execute.tsx | getStatusResolution helper, resultStatus usa finalUiStatus primero |
+| apps/web/src/components/control/StatusBar.tsx | Nueva prop statusResolution, usa title/severity |
+| apps/web/src/components/control/DebugPanel.tsx | Nueva prop statusResolution, sección visual |
+
+### Verificaciones
+
+- ✅ getStatusResolution helper creado
+- ✅ resultStatus prioriza statusResolution.finalUiStatus
+- ✅ StatusBar usa statusResolution
+- ✅ DebugPanel muestra statusResolution
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso

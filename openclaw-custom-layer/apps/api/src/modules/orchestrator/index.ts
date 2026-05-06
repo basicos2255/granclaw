@@ -7,3 +7,5 @@ export * from './output-normalizer'
 export * from './reauth-detector'
 // FIX 126: Timeout recovery for multistep tasks
 export * from './timeout-recovery'
+// FEATURE 130: Task memory integration for pattern reuse
+export * from './task-memory-integration'

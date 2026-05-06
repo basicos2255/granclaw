@@ -69,6 +69,15 @@ import {
   handleGetRepairHistory
 } from './modules/openclaw-repair'
 import { handleOrchestratorRun, handleOrchestratorRunStream } from './modules/orchestrator'
+// FEATURE 130: Task Memory routes
+import {
+  handleGetPatterns,
+  handleGetStats,
+  handleFindPattern,
+  handleDeletePattern,
+  handleClearPatterns,
+  handleNormalizeInput
+} from './modules/task-memory'
 import { handleLogin, handleGetMe, handleRegister, handleLogout } from './modules/auth'
 import { handleListTools, handleGetTool } from './modules/tools'
 import { handleGetAllConfig, handleGetTenantConfig, handleSetTenantConfig, handleDeleteTenantConfig } from './modules/granclaw-hub'
@@ -142,7 +151,10 @@ const getRoutes: Record<string, RouteHandler> = {
   '/execution-policy': handleGetExecutionPolicy,
   // FIX 125: OpenClaw Repair routes
   '/openclaw/repair/active': handleGetActiveRepairs,
-  '/openclaw/repair/history': handleGetRepairHistory
+  '/openclaw/repair/history': handleGetRepairHistory,
+  // FEATURE 130: Task Memory routes
+  '/task-memory/patterns': handleGetPatterns,
+  '/task-memory/stats': handleGetStats
 }
 
 // POST routes
@@ -168,7 +180,11 @@ const postRoutes: Record<string, RouteHandler> = {
   // FIX 125: OpenClaw Repair routes
   '/openclaw/repair/start': handleStartRepair,
   // FIX 126: Execute steps for timeout recovery
-  '/tasks/execute-steps': handleExecuteSteps
+  '/tasks/execute-steps': handleExecuteSteps,
+  // FEATURE 130: Task Memory routes
+  '/task-memory/find': handleFindPattern,
+  '/task-memory/normalize': handleNormalizeInput,
+  '/task-memory/clear': handleClearPatterns
 }
 
 // Rutas dinámicas con parámetros
@@ -253,6 +269,11 @@ const postDynamicRoutes: DynamicRoute[] = [
   }
 ]
 
+// FEATURE 130: Wrapper for task memory delete
+const wrapDeletePatternHandler: DynamicRouteHandler = (req, res, param, _context) => {
+  handleDeletePattern(req, res, param)
+}
+
 const deleteDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/granclaw-hub\/config\/([^/]+)$/,
@@ -262,6 +283,11 @@ const deleteDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/capabilities\/([^/]+)$/,
     handler: handleDeleteCapability
+  },
+  // FEATURE 130: Task Memory delete pattern
+  {
+    pattern: /^\/task-memory\/patterns\/([^/]+)$/,
+    handler: wrapDeletePatternHandler
   }
 ]
 

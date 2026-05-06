@@ -52,6 +52,13 @@ import {
 } from '../execution-policy'
 // FIX 124: Final Execution Status Resolution
 import { resolveFinalExecutionStatus, type ResolvedExecutionStatus } from '../execution-status'
+// FEATURE 130: Task memory integration for pattern reuse
+import {
+  checkTaskMemory,
+  learnFromExecution,
+  getExecutionPlanFromPattern,
+  recordPatternExecution
+} from './task-memory-integration'
 
 /**
  * FIX 111: Capability execution is now handled by capability-dispatcher.ts
@@ -350,6 +357,103 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           detail: routeDecision.reason
         })
 
+        // FEATURE 130: Check task memory for reusable pattern BEFORE calling OpenClaw
+        const taskMemoryCheck = checkTaskMemory({
+          input: input.message,
+          tenantId: context.tenant.id,
+          userId: context.user.id
+        })
+
+        if (taskMemoryCheck.canReuse && taskMemoryCheck.pattern) {
+          console.log(`[GranClaw] FEATURE 130: Reusing cached pattern ${taskMemoryCheck.pattern.id}`)
+
+          trace.addStep({
+            stage: 'task-memory',
+            status: 'success',
+            label: 'Patrón reutilizado (sin AI)',
+            detail: `${taskMemoryCheck.reason} - ${taskMemoryCheck.pattern.steps.length} pasos`
+          })
+
+          const executionPlan = getExecutionPlanFromPattern({
+            pattern: taskMemoryCheck.pattern,
+            tenantId: context.tenant.id,
+            userId: context.user.id
+          })
+
+          // Record the reuse
+          recordPatternExecution(executionPlan.patternId, true, executionPlan.estimatedDuration)
+
+          const debugSnapshot = trace.getDebugSnapshot()
+          debugSnapshot.source = 'task-memory'
+          debugSnapshot.executionConfirmed = true
+          logDebug(debugSnapshot)
+
+          completeTask(
+            task.id,
+            'success',
+            {
+              steps: executionPlan.steps,
+              fromPattern: true,
+              patternId: executionPlan.patternId,
+              tokensEstimatedSaved: executionPlan.tokensEstimatedSaved
+            },
+            'task-memory',
+            trace.getSteps(),
+            debugSnapshot,
+            trace.getTotalDurationMs()
+          )
+
+          const statusResolution = resolveFinalExecutionStatus({
+            hubAllowed: true,
+            hubBlocked: false,
+            result: { success: true, executionStatus: 'executed' },
+            source: 'task-memory',
+            meta: { executionConfirmed: true, fromTaskMemory: true }
+          })
+
+          ok(res, {
+            success: true,
+            result: {
+              steps: executionPlan.steps,
+              fromPattern: true,
+              patternId: executionPlan.patternId,
+              tokensEstimatedSaved: executionPlan.tokensEstimatedSaved,
+              message: `Ejecutado usando patrón aprendido (${taskMemoryCheck.pattern.executionCount} ejecuciones previas)`
+            },
+            statusResolution,
+            meta: {
+              requestId: trace.requestId,
+              taskId: task.id,
+              hubDecision: hubResult.decisionLog,
+              executionTrace: trace.getSteps(),
+              executionDurationMs: trace.getTotalDurationMs(),
+              tenantId: context.tenant.id,
+              source: 'task-memory',
+              adapterStatus,
+              debugSnapshot,
+              taskMemory: {
+                patternId: executionPlan.patternId,
+                tokensEstimatedSaved: executionPlan.tokensEstimatedSaved,
+                patternExecutions: taskMemoryCheck.pattern.executionCount,
+                patternSuccessRate: taskMemoryCheck.pattern.successRate
+              },
+              routerDecision: {
+                provider: 'task-memory',
+                reason: 'Patrón reutilizado',
+                intentKind: intent.kind,
+                needsAi: false,
+                tokenSaving: true
+              }
+            }
+          })
+          return
+        }
+
+        // Log task memory check result (no reuse)
+        if (taskMemoryCheck.hasPattern) {
+          console.log(`[GranClaw] FEATURE 130: Pattern found but cannot reuse: ${taskMemoryCheck.reason}`)
+        }
+
         // Go to OpenClaw execution
         const taskInput: RunTaskInput = {
           ...input,
@@ -357,7 +461,9 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           message: hubResult.modifiedMessage || input.message
         }
 
+        const startTime = Date.now()
         const result = await runSimpleAgentTask(taskInput)
+        const executionDuration = Date.now() - startTime
 
         // FIX 122 + FIX 123: Detect reauth and update system state
         const reauthDetection = detectAndMarkReauthRequired(result, {
@@ -503,6 +609,25 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           taskStatus = 'success'
           // FIX 123.1: Record successful execution (resolves specific scope/capability)
           recordOpenClawSuccess({ scopeKey, capabilityKey })
+
+          // FEATURE 130: Learn from successful execution
+          const learnResult = learnFromExecution({
+            originalInput: input.message,
+            steps: trace.getSteps().map((step, idx) => ({
+              id: `step-${idx}`,
+              order: idx + 1,
+              description: step.label || '',
+              input: input.message,
+              status: step.status === 'success' ? 'completed' : 'pending',
+              dependsOnPrevious: idx > 0,
+              estimatedDuration: 'medium' as const
+            })),
+            success: true,
+            duration: executionDuration,
+            scopeKey,
+            capabilityKey
+          })
+          console.log(`[GranClaw] FEATURE 130: ${learnResult.reason}`)
         }
 
         completeTask(

@@ -5053,3 +5053,193 @@ normalizeRepairSession(session, index)  // openclaw-repair
 - ✅ Pulsar "Ir a Configuración" desde CONFIGURACIÓN REQUERIDA: navega correctamente
 - ✅ npm run check sin errores
 - ✅ npm run build exitoso
+
+---
+
+## FEATURE 130 - Advanced Tasks (Persistent, Reusable, Optimized Execution)
+
+**Fecha**: 2026-05-06
+
+### Objetivo
+
+Implementar "memoria de tareas" que permite reutilizar patrones de ejecución aprendidos sin llamar a OpenClaw/AI, ahorrando tokens y mejorando tiempos de respuesta.
+
+### Problema
+
+- Cada petición idéntica o similar llamaba a OpenClaw
+- No había aprendizaje de tareas exitosas
+- Desperdicio de tokens en tareas repetidas
+- Sin optimización de ejecuciones frecuentes
+
+### Solución
+
+1. **Módulo task-memory**: Almacena patrones aprendidos de ejecuciones exitosas
+2. **Normalización de input**: Permite que "abre Chrome" y "abre chrome" coincidan
+3. **Reutilización antes de OpenClaw**: Si hay patrón válido, ejecuta sin AI
+4. **Learning después de ejecución**: Aprende de cada ejecución exitosa
+
+### Arquitectura
+
+```
+Input del usuario
+       ↓
+  Normalizar input
+       ↓
+  Buscar patrón
+       ↓
+  ¿Encontrado y confiable?
+     /          \
+   SÍ            NO
+    ↓             ↓
+ Ejecutar     OpenClaw
+ desde         ejecuta
+ patrón          ↓
+    ↓          Aprender
+ Registrar     patrón
+ reutilización
+```
+
+### TaskPattern (tipo principal)
+
+```typescript
+interface TaskPattern {
+  id: string
+  inputSignature: string      // Hash normalizado para matching
+  normalizedInput: string     // Input canónico
+  originalInputs: string[]    // Variantes que mapearon a este patrón
+  steps: TaskStep[]           // Pasos aprendidos
+  successRate: number         // 0-1, tasa de éxito
+  lastUsedAt: string          // Última vez usado
+  createdAt: string           // Cuando se creó
+  executionCount: number      // Veces ejecutado
+  avgDuration: number         // Duración promedio (ms)
+  metadata?: {
+    category?: string         // install, open, search, etc.
+    requiredScopes?: string[]
+    isMultiStep?: boolean
+    language?: 'es' | 'en'
+  }
+}
+```
+
+### Normalización de input
+
+```typescript
+normalizeTaskInput("Abre Chrome, por favor!!")
+// → "abre chrome favor por"
+
+// Proceso:
+// 1. Lowercase
+// 2. Eliminar puntuación
+// 3. Normalizar espacios
+// 4. Ordenar palabras (independiente del orden)
+```
+
+### Condiciones para reutilización
+
+- `successRate >= 0.7` (70% de éxito mínimo)
+- `confidence >= 0.8` (80% de similitud)
+- `executionCount >= 1` (al menos una ejecución previa)
+
+### API Endpoints
+
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| GET | /task-memory/patterns | Lista patrones (sort: recent, top) |
+| GET | /task-memory/stats | Estadísticas globales |
+| POST | /task-memory/find | Buscar patrón para input |
+| POST | /task-memory/normalize | Normalizar input (debug) |
+| POST | /task-memory/clear | Limpiar todos los patrones |
+| DELETE | /task-memory/patterns/:id | Eliminar patrón específico |
+
+### Archivos creados
+
+| Archivo | Descripción |
+|---------|-------------|
+| apps/api/src/modules/task-memory/types.ts | Tipos (TaskPattern, etc.) |
+| apps/api/src/modules/task-memory/service.ts | Persistencia y lógica |
+| apps/api/src/modules/task-memory/routes.ts | API handlers |
+| apps/api/src/modules/task-memory/index.ts | Exports |
+| apps/api/src/modules/orchestrator/task-memory-integration.ts | Integración con orchestrator |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/modules/orchestrator/routes.ts | +checkTaskMemory antes de OpenClaw, +learnFromExecution después |
+| apps/api/src/modules/orchestrator/trace.ts | +'task-memory' en stage y source types |
+| apps/api/src/modules/orchestrator/index.ts | +export task-memory-integration |
+| apps/api/src/modules/execution-status/types.ts | +fromTaskMemory en meta |
+| apps/api/src/index.ts | +rutas task-memory |
+
+### Funciones principales
+
+```typescript
+// Buscar patrón reutilizable (ANTES de OpenClaw)
+checkTaskMemory({ input, tenantId, userId }): CheckTaskMemoryResult
+
+// Obtener plan de ejecución desde patrón
+getExecutionPlanFromPattern({ pattern, tenantId, userId }): ExecuteFromPatternResult
+
+// Aprender de ejecución exitosa (DESPUÉS de OpenClaw)
+learnFromExecution({ originalInput, steps, success, duration, ... }): LearnFromExecutionResult
+
+// Registrar reutilización de patrón
+recordPatternExecution(patternId, success, duration): void
+```
+
+### Flujo en orchestrator/routes.ts
+
+```typescript
+// 1. Check task memory ANTES de OpenClaw
+const taskMemoryCheck = checkTaskMemory({ input, tenantId, userId })
+
+if (taskMemoryCheck.canReuse && taskMemoryCheck.pattern) {
+  // Usar patrón sin llamar a AI
+  const executionPlan = getExecutionPlanFromPattern({ pattern })
+  recordPatternExecution(patternId, true, duration)
+  // ... responder con result
+  return
+}
+
+// 2. Ejecutar via OpenClaw normalmente
+const result = await runSimpleAgentTask(taskInput)
+
+// 3. Aprender DESPUÉS de ejecución exitosa
+if (taskStatus === 'success') {
+  learnFromExecution({
+    originalInput,
+    steps: trace.getSteps(),
+    success: true,
+    duration: executionDuration,
+    scopeKey,
+    capabilityKey
+  })
+}
+```
+
+### Persistencia
+
+Archivo: `data/task-memory.json`
+
+```json
+{
+  "version": 1,
+  "patterns": [...],
+  "lastUpdated": "2026-05-06T...",
+  "stats": {
+    "totalPatterns": 10,
+    "totalExecutions": 50,
+    "tokensEstimatedSaved": 25000,
+    "avgSuccessRate": 0.92
+  }
+}
+```
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+- ✅ Tipos añadidos correctamente (task-memory stage/source)
+- ✅ Rutas API registradas
+- ✅ Integración con orchestrator completa

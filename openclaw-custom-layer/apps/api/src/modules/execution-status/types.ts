@@ -96,6 +96,7 @@ export interface StatusResolverInput {
     source?: string
     provider?: string
     pendingConfirmation?: boolean
+    fromTaskMemory?: boolean
   }
   /** Debug snapshot */
   debugSnapshot?: {

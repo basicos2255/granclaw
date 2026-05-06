@@ -12,7 +12,7 @@ export interface ExecutionTraceStep {
   id: string
   requestId?: string
   timestamp: string
-  stage: 'hub' | 'orchestrator' | 'openclaw' | 'tool' | 'result' | 'error'
+  stage: 'hub' | 'orchestrator' | 'openclaw' | 'tool' | 'result' | 'error' | 'task-memory'
   status: 'pending' | 'running' | 'success' | 'blocked' | 'error'
   label: string
   detail?: string
@@ -46,7 +46,7 @@ export interface DebugSnapshot {
   orchestratorCalled: boolean
   openclawCalled?: boolean
   toolCalled?: boolean
-  source?: 'openclaw' | 'tool' | 'mock' | 'fallback' | 'unknown' | 'granclaw' | 'error' | 'setup-required'
+  source?: 'openclaw' | 'tool' | 'mock' | 'fallback' | 'unknown' | 'granclaw' | 'error' | 'setup-required' | 'task-memory'
   executionConfirmed: boolean
   tracePresent: boolean
   error?: string

@@ -3,10 +3,12 @@
  * FEATURE 062: Refinamiento UI empresarial
  * FEATURE 063: UI v3 - badge de modo visible
  * FEATURE 064: UI SaaS moderna
+ * P1.2: Live notifications integration
  */
 
 import { TenantSelector } from './TenantSelector'
 import { ModeSelector } from './ModeSelector'
+import { NotificationBell, NotificationPanel, useNotificationPanel } from './NotificationPanel'
 
 interface GlobalHeaderProps {
   tenants: string[]
@@ -23,6 +25,9 @@ export function GlobalHeader({
   mode,
   onModeChange
 }: GlobalHeaderProps) {
+  // P1.2: Notification panel state
+  const { isOpen, toggle, unreadCount, close } = useNotificationPanel()
+
   const headerStyle: React.CSSProperties = {
     display: 'flex',
     justifyContent: 'space-between',
@@ -124,7 +129,13 @@ export function GlobalHeader({
             label="Modo"
           />
         </div>
+
+        {/* P1.2: Notification bell */}
+        <NotificationBell onClick={toggle} unreadCount={unreadCount} />
       </div>
+
+      {/* P1.2: Notification panel */}
+      <NotificationPanel isOpen={isOpen} onClose={close} />
     </header>
   )
 }

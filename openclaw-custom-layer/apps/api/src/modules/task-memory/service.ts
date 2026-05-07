@@ -6,10 +6,12 @@
  * Manages persistent task patterns for SAFE reuse without calling AI.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import os from 'os'
+// H1.1: Atomic persistence
+import { atomicWriteJson } from '../../shared/atomic-persistence'
 import type {
   TaskPattern,
   TaskMemoryState,
@@ -252,25 +254,31 @@ function migratePattern(p: Partial<TaskPattern>): TaskPattern {
 /**
  * Save state to disk
  */
+/**
+ * H1.1: Uses atomic write for crash safety
+ */
 function saveState(state: TaskMemoryState): void {
-  ensureDataDir()
+  // Update stats before saving
+  state.lastUpdated = new Date().toISOString()
+  state.stats.totalPatterns = state.patterns.filter(p => !p.invalidated).length
+  state.stats.invalidatedPatterns = state.patterns.filter(p => p.invalidated).length
+  state.stats.totalExecutions = state.patterns.reduce((sum, p) => sum + p.useCount, 0)
+  state.stats.totalFailures = state.patterns.reduce((sum, p) => sum + p.failureCount, 0)
+  state.stats.avgSuccessRate = state.patterns.length > 0
+    ? state.patterns.filter(p => !p.invalidated).reduce((sum, p) => sum + p.successRate, 0) /
+      Math.max(1, state.patterns.filter(p => !p.invalidated).length)
+    : 0
 
-  try {
-    state.lastUpdated = new Date().toISOString()
-    state.stats.totalPatterns = state.patterns.filter(p => !p.invalidated).length
-    state.stats.invalidatedPatterns = state.patterns.filter(p => p.invalidated).length
-    state.stats.totalExecutions = state.patterns.reduce((sum, p) => sum + p.useCount, 0)
-    state.stats.totalFailures = state.patterns.reduce((sum, p) => sum + p.failureCount, 0)
-    state.stats.avgSuccessRate = state.patterns.length > 0
-      ? state.patterns.filter(p => !p.invalidated).reduce((sum, p) => sum + p.successRate, 0) /
-        Math.max(1, state.patterns.filter(p => !p.invalidated).length)
-      : 0
+  const result = atomicWriteJson(MEMORY_FILE, state, {
+    createBackup: true,
+    ensureDir: true
+  })
 
-    writeFileSync(MEMORY_FILE, JSON.stringify(state, null, 2), 'utf-8')
+  if (result.success) {
     cachedState = state
-    console.log('[TaskMemory] State saved to disk')
-  } catch (err) {
-    console.error('[TaskMemory] Error saving state:', err)
+    console.log('[TaskMemory] State saved atomically')
+  } else {
+    console.error('[TaskMemory] Error saving state:', result.error)
   }
 }
 

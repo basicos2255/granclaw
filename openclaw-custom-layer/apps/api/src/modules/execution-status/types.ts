@@ -16,6 +16,7 @@ export type HubDecisionStatus = 'allowed' | 'blocked'
  */
 export type ExecutionStatus =
   | 'not_started'
+  | 'queued'    // H1.2: Queued for execution
   | 'executed'
   | 'pending_confirmation'
   | 'setup_required'
@@ -38,6 +39,7 @@ export type FinalUiStatus =
   | 'partial'
   | 'blocked'
   | 'timeout'  // FIX 126: Timeout Recovery
+  | 'queued'   // H1.2: Queue-first execution
 
 /**
  * Severity level for UI display

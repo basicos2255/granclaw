@@ -32,6 +32,11 @@ import {
   type DAGExecutionResponse
 } from '../dag-execution'
 import { saveGraphExecution, getGraphExecution } from '../dag-execution/persistence'
+// H1.2: Queue-first execution
+import {
+  shouldEnqueueExecution,
+  enqueueDagExecution
+} from '../runtime-queue'
 
 /**
  * GET /composite-tasks
@@ -205,7 +210,10 @@ export function handleExecuteCompositePlan(
         allowPartialCompletion = true,
         retryFailedSteps = false,
         maxRetries = 1,
-        forceLegacy = false  // FIX 131.1: Allow forcing legacy execution
+        forceLegacy = false,  // FIX 131.1: Allow forcing legacy execution
+        // H1.2: Queue-first options
+        forceQueue = false,
+        forceDirect = false
       } = data
 
       // Either provide input to build plan, or existing planId
@@ -280,7 +288,45 @@ export function handleExecuteCompositePlan(
           return
         }
 
-        // Execute DAG
+        // H1.2: Queue-first by default for composite DAG execution
+        const nodeCount = graphResult.graph.nodes.size
+        const queueDecision = shouldEnqueueExecution({
+          nodeCount,
+          usesExternalServices: true,
+          forceQueue,
+          forceBypass: forceDirect
+        })
+
+        // H1.2: Queue unless forceDirect
+        if (queueDecision.shouldQueue && !forceDirect) {
+          console.log(`[CompositeTasks] queueFirst: true, graphId=${graphResult.graph.id}, nodeCount=${nodeCount}, reason=${queueDecision.reason}`)
+          const enqueueResult = enqueueDagExecution(
+            {
+              graphId: graphResult.graph.id,
+              graph: graphResult.graph
+            },
+            {
+              tenantId: context.tenant.id,
+              userId: context.user.id
+            },
+            { priority: 'normal' }
+          )
+
+          ok(res, {
+            success: true,
+            queued: true,
+            queueFirst: true,  // H1.2: Trace
+            jobId: enqueueResult.jobId,
+            graphId: graphResult.graph.id,
+            plan,
+            executionMode: 'queued-composite-dag',
+            message: enqueueResult.message,
+            queueReason: queueDecision.reason
+          })
+          return
+        }
+
+        // Direct execution only for trivial plans or when forceDirect=true
         const dagConfig = getDagConfig()
         const dagResult = await executeGraph({
           graph: graphResult.graph,

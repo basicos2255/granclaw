@@ -17,6 +17,11 @@ import {
 } from './persistence'
 import { buildExecutionGraph, executeGraph, retryNode } from './index'
 import { getDagConfig, setDagConfig, createGraphSummary } from './dag-helper'
+// H1.1: Queue-first execution
+import {
+  shouldEnqueueExecution,
+  enqueueDagExecution
+} from '../runtime-queue'
 
 // In-memory graph cache for retry operations
 const graphCache: Map<string, import('./types').ExecutionGraph> = new Map()
@@ -153,7 +158,14 @@ export function handleSetDagConfig(
 
 /**
  * POST /dag/execute
- * Execute a DAG directly (for testing)
+ * Execute a DAG directly or via queue
+ * H1.1: Queue-first execution for complex graphs
+ *
+ * Body params:
+ * - steps: array of execution steps
+ * - sourceInput: original input
+ * - async: if true, queue and return job ID (default: false for backward compat)
+ * - forceQueue: always use queue regardless of graph complexity
  */
 export function handleExecuteDag(
   req: IncomingMessage,
@@ -178,7 +190,10 @@ export function handleExecuteDag(
         steps,
         sourceInput,
         stopOnFirstFailure = false,
-        allowPartialCompletion = true
+        allowPartialCompletion = true,
+        // H1.2: Queue-first options (queue by default for non-trivial DAGs)
+        forceQueue = false,
+        forceDirect = false
       } = data
 
       if (!steps || !Array.isArray(steps) || steps.length === 0) {
@@ -212,7 +227,44 @@ export function handleExecuteDag(
       // Cache graph for retry
       graphCache.set(graphResult.graph.id, graphResult.graph)
 
-      // Execute
+      // H1.2: Queue-first by default for non-trivial DAGs
+      const nodeCount = graphResult.graph.nodes.size
+      const queueDecision = shouldEnqueueExecution({
+        nodeCount,
+        usesExternalServices: true, // DAGs typically use external services
+        forceQueue,
+        forceBypass: forceDirect // Only bypass if explicitly forced
+      })
+
+      // H1.2: Queue by default unless forceDirect
+      if (queueDecision.shouldQueue && !forceDirect) {
+        console.log(`[DAGRoutes] queueFirst: true, graphId=${graphResult.graph.id}, nodeCount=${nodeCount}, reason=${queueDecision.reason}`)
+        const enqueueResult = enqueueDagExecution(
+          {
+            graphId: graphResult.graph.id,
+            graph: graphResult.graph
+          },
+          {
+            tenantId: context.tenant.id,
+            userId: context.user.id
+          },
+          { priority: 'normal' }
+        )
+
+        ok(res, {
+          success: true,
+          queued: true,
+          queueFirst: true,  // H1.2: Trace
+          jobId: enqueueResult.jobId,
+          graphId: graphResult.graph.id,
+          executionMode: 'queued-dag',
+          message: enqueueResult.message,
+          queueReason: queueDecision.reason
+        })
+        return
+      }
+
+      // Direct execution only for trivial DAGs or when forceDirect=true
       const dagConfig = getDagConfig()
       const result = await executeGraph({
         graph: graphResult.graph,

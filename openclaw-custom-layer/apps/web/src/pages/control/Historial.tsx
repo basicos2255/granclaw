@@ -4,19 +4,61 @@
  * FEATURE 062: Refinamiento visual empresarial
  * FEATURE 063: UI v3 - impacto visual en historial
  * FEATURE 080: Task System v1 - historial desde backend
+ * P1.2: Live WebSocket updates for realtime task updates
  */
 
 import { useState, useEffect } from 'react'
 import { api, type GranClawTask, type TaskStatus } from '../../services/api'
+import { useRuntimeWs, useRuntimeEvents } from '../../hooks/useRuntimeWs'
+
+/**
+ * P1.2: Workflow event payload type
+ */
+interface WorkflowEventPayload {
+  workflowId: string
+  graphId?: string
+  status: string
+  progress?: number
+  message?: string
+  taskId?: string
+}
 
 export function Historial() {
   const [tasks, setTasks] = useState<GranClawTask[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedTask, setSelectedTask] = useState<GranClawTask | null>(null)
 
+  // P1.2: Live WebSocket connection
+  const { isConnected } = useRuntimeWs()
+  const { lastEvent } = useRuntimeEvents<WorkflowEventPayload>('runtime', [
+    'workflow:created',
+    'workflow:start',
+    'workflow:complete',
+    'workflow:failed'
+  ])
+
+  // P1.2: Track new tasks indicator
+  const [newTasksCount, setNewTasksCount] = useState(0)
+
   useEffect(() => {
     loadTasks()
   }, [])
+
+  // P1.2: Listen for workflow events to auto-refresh
+  useEffect(() => {
+    if (lastEvent) {
+      const event = lastEvent.frame.event
+      // When a workflow completes or fails, increment new tasks counter
+      if (event === 'workflow:complete' || event === 'workflow:failed' || event === 'workflow:created') {
+        setNewTasksCount(prev => prev + 1)
+        // Auto-refresh after 1 second to allow task to be persisted
+        setTimeout(() => {
+          loadTasks()
+          setNewTasksCount(0)
+        }, 1000)
+      }
+    }
+  }, [lastEvent])
 
   const loadTasks = async () => {
     setLoading(true)
@@ -289,7 +331,45 @@ export function Historial() {
       <div style={containerStyle}>
         <div style={headerStyle}>
           <div>
-            <h1 style={titleStyle}>Historial de tareas</h1>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <h1 style={titleStyle}>Historial de tareas</h1>
+              {/* P1.2: Live connection indicator */}
+              {isConnected && (
+                <span style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '4px 10px',
+                  borderRadius: '20px',
+                  fontSize: '11px',
+                  fontWeight: '600',
+                  backgroundColor: '#dcfce7',
+                  color: '#16a34a'
+                }}>
+                  <span style={{
+                    width: '6px',
+                    height: '6px',
+                    borderRadius: '50%',
+                    backgroundColor: '#16a34a',
+                    animation: 'blink 1s infinite'
+                  }} />
+                  LIVE
+                </span>
+              )}
+              {/* P1.2: New tasks indicator */}
+              {newTasksCount > 0 && (
+                <span style={{
+                  padding: '4px 10px',
+                  borderRadius: '20px',
+                  fontSize: '11px',
+                  fontWeight: '600',
+                  backgroundColor: '#dbeafe',
+                  color: '#2563eb'
+                }}>
+                  +{newTasksCount} nuevas
+                </span>
+              )}
+            </div>
             <p style={subtitleStyle}>
               Registro de todas las acciones ejecutadas
             </p>
@@ -298,6 +378,14 @@ export function Historial() {
             Actualizar
           </button>
         </div>
+
+        {/* P1.2: CSS for animations */}
+        <style>{`
+          @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+          }
+        `}</style>
 
         {loading ? (
           <div style={loadingStyle}>Cargando historial...</div>

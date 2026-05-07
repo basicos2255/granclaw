@@ -2,20 +2,68 @@
  * Dashboard Page - Vista general del sistema
  * FEATURE 061: UI orientada a caso de uso
  * FEATURE 062: Refinamiento visual empresarial
+ * P1.2: Live WebSocket updates for realtime system status
  */
 
 import { useState, useEffect } from 'react'
 import { api } from '../../services/api'
 import { getHistory } from './Execute'
+import { useRuntimeWs, useQueueEvents, useRuntimeEvents } from '../../hooks/useRuntimeWs'
+
+/**
+ * P1.2: Queue pressure payload type
+ */
+interface QueuePressurePayload {
+  queuePressure?: {
+    pending: number
+    running: number
+    status: 'ok' | 'warning' | 'critical'
+  }
+}
+
+/**
+ * P1.2: System health payload type
+ */
+interface SystemHealthPayload {
+  status?: 'ok' | 'warning' | 'error'
+  memory?: { used: number; total: number }
+  cpu?: number
+}
 
 export function Dashboard() {
   const [tenantCount, setTenantCount] = useState(0)
   const [lastAction, setLastAction] = useState<{ allowed: boolean; message: string; tenantId: string } | null>(null)
   const [systemStatus, setSystemStatus] = useState<'ok' | 'error' | 'loading'>('loading')
 
+  // P1.2: Live WebSocket connection
+  const { isConnected } = useRuntimeWs()
+  const { lastEvent: queueEvent } = useQueueEvents()
+  const { lastEvent: systemEvent } = useRuntimeEvents<SystemHealthPayload>('runtime', ['system:health-change'])
+
+  // P1.2: Queue stats from live events
+  const [queueStats, setQueueStats] = useState({ pending: 0, running: 0, status: 'ok' as 'ok' | 'warning' | 'critical' })
+
   useEffect(() => {
     loadData()
   }, [])
+
+  // P1.2: Update queue stats from WebSocket events
+  useEffect(() => {
+    if (queueEvent?.payload) {
+      const payload = queueEvent.payload as QueuePressurePayload
+      if (payload.queuePressure) {
+        setQueueStats(payload.queuePressure)
+      }
+    }
+  }, [queueEvent])
+
+  // P1.2: Update system status from WebSocket events
+  useEffect(() => {
+    if (systemEvent?.payload?.status) {
+      const status = systemEvent.payload.status
+      setSystemStatus(status === 'warning' ? 'ok' : status)
+    }
+  }, [systemEvent])
 
   const loadData = async () => {
     try {
@@ -159,6 +207,66 @@ export function Dashboard() {
             </div>
           </div>
 
+          {/* P1.2: Live WebSocket connection status */}
+          <div style={cardStyle}>
+            <div style={cardTitleStyle}>Conexión Live</div>
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '10px 20px',
+              borderRadius: '24px',
+              backgroundColor: isConnected ? green : '#9ca3af',
+              color: 'white',
+              fontWeight: '600',
+              fontSize: '15px'
+            }}>
+              {isConnected ? (
+                <>
+                  <span style={{
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    backgroundColor: 'white',
+                    animation: 'pulse 2s infinite'
+                  }} />
+                  Conectado
+                </>
+              ) : (
+                '⚫ Desconectado'
+              )}
+            </div>
+          </div>
+
+          {/* P1.2: Queue stats from live events */}
+          <div style={cardStyle}>
+            <div style={cardTitleStyle}>Cola de tareas</div>
+            <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontSize: '28px', fontWeight: 'bold', color: '#2563eb' }}>
+                  {queueStats.running}
+                </div>
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>Ejecutando</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '28px', fontWeight: 'bold', color: '#6b7280' }}>
+                  {queueStats.pending}
+                </div>
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>Pendientes</div>
+              </div>
+              <div style={{
+                padding: '4px 10px',
+                borderRadius: '20px',
+                fontSize: '11px',
+                fontWeight: '600',
+                backgroundColor: queueStats.status === 'ok' ? '#dcfce7' : (queueStats.status === 'warning' ? '#fef3c7' : '#fee2e2'),
+                color: queueStats.status === 'ok' ? '#16a34a' : (queueStats.status === 'warning' ? '#d97706' : '#dc2626')
+              }}>
+                {queueStats.status.toUpperCase()}
+              </div>
+            </div>
+          </div>
+
           <div style={{ ...cardStyle, gridColumn: '1 / -1' }}>
             <div style={cardTitleStyle}>Última acción</div>
             {lastAction ? (
@@ -177,6 +285,14 @@ export function Dashboard() {
             )}
           </div>
         </div>
+
+        {/* P1.2: CSS for animations */}
+        <style>{`
+          @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+          }
+        `}</style>
       </div>
     </div>
   )

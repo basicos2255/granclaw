@@ -9,6 +9,8 @@ import fs from 'fs'
 import path from 'path'
 import type { ExecutionGraph, ExecuteGraphResult, ExecutionProgressEvent } from './types'
 import type { GraphSummary } from './dag-helper'
+// H1.1: Atomic persistence
+import { atomicWriteJson } from '../../shared/atomic-persistence'
 
 /**
  * Graph execution state (persisted)
@@ -94,22 +96,26 @@ function initialize(): void {
 
 /**
  * Save state to disk
+ * H1.1: Uses atomic write for crash safety
  */
 function saveState(): void {
-  try {
-    const executions = Array.from(executionCache.values())
-      .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
-      .slice(0, MAX_EXECUTIONS)
+  const executions = Array.from(executionCache.values())
+    .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+    .slice(0, MAX_EXECUTIONS)
 
-    const state: PersistenceState = {
-      version: 1,
-      executions,
-      lastUpdated: new Date().toISOString()
-    }
+  const state: PersistenceState = {
+    version: 1,
+    executions,
+    lastUpdated: new Date().toISOString()
+  }
 
-    fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2))
-  } catch (err) {
-    console.error('[DAGPersistence] Error saving state:', err)
+  const result = atomicWriteJson(DATA_FILE, state, {
+    createBackup: true,
+    ensureDir: true
+  })
+
+  if (!result.success) {
+    console.error('[DAGPersistence] Error saving state:', result.error)
   }
 }
 

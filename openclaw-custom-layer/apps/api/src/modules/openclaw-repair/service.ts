@@ -6,9 +6,11 @@
  * Manages repair sessions for OpenClaw pairing/scope recovery.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
+// H1.1: Atomic persistence
+import { atomicWriteJson } from '../../shared/atomic-persistence'
 import type {
   RepairSession,
   RepairSessionStatus,
@@ -107,17 +109,21 @@ function loadSessions(): RepairSessionsState {
 
 /**
  * Save sessions to disk
+ * H1.1: Uses atomic write for crash safety
  */
 function saveSessions(state: RepairSessionsState): void {
-  ensureDataDir()
+  state.lastUpdated = new Date().toISOString()
 
-  try {
-    state.lastUpdated = new Date().toISOString()
-    writeFileSync(SESSIONS_FILE, JSON.stringify(state, null, 2), 'utf-8')
+  const result = atomicWriteJson(SESSIONS_FILE, state, {
+    createBackup: true,
+    ensureDir: true
+  })
+
+  if (result.success) {
     cachedState = state
-    console.log('[OpenClawRepair] Sessions saved to disk')
-  } catch (err) {
-    console.error('[OpenClawRepair] Error saving sessions:', err)
+    console.log('[OpenClawRepair] Sessions saved atomically')
+  } else {
+    console.error('[OpenClawRepair] Error saving sessions:', result.error)
   }
 }
 
@@ -147,14 +153,16 @@ function loadHistory(): RepairHistoryEvent[] {
 
 /**
  * Save history to disk
+ * H1.1: Uses atomic write for crash safety
  */
 function saveHistory(): void {
-  ensureDataDir()
+  const result = atomicWriteJson(HISTORY_FILE, historyEvents, {
+    createBackup: true,
+    ensureDir: true
+  })
 
-  try {
-    writeFileSync(HISTORY_FILE, JSON.stringify(historyEvents, null, 2), 'utf-8')
-  } catch (err) {
-    console.error('[OpenClawRepair] Error saving history:', err)
+  if (!result.success) {
+    console.error('[OpenClawRepair] Error saving history:', result.error)
   }
 }
 

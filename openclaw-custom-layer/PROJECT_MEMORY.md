@@ -6495,3 +6495,371 @@ Startup
 - ✅ Queue dashboard UI
 - ✅ npm run check sin errores
 - ✅ npm run build exitoso
+
+---
+
+## P1.1 — Foundation Audit
+
+**Fecha**: 2026-05-07
+**Estado**: FASE 0 COMPLETADA
+
+### 0.1 Verificación Técnica
+
+- ✅ `npm run check` - Sin errores TypeScript
+- ✅ `npm run build:web` - Build exitoso
+
+### 0.2 Auditoría de Rutas Críticas
+
+**Hallazgo y corrección**: Las rutas `/queue/*` del módulo `runtime-queue/routes.ts` NO estaban registradas en `index.ts`.
+
+**Correcciones aplicadas**:
+1. Añadidos imports de handlers de queue en `index.ts`
+2. Registradas rutas GET: `/queue/stats`, `/queue/jobs`, `/queue/dead-letter`, `/queue/events`, `/queue/health`
+3. Registradas rutas POST: `/queue/pause`, `/queue/resume`, `/queue/dead-letter/clear`
+4. Añadidas rutas dinámicas GET: `/queue/jobs/:id`, `/queue/events/:correlationId`
+5. Añadidas rutas dinámicas POST: `/queue/jobs/:id/cancel`, `/queue/dead-letter/:id/requeue`
+6. Añadidas rutas dinámicas DELETE: `/queue/dead-letter/:id`
+
+**Rutas verificadas**:
+| Ruta | Estado |
+|------|--------|
+| `/health` | ✅ Registrada |
+| `/auth/*` | ✅ Registradas |
+| `/control/*` | ✅ Registradas (via orchestrator, tasks, capabilities) |
+| `/queue/*` | ✅ CORREGIDAS - ahora registradas |
+| `/repair/*` | ✅ Registradas |
+| `/dag/*` | ✅ Registradas |
+| `/composite/*` | ✅ Registradas |
+
+### 0.3 Verificación de Flujo de Módulos
+
+**Conexiones verificadas**:
+- ✅ `orchestrator` → `task-memory-integration` (checkTaskMemory, learnFromExecution)
+- ✅ `composite-tasks` → `dag-execution` (imports y usa executor)
+- ✅ `dag-execution` → `orchestrator/service` (runSimpleAgentTask)
+- ✅ `tasks` → `orchestrator/service` (runSimpleAgentTask)
+
+**Hallazgo**: `runtime-queue` NO está integrado en el flujo de `orchestrator`.
+- El módulo está completo (queue, scheduler, persistence, recovery)
+- Las rutas ahora están registradas
+- PERO el orchestrator no encola jobs - ejecución sigue siendo síncrona
+- **Estado**: Infraestructura lista para integración futura
+
+### 0.4 Auditoría de UI Crítica
+
+| Página | Estado | Notas |
+|--------|--------|-------|
+| `/control/setup` | ✅ Robusto | FIX 125.1: normalizeRequirement, normalizeRepairSession, safe helpers |
+| `/control/settings` | ✅ Robusto | Manejo de policy null/undefined |
+| `/control` (Dashboard) | ✅ Robusto | Loading state, null checks para hubResponse y lastAction |
+| `/tasks` | ✅ Robusto | Error handling, empty state |
+
+### 0.5 Auditoría de Persistencia Atómica
+
+**Hallazgo**: Existe `shared/atomic-persistence.ts` pero no está universalmente adoptada.
+
+| Módulo | Usa Atomic | Archivo |
+|--------|-----------|---------|
+| `runtime-queue/persistence.ts` | ✅ Sí | atomicWrite local |
+| `composite-tasks/service.ts` | ❌ No | writeFileSync directo |
+| `dag-execution/persistence.ts` | ❌ No | writeFileSync directo |
+| `system-state/service.ts` | ❌ No | writeFileSync directo |
+| `task-memory/service.ts` | ❌ No | writeFileSync directo |
+| `openclaw-repair/service.ts` | ❌ No | writeFileSync directo |
+| `storage/file-db.ts` | ❌ No | writeFileSync directo |
+
+**Estado**: Infraestructura lista, adopción pendiente (riesgo bajo - datos no críticos para corrupción)
+
+### 0.6 Resumen Foundation Audit
+
+| Check | Estado | Acción |
+|-------|--------|--------|
+| Build/Check | ✅ PASS | - |
+| Rutas críticas | ✅ CORREGIDO | /queue/* registradas |
+| Flujo módulos | ⚠️ INFO | runtime-queue no integrado (intencional - fase futura) |
+| UI crítica | ✅ PASS | Sin crashes potenciales |
+| Persistencia atómica | ⚠️ INFO | Helper existe, adopción parcial |
+
+**FASE 0 RESULTADO**: ✅ APTO PARA CONTINUAR A FASES 1-8
+
+### Próximos pasos (FASES 1-8 Product Shell)
+
+1. **FASE 1**: Dashboard Shell - Vista general unificada
+2. **FASE 2**: Task Admin Shell - Gestión de tareas/capabilities
+3. **FASE 3**: Notifications Shell - Sistema de alertas
+4. **FASE 4**: Channels Shell - Configuración de canales
+5. **FASE 5**: Credentials Shell - Gestión de credenciales
+6. **FASE 6**: Settings Shell - Configuración global
+7. **FASE 7**: UX Shell - Navegación y layout
+8. **FASE 8**: Verification - Verificación final
+
+---
+
+## H1.1 — Runtime Integration Finalization
+
+**Fecha**: 2026-05-07
+**Estado**: COMPLETADO
+
+### Objetivo
+
+Consolidar el runtime antes de Product Shell:
+- Queue-first execution para workflows largos
+- Persistencia atómica completa
+- Endpoint unificado /runtime/state
+
+### Cambios Principales
+
+#### 1. Execution Integration (`execution-integration.ts`)
+
+```typescript
+// Decide si encolar o ejecutar directo
+shouldEnqueueExecution(criteria: ExecutionCriteria)
+
+// Helpers para encolar
+enqueueDagExecution(payload, context, options)
+enqueueCompositeTask(payload, context, options)
+enqueueSimpleTask(payload, options)
+
+// Handlers registrados
+initializeExecutionHandlers() // dag-execution, composite-task, simple-task
+```
+
+#### 2. Atomic Persistence
+
+Migrados a `atomicWriteJson()`:
+- system-state/service.ts
+- task-memory/service.ts
+- composite-tasks/service.ts
+- dag-execution/persistence.ts
+- openclaw-repair/service.ts
+
+#### 3. Runtime State Endpoint
+
+```
+GET /runtime/state
+GET /runtime/health
+```
+
+Devuelve:
+- queueStats (jobs, wait time, success rate)
+- scheduler (running, paused, handlers)
+- activeWorkflows (DAG executions)
+- deadLetters (count, by type)
+- queuePressure (pending%, running%, status)
+- resourceHealth (limits, issues)
+- openclawHealth
+
+#### 4. DAG Execute con Queue
+
+`POST /dag/execute` ahora soporta:
+- `async: true` → encola y retorna jobId
+- `forceQueue: true` → fuerza encolado
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+- ✅ Rutas /queue/* registradas
+- ✅ Rutas /runtime/* registradas
+- ✅ Persistencia atómica migrada
+- ✅ Event emission (32 puntos)
+- ✅ Resource manager (28 puntos de uso)
+
+### Reporte Completo
+
+Ver: `docs/reports/claude/H1_1_runtime_integration_finalization_report.md`
+
+---
+
+## H1.2 — Enforce Queue-First Runtime & Handler Initialization
+
+**Fecha**: 2026-05-07
+**Estado**: COMPLETADO
+
+### Objetivo
+
+Hacer que queue-first sea realmente la autoridad para ejecuciones largas:
+- Inicializar handlers en startup
+- Queue-first por defecto (no opcional)
+- Estado 'queued' para UI
+- Atomic persistence en file-db
+- handlersReady en runtime state
+
+### Cambios Principales
+
+#### 1. Handler Initialization en Startup
+
+```typescript
+// index.ts
+const queueInit = initializeRuntimeQueue({ initExecutionHandlers: true })
+console.log(`[RuntimeQueue] Registered handlers: ${getRegisteredHandlers().join(', ')}`)
+```
+
+#### 2. Queue-First por Defecto
+
+DAG y Composite ahora encolan por defecto:
+- `forceDirect: false` → encola (por defecto)
+- `forceDirect: true` → ejecución directa (bypass explícito)
+
+```typescript
+// POST /dag/execute y /composite-tasks/execute
+if (queueDecision.shouldQueue && !forceDirect) {
+  // Enqueue - default path
+}
+```
+
+#### 3. Estado 'queued' para UI
+
+```typescript
+export type ExecutionStatus = 'queued' | ...
+export type FinalUiStatus = 'queued' | ...
+
+// status-resolver.ts
+queued: { title: 'EN COLA', defaultMessage: '...' }
+```
+
+#### 4. handlersReady en Runtime State
+
+```typescript
+// GET /runtime/state
+scheduler: {
+  handlersReady: handlers.includes('dag-execution') && handlers.includes('composite-task'),
+  registeredHandlers: ['dag-execution', 'composite-task', 'simple-task']
+}
+```
+
+#### 5. Atomic Persistence en file-db
+
+```typescript
+// storage/file-db.ts
+import { atomicWriteJson, atomicReadJsonOrDefault } from '../shared/atomic-persistence'
+```
+
+### Auditoría de Verificación
+
+| Check | Resultado |
+|-------|-----------|
+| initializeRuntimeQueue en startup | ✅ index.ts:576 |
+| executeGraph/executeCompositePlan directos | ✅ Solo fallbacks o forceDirect |
+| writeFileSync fuera de atomic | ✅ Solo sandbox (user content) |
+
+### Archivos Modificados
+
+- `apps/api/src/index.ts` - Inicialización runtime queue
+- `apps/api/src/modules/dag-execution/routes.ts` - Queue-first por defecto
+- `apps/api/src/modules/composite-tasks/routes.ts` - Queue-first composite
+- `apps/api/src/modules/execution-status/types.ts` - Estado 'queued'
+- `apps/api/src/modules/execution-status/status-resolver.ts` - Label/severity
+- `apps/api/src/modules/runtime-queue/runtime-routes.ts` - handlersReady
+- `apps/api/src/storage/file-db.ts` - Atomic persistence
+
+### Reporte Completo
+
+Ver: `docs/reports/claude/H1_2_queue_first_enforcement_report.md`
+
+---
+
+## P1.2 — Realtime Product Shell & WS Runtime
+
+**Fecha**: 2026-05-07
+
+### Objetivo
+
+Implementar WebSocket como canal principal para runtime/events/progress, con REST como fallback/snapshot.
+
+### Reglas Implementadas
+
+1. ✅ WebSocket es canal principal para runtime/events/progreso
+2. ✅ REST queda como fallback/snapshot
+3. ✅ NO polling agresivo como fuente principal
+4. ✅ NO romper endpoints REST existentes
+5. ✅ NO modificar OpenClaw core
+
+### Componentes Implementados
+
+#### Backend (apps/api/src/modules/runtime-ws/)
+
+| Archivo | Descripción |
+|---------|-------------|
+| `types.ts` | Tipos WS: WsChannel, RuntimeEventType, WsFrame, WsClientInfo |
+| `gateway.ts` | RuntimeWsGateway con heartbeat, stats, tenant isolation |
+| `subscriptions.ts` | SubscriptionManager con rate limiting y health tracking |
+| `auth.ts` | Autenticación WS (token query/header/cookie) |
+| `serializer.ts` | Serialización de frames WS |
+| `event-bridge.ts` | Bridge EventBus → WS Gateway |
+
+#### Frontend (apps/web/src/)
+
+| Archivo | Descripción |
+|---------|-------------|
+| `services/runtime-ws.ts` | RuntimeWsClient con reconnection y heartbeat |
+| `hooks/useRuntimeWs.ts` | Hooks React para WS (useRuntimeWs, useWorkflowEvents, etc.) |
+| `components/control/WorkflowGraphViewer.tsx` | LiveWorkflowGraphViewer con updates live |
+| `components/control/NotificationPanel.tsx` | Notificaciones y aprobaciones live |
+| `pages/control/Dashboard.tsx` | Dashboard con queue stats live |
+| `pages/control/Historial.tsx` | Historial con auto-refresh live |
+
+### Canales WebSocket
+
+| Canal | Propósito |
+|-------|-----------|
+| `/ws/runtime` | Eventos de sistema general |
+| `/ws/queue` | Estado de cola y jobs |
+| `/ws/workflow` | Eventos específicos de workflow |
+| `/ws/notifications` | Notificaciones y aprobaciones |
+| `/ws/debug` | Debug trace (deshabilitado por defecto) |
+
+### Eventos Soportados
+
+```typescript
+type RuntimeEventType =
+  // Workflow
+  | 'workflow:created' | 'workflow:start' | 'workflow:progress'
+  | 'workflow:complete' | 'workflow:failed' | 'workflow:cancelled'
+  // Node
+  | 'node:start' | 'node:progress' | 'node:complete'
+  | 'node:failed' | 'node:retry' | 'node:skipped'
+  // Queue
+  | 'queue:job-enqueued' | 'queue:job-started' | 'queue:job-progress'
+  | 'queue:job-completed' | 'queue:job-failed' | 'queue:pressure-change'
+  // Approvals & Notifications
+  | 'approval:required' | 'approval:granted' | 'approval:denied'
+  | 'notification:created' | 'notification:updated'
+  // System
+  | 'system:health-change'
+```
+
+### Seguridad y Resiliencia
+
+- ✅ Autenticación por token (query param, header, cookie)
+- ✅ Tenant isolation estricta
+- ✅ Rate limiting por cliente (30 subscriptions/min)
+- ✅ Heartbeat con timeout (60s)
+- ✅ Reconnection con exponential backoff
+- ✅ Connection health tracking (healthy/degraded/stale)
+- ✅ Stats por minuto (mensajes enviados/recibidos, errores)
+
+### Integración con Runtime State
+
+WebSocket stats incluidos en `/runtime/state`:
+- activeConnections
+- connectionsByTenant
+- totalSubscriptions
+- subscriptionsByChannel
+- messagesSentLastMinute
+- messagesReceivedLastMinute
+- errorsLastMinute
+- connectionHealth
+
+### Verificación
+
+```bash
+npm run check   # ✅ Sin errores TS
+npm run build   # ✅ Build exitoso
+```
+
+### Archivos Modificados
+
+- `apps/api/src/index.ts` - Inicialización WS Gateway + Event Bridge
+- `apps/api/src/modules/runtime-queue/runtime-routes.ts` - WS stats en /runtime/state
+- `apps/web/src/components/control/GlobalHeader.tsx` - NotificationBell integrado

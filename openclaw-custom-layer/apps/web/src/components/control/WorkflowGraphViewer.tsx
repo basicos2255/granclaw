@@ -1,15 +1,18 @@
 /**
  * WorkflowGraphViewer Component
  * FIX 131.1: Wire DAG Engine into Composite Execution + Minimal DAG UI
+ * P1.2: Live WebSocket updates for realtime progress
  *
  * Visual representation of DAG workflow execution with:
  * - Node status visualization
  * - Dependency arrows
  * - Progress tracking
  * - Node actions (retry, skip)
+ * - Live WebSocket updates (P1.2)
  */
 
-import { useState } from 'react'
+import { useState, useEffect, useMemo } from 'react'
+import { useRuntimeWs, useWorkflowEvents } from '../../hooks/useRuntimeWs'
 
 /**
  * Node status types
@@ -440,8 +443,9 @@ export function WorkflowGraphViewer({
   summary,
   onRetryNode,
   onSkipNode,
-  compact = false
-}: WorkflowGraphViewerProps) {
+  compact = false,
+  isLive = false
+}: WorkflowGraphViewerProps & { isLive?: boolean }) {
   const [showAllNodes, setShowAllNodes] = useState(!compact)
   const [showJson, setShowJson] = useState(false)
 
@@ -515,6 +519,29 @@ export function WorkflowGraphViewer({
           <span style={{ fontSize: '12px', color: '#64748b', fontFamily: 'monospace' }}>
             {graphId}
           </span>
+          {isLive && (
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '4px 10px',
+              borderRadius: '20px',
+              fontSize: '11px',
+              fontWeight: '600',
+              backgroundColor: '#dcfce7',
+              color: '#16a34a',
+              animation: 'pulse 2s infinite'
+            }}>
+              <span style={{
+                width: '8px',
+                height: '8px',
+                borderRadius: '50%',
+                backgroundColor: '#16a34a',
+                animation: 'blink 1s infinite'
+              }} />
+              LIVE
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button style={toggleBtnStyle} onClick={() => setShowJson(!showJson)}>
@@ -571,4 +598,256 @@ export function WorkflowGraphViewer({
       </div>
     </div>
   )
+}
+
+/**
+ * P1.2: Payload types for WebSocket events
+ */
+interface NodeEventPayload {
+  workflowId: string
+  nodeId: string
+  nodeName?: string
+  nodeType: string
+  status: string
+  progress?: number
+  message?: string
+  error?: string
+  retryCount?: number
+  duration?: number
+}
+
+interface WorkflowEventPayload {
+  workflowId: string
+  graphId?: string
+  status: string
+  progress?: number
+  message?: string
+  nodeCount?: number
+  completedNodes?: number
+  failedNodes?: number
+}
+
+/**
+ * P1.2: Live Workflow Graph Viewer
+ * Wrapper that adds WebSocket live updates to WorkflowGraphViewer
+ */
+interface LiveWorkflowGraphViewerProps {
+  /** Workflow/Graph ID to subscribe to */
+  workflowId: string
+  /** Initial nodes data (optional) */
+  initialNodes?: Record<string, GraphNode>
+  /** Initial summary (optional) */
+  initialSummary?: GraphSummary
+  /** Callback for retry action */
+  onRetryNode?: (nodeId: string) => void
+  /** Callback for skip action */
+  onSkipNode?: (nodeId: string) => void
+  /** Show in compact mode */
+  compact?: boolean
+  /** Called when workflow completes */
+  onComplete?: (summary: GraphSummary) => void
+  /** Called when workflow fails */
+  onFailed?: (error: string) => void
+}
+
+export function LiveWorkflowGraphViewer({
+  workflowId,
+  initialNodes = {},
+  initialSummary,
+  onRetryNode,
+  onSkipNode,
+  compact = false,
+  onComplete,
+  onFailed
+}: LiveWorkflowGraphViewerProps) {
+  const { isConnected } = useRuntimeWs()
+  const { lastEvent } = useWorkflowEvents(workflowId)
+
+  // Internal state for nodes and summary
+  const [nodes, setNodes] = useState<Record<string, GraphNode>>(initialNodes)
+  const [summary, setSummary] = useState<GraphSummary | undefined>(initialSummary)
+  const [lastUpdate, setLastUpdate] = useState<number>(Date.now())
+
+  // Update nodes when initial data changes
+  useEffect(() => {
+    if (Object.keys(initialNodes).length > 0) {
+      setNodes(initialNodes)
+    }
+  }, [initialNodes])
+
+  useEffect(() => {
+    if (initialSummary) {
+      setSummary(initialSummary)
+    }
+  }, [initialSummary])
+
+  // Process incoming WebSocket events
+  useEffect(() => {
+    if (!lastEvent) return
+
+    const { payload, frame } = lastEvent
+    const event = frame.event
+
+    // Handle node events
+    if (event?.startsWith('node:')) {
+      const nodePayload = payload as NodeEventPayload
+      if (!nodePayload.nodeId) return
+
+      setNodes(prev => {
+        const existing = prev[nodePayload.nodeId] || {
+          id: nodePayload.nodeId,
+          description: nodePayload.nodeName || nodePayload.nodeId,
+          status: 'pending' as NodeStatus,
+          dependencies: []
+        }
+
+        return {
+          ...prev,
+          [nodePayload.nodeId]: {
+            ...existing,
+            status: mapStatusFromEvent(nodePayload.status),
+            error: nodePayload.error,
+            retries: nodePayload.retryCount
+          }
+        }
+      })
+      setLastUpdate(Date.now())
+    }
+
+    // Handle workflow events
+    if (event?.startsWith('workflow:')) {
+      const wfPayload = payload as WorkflowEventPayload
+
+      // Update summary if available
+      if (wfPayload.completedNodes !== undefined || wfPayload.failedNodes !== undefined) {
+        setSummary(prev => ({
+          totalNodes: wfPayload.nodeCount || prev?.totalNodes || 0,
+          completedNodes: wfPayload.completedNodes ?? prev?.completedNodes ?? 0,
+          failedNodes: wfPayload.failedNodes ?? prev?.failedNodes ?? 0,
+          skippedNodes: prev?.skippedNodes ?? 0,
+          blockedNodes: prev?.blockedNodes ?? 0,
+          validatedNodes: prev?.validatedNodes ?? 0,
+          validationFailedNodes: prev?.validationFailedNodes ?? 0,
+          queuedNodes: prev?.queuedNodes ?? 0,
+          durationMs: prev?.durationMs ?? 0,
+          parallelGroups: prev?.parallelGroups ?? 0,
+          tokenSavingEstimate: prev?.tokenSavingEstimate ?? 0,
+          criticalPathLength: prev?.criticalPathLength ?? 0,
+          timeSavedMs: prev?.timeSavedMs ?? 0
+        }))
+      }
+
+      // Handle completion
+      if (event === 'workflow:complete' && onComplete && summary) {
+        onComplete(summary)
+      }
+
+      // Handle failure
+      if (event === 'workflow:failed' && onFailed) {
+        onFailed(wfPayload.message || 'Workflow failed')
+      }
+
+      setLastUpdate(Date.now())
+    }
+  }, [lastEvent, onComplete, onFailed, summary])
+
+  // Compute live summary from nodes if no summary provided
+  const computedSummary = useMemo((): GraphSummary => {
+    if (summary) return summary
+
+    const nodeArray = Object.values(nodes)
+    return {
+      totalNodes: nodeArray.length,
+      completedNodes: nodeArray.filter(n => n.status === 'completed' || n.status === 'validated').length,
+      failedNodes: nodeArray.filter(n => n.status === 'failed').length,
+      skippedNodes: nodeArray.filter(n => n.status === 'skipped').length,
+      blockedNodes: nodeArray.filter(n => n.status === 'blocked').length,
+      validatedNodes: nodeArray.filter(n => n.status === 'validated').length,
+      validationFailedNodes: nodeArray.filter(n => n.status === 'validation_failed').length,
+      queuedNodes: nodeArray.filter(n => n.status === 'queued').length,
+      durationMs: 0,
+      parallelGroups: 0,
+      tokenSavingEstimate: 0,
+      criticalPathLength: 0,
+      timeSavedMs: 0
+    }
+  }, [nodes, summary])
+
+  return (
+    <div>
+      {/* Connection status indicator */}
+      {!isConnected && (
+        <div style={{
+          padding: '12px 16px',
+          backgroundColor: '#fef3c7',
+          border: '1px solid #fcd34d',
+          borderRadius: '8px',
+          marginBottom: '16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          fontSize: '14px',
+          color: '#92400e'
+        }}>
+          <span>⚠️</span>
+          <span>Conexión WebSocket no disponible. Los datos pueden no estar actualizados.</span>
+        </div>
+      )}
+
+      {/* CSS for animations */}
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.7; }
+        }
+        @keyframes blink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.3; }
+        }
+      `}</style>
+
+      <WorkflowGraphViewer
+        graphId={workflowId}
+        nodes={nodes}
+        summary={computedSummary}
+        onRetryNode={onRetryNode}
+        onSkipNode={onSkipNode}
+        compact={compact}
+        isLive={isConnected}
+      />
+
+      {/* Last update indicator */}
+      <div style={{
+        textAlign: 'center',
+        fontSize: '11px',
+        color: '#9ca3af',
+        marginTop: '8px'
+      }}>
+        Última actualización: {new Date(lastUpdate).toLocaleTimeString()}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Map event status string to NodeStatus
+ */
+function mapStatusFromEvent(status: string): NodeStatus {
+  const statusMap: Record<string, NodeStatus> = {
+    'pending': 'pending',
+    'queued': 'queued',
+    'running': 'running',
+    'started': 'running',
+    'in_progress': 'running',
+    'validated': 'validated',
+    'completed': 'completed',
+    'success': 'completed',
+    'failed': 'failed',
+    'error': 'failed',
+    'skipped': 'skipped',
+    'cancelled': 'cancelled',
+    'blocked': 'blocked',
+    'validation_failed': 'validation_failed'
+  }
+  return statusMap[status.toLowerCase()] || 'pending'
 }

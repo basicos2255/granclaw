@@ -123,10 +123,28 @@ export type {
   QueueHealthCheck
 } from './startup-recovery'
 
+// H1.1: Execution Integration
+export {
+  shouldEnqueueExecution,
+  enqueueDagExecution,
+  enqueueCompositeTask,
+  enqueueSimpleTask,
+  initializeExecutionHandlers,
+  isExecutionIntegrationReady
+} from './execution-integration'
+
+export type {
+  QueuedExecutionType,
+  EnqueueExecutionOptions,
+  EnqueueResult,
+  ExecutionCriteria
+} from './execution-integration'
+
 // Convenience initialization
 import { RuntimeQueue, getQueue } from './queue'
 import { initializePersistence, startPeriodicPersistence, stopPeriodicPersistence } from './persistence'
 import { startScheduler, stopScheduler } from './scheduler'
+import { initializeExecutionHandlers } from './execution-integration'
 
 /**
  * Initialize and start the runtime queue system
@@ -134,6 +152,8 @@ import { startScheduler, stopScheduler } from './scheduler'
 export function initializeRuntimeQueue(config?: {
   persistenceIntervalMs?: number
   autoRecover?: boolean
+  /** H1.1: Initialize execution handlers (dag, composite, simple tasks) */
+  initExecutionHandlers?: boolean
 }): {
   queue: RuntimeQueue
   loadedJobs: number
@@ -150,6 +170,11 @@ export function initializeRuntimeQueue(config?: {
 
   // Start scheduler
   startScheduler(queue)
+
+  // H1.1: Initialize execution handlers
+  if (config?.initExecutionHandlers !== false) {
+    initializeExecutionHandlers()
+  }
 
   console.log('[RuntimeQueue] Initialized:', result)
 

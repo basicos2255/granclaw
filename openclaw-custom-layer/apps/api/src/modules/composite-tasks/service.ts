@@ -16,6 +16,8 @@ import {
   CURRENT_COMPOSITE_TASK_VERSION
 } from './types'
 import { normalizeTaskInput, type NormalizedIntent } from '../task-memory'
+// H1.1: Atomic persistence
+import { atomicWriteJson } from '../../shared/atomic-persistence'
 
 /**
  * Data file path
@@ -64,15 +66,19 @@ export function loadCompositeTaskState(): void {
 
 /**
  * Save state to disk
+ * H1.1: Uses atomic write for crash safety
  */
 function saveState(): void {
-  ensureDataDir()
-  try {
-    state.lastUpdated = new Date().toISOString()
-    state.stats = calculateStats()
-    fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2), 'utf-8')
-  } catch (err) {
-    console.error('[CompositeTasks] Error saving state:', err)
+  state.lastUpdated = new Date().toISOString()
+  state.stats = calculateStats()
+
+  const result = atomicWriteJson(DATA_FILE, state, {
+    createBackup: true,
+    ensureDir: true
+  })
+
+  if (!result.success) {
+    console.error('[CompositeTasks] Error saving state:', result.error)
   }
 }
 

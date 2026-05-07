@@ -68,6 +68,11 @@ const STATUS_LABELS: Record<FinalUiStatus, { title: string; defaultMessage: stri
   timeout: {
     title: 'TAREA INTERRUMPIDA',
     defaultMessage: 'La operación excedió el tiempo límite. Puede reintentar la acción.'
+  },
+  // H1.2: Queue-first execution
+  queued: {
+    title: 'EN COLA',
+    defaultMessage: 'La tarea está en cola esperando ejecución.'
   }
 }
 
@@ -83,7 +88,8 @@ const STATUS_SEVERITY: Record<FinalUiStatus, StatusSeverity> = {
   partial: 'warning',
   executed: 'success',
   allowed: 'success',
-  timeout: 'warning'  // FIX 126: Timeout Recovery
+  timeout: 'warning',  // FIX 126: Timeout Recovery
+  queued: 'info'       // H1.2: Queue-first execution
 }
 
 /**

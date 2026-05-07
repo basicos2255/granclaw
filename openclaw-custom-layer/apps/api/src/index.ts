@@ -104,6 +104,31 @@ import {
   handleDeleteDagExecution,
   handleClearDagExecutions
 } from './modules/dag-execution/routes'
+// PHASE H1: Runtime Queue routes
+import {
+  handleGetQueueStats,
+  handleListJobs,
+  handleGetJob,
+  handleCancelJob,
+  handlePauseQueue,
+  handleResumeQueue,
+  handleListDeadLetter,
+  handleRequeueDeadLetter,
+  handleDeleteDeadLetter,
+  handleClearDeadLetter,
+  handleGetEvents,
+  handleGetEventsByCorrelation,
+  handleQueueHealth
+} from './modules/runtime-queue/routes'
+// H1.1: Runtime State routes
+import {
+  handleGetRuntimeState,
+  handleGetRuntimeHealth
+} from './modules/runtime-queue/runtime-routes'
+// H1.2: Runtime Queue initialization
+import { initializeRuntimeQueue, getRegisteredHandlers } from './modules/runtime-queue'
+// P1.2: WebSocket Runtime
+import { initializeWsGateway, initializeEventBridge } from './modules/runtime-ws'
 import { handleLogin, handleGetMe, handleRegister, handleLogout } from './modules/auth'
 import { handleListTools, handleGetTool } from './modules/tools'
 import { handleGetAllConfig, handleGetTenantConfig, handleSetTenantConfig, handleDeleteTenantConfig } from './modules/granclaw-hub'
@@ -186,7 +211,16 @@ const getRoutes: Record<string, RouteHandler> = {
   '/composite-tasks/stats': wrapHandler(handleGetCompositeStats),
   // FIX 131.1: DAG Execution routes
   '/dag/executions': handleListDagExecutions,
-  '/dag/config': handleGetDagConfig
+  '/dag/config': handleGetDagConfig,
+  // PHASE H1: Runtime Queue routes
+  '/queue/stats': handleGetQueueStats,
+  '/queue/jobs': handleListJobs,
+  '/queue/dead-letter': handleListDeadLetter,
+  '/queue/events': handleGetEvents,
+  '/queue/health': handleQueueHealth,
+  // H1.1: Runtime State routes
+  '/runtime/state': handleGetRuntimeState,
+  '/runtime/health': handleGetRuntimeHealth
 }
 
 // POST routes
@@ -224,7 +258,11 @@ const postRoutes: Record<string, RouteHandler> = {
   // FIX 131.1: DAG Execution routes
   '/dag/config': handleSetDagConfig,
   '/dag/execute': handleExecuteDag,
-  '/dag/clear': handleClearDagExecutions
+  '/dag/clear': handleClearDagExecutions,
+  // PHASE H1: Runtime Queue routes
+  '/queue/pause': handlePauseQueue,
+  '/queue/resume': handleResumeQueue,
+  '/queue/dead-letter/clear': handleClearDeadLetter
 }
 
 // Rutas dinámicas con parámetros
@@ -272,6 +310,15 @@ const getDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/dag\/executions\/([^/]+)$/,
     handler: handleGetDagExecution
+  },
+  // PHASE H1: Runtime Queue
+  {
+    pattern: /^\/queue\/jobs\/([^/]+)$/,
+    handler: handleGetJob
+  },
+  {
+    pattern: /^\/queue\/events\/([^/]+)$/,
+    handler: handleGetEventsByCorrelation
   }
 ]
 
@@ -360,6 +407,25 @@ const postDynamicRoutesDag: DynamicRoute[] = [
   {
     pattern: /^\/dag\/executions\/([^/]+)\/cancel$/,
     handler: handleCancelDagExecution
+  }
+]
+
+// PHASE H1: Runtime Queue dynamic routes
+const postDynamicRoutesQueue: DynamicRoute[] = [
+  {
+    pattern: /^\/queue\/jobs\/([^/]+)\/cancel$/,
+    handler: handleCancelJob
+  },
+  {
+    pattern: /^\/queue\/dead-letter\/([^/]+)\/requeue$/,
+    handler: handleRequeueDeadLetter
+  }
+]
+
+const deleteDynamicRoutesQueue: DynamicRoute[] = [
+  {
+    pattern: /^\/queue\/dead-letter\/([^/]+)$/,
+    handler: handleDeleteDeadLetter
   }
 ]
 
@@ -477,6 +543,13 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       dagMatch.handler(req, res, dagMatch.param, context)
       return
     }
+
+    // PHASE H1: Runtime Queue dynamic routes
+    const queueMatch = matchDynamicRoute(pathname, postDynamicRoutesQueue)
+    if (queueMatch) {
+      queueMatch.handler(req, res, queueMatch.param, context)
+      return
+    }
   }
 
   if (req.method === 'DELETE') {
@@ -484,6 +557,13 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     const dynamicMatch = matchDynamicRoute(pathname, deleteDynamicRoutes)
     if (dynamicMatch) {
       dynamicMatch.handler(req, res, dynamicMatch.param, context)
+      return
+    }
+
+    // PHASE H1: Runtime Queue delete routes
+    const queueDeleteMatch = matchDynamicRoute(pathname, deleteDynamicRoutesQueue)
+    if (queueDeleteMatch) {
+      queueDeleteMatch.handler(req, res, queueDeleteMatch.param, context)
       return
     }
   }
@@ -494,6 +574,16 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 const server = createServer(handleRequest)
 
 server.listen(PORT, () => {
+  // H1.2: Initialize runtime queue with execution handlers
+  const queueInit = initializeRuntimeQueue({ initExecutionHandlers: true })
+  console.log(`[RuntimeQueue] Loaded ${queueInit.loadedJobs} jobs, ${queueInit.orphanedJobs} orphaned, ${queueInit.deadLetterCount} dead-lettered`)
+  console.log(`[RuntimeQueue] Registered handlers: ${getRegisteredHandlers().join(', ')}`)
+
+  // P1.2: Initialize WebSocket gateway and event bridge
+  initializeWsGateway(server)
+  initializeEventBridge()
+  console.log('[WebSocket] Gateway initialized on /ws')
+
   console.log(`GranClaw API running on http://localhost:${PORT}`)
   console.log('Available endpoints:')
   Object.keys(getRoutes).forEach((route) => {

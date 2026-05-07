@@ -7,11 +7,13 @@
  * Manages persistent system state stored in data/system-state.json
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import type { SystemState, PendingAction, OpenClawSetupStatus, OpenClawSetupRequirement, OpenClawScopeKey } from './types'
 import { DEFAULT_SYSTEM_STATE } from './types'
+// H1.1: Atomic persistence
+import { atomicWriteJson } from '../../shared/atomic-persistence'
 
 // FIX 125.1: Safe substring helper
 function safeSubstring(value: string | undefined | null, maxLen: number): string {
@@ -105,16 +107,19 @@ function loadState(): SystemState {
 
 /**
  * Save state to disk
+ * H1.1: Uses atomic write for crash safety
  */
 function saveState(state: SystemState): void {
-  ensureDataDir()
+  const result = atomicWriteJson(STATE_FILE, state, {
+    createBackup: true,
+    ensureDir: true
+  })
 
-  try {
-    writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8')
+  if (result.success) {
     cachedState = state
-    console.log('[SystemState] State saved to disk')
-  } catch (err) {
-    console.error('[SystemState] Error saving state:', err)
+    console.log('[SystemState] State saved atomically')
+  } else {
+    console.error('[SystemState] Error saving state:', result.error)
   }
 }
 

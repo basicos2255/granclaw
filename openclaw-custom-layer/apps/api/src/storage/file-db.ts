@@ -1,21 +1,13 @@
 /**
  * File-based database
  * Persistencia simple en archivos JSON
+ * H1.2: Uses atomic persistence for safe writes
  */
 
-import * as fs from 'fs'
 import * as path from 'path'
+import { atomicWriteJson, atomicReadJsonOrDefault } from '../shared/atomic-persistence'
 
 const DATA_DIR = path.join(process.cwd(), 'data')
-
-/**
- * Asegura que el directorio data existe
- */
-function ensureDataDir(): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-  }
-}
 
 /**
  * Obtiene la ruta del archivo para una entidad
@@ -26,31 +18,24 @@ function getFilePath(entity: string): string {
 
 /**
  * Lee todos los items de una entidad
+ * H1.2: Uses atomicReadJsonOrDefault with backup fallback
  */
 export function read<T>(entity: string): T[] {
-  ensureDataDir()
   const filePath = getFilePath(entity)
-
-  if (!fs.existsSync(filePath)) {
-    return []
-  }
-
-  try {
-    const content = fs.readFileSync(filePath, 'utf-8')
-    const data = JSON.parse(content)
-    return Array.isArray(data) ? data : []
-  } catch {
-    return []
-  }
+  const data = atomicReadJsonOrDefault<T[]>(filePath, [])
+  return Array.isArray(data) ? data : []
 }
 
 /**
  * Escribe todos los items de una entidad (reemplaza)
+ * H1.2: Uses atomicWriteJson for safe atomic writes
  */
 export function write<T>(entity: string, data: T[]): void {
-  ensureDataDir()
   const filePath = getFilePath(entity)
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8')
+  const result = atomicWriteJson(filePath, data)
+  if (!result.success) {
+    console.error(`[FileDB] Atomic write failed for ${entity}:`, result.error)
+  }
 }
 
 /**

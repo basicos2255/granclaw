@@ -56,11 +56,12 @@ const productRoutes = [
 ]
 
 function isProductRoute(path: string): boolean {
-  return path === '/' || path.startsWith('/control') || productRoutes.some(r => path === r || path.startsWith(r + '/'))
+  return path.startsWith('/control') || productRoutes.some(r => path === r || path.startsWith(r + '/'))
 }
 
 function isAppShellRoute(path: string): boolean {
-  return productRoutes.some(r => path === r || path.startsWith(r + '/'))
+  // P2.1: / ahora es producto con AppShell (redirige a /dashboard)
+  return path === '/' || productRoutes.some(r => path === r || path.startsWith(r + '/'))
 }
 
 function Router({ path }: { path: Route }) {
@@ -77,8 +78,11 @@ function Router({ path }: { path: Route }) {
   if (path === '/runtime') return <RuntimePage />
   if (path === '/settings') return <SettingsPage />
 
-  // Control panel routes (technical)
-  if (path === '/' || path === '/control') return <Execute />
+  // P2.1: / redirige a dashboard (producto)
+  if (path === '/') return <ProductDashboard />
+
+  // Control panel routes (technical/advanced)
+  if (path === '/control') return <Execute />
   if (path === '/control/clientes') return <Clientes />
   if (path === '/control/dashboard') return <ControlDashboard />
   if (path === '/control/historial') return <Historial />

@@ -26,7 +26,7 @@ const navItems: NavItem[] = [
   { id: 'credentials', label: 'Credenciales', icon: '🔐', path: '/credentials' },
   { id: 'runtime', label: 'Runtime', icon: '🖥️', path: '/runtime', advanced: true },
   { id: 'settings', label: 'Configuración', icon: '⚙️', path: '/settings' },
-  { id: 'control', label: 'Control', icon: '🛠️', path: '/control', advanced: true }
+  { id: 'control', label: 'Control avanzado', icon: '🛠️', path: '/control', advanced: true }
 ]
 
 interface SidebarProps {

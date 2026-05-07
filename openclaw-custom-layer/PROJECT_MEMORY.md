@@ -7635,3 +7635,78 @@ Tipos simulables:
 - ✅ Failure simulation
 - ✅ Observability metrics
 - ✅ Safety gates
+
+---
+
+## P2.1 — Product Entry Redirect & Shell Visibility
+
+**Fecha:** 2026-05-07
+**Objetivo:** Redireccionar entrada principal a experiencia producto.
+
+### Cambios Realizados
+
+#### Router (App.tsx)
+
+```typescript
+// ANTES: / mostraba control panel
+if (path === '/' || path === '/control') return <Execute />
+
+// DESPUÉS: / muestra producto dashboard
+if (path === '/') return <ProductDashboard />
+if (path === '/control') return <Execute />  // Separado
+```
+
+#### AppShell Route
+
+```typescript
+// ANTES: AppShell solo para product routes
+function isAppShellRoute(path: string): boolean {
+  return productRoutes.some(r => path === r || path.startsWith(r + '/'))
+}
+
+// DESPUÉS: / también usa AppShell
+function isAppShellRoute(path: string): boolean {
+  // P2.1: / ahora es producto con AppShell (redirige a /dashboard)
+  return path === '/' || productRoutes.some(r => path === r || path.startsWith(r + '/'))
+}
+```
+
+#### Sidebar (layouts/Sidebar.tsx)
+
+```typescript
+// ANTES
+{ id: 'control', label: 'Control', icon: '🛠️', path: '/control', advanced: true }
+
+// DESPUÉS: Etiquetado como avanzado
+{ id: 'control', label: 'Control avanzado', icon: '🛠️', path: '/control', advanced: true }
+```
+
+### Flujo de Navegación
+
+```
+/                 → AppShell + ProductDashboard (experiencia producto)
+/dashboard        → AppShell + ProductDashboard
+/tasks            → AppShell + TasksPage
+/automations      → AppShell + AutomationsPage
+/channels         → AppShell + ChannelsPage
+/control          → ProductHeader + Execute (panel técnico)
+/control/*        → ProductHeader + Control pages
+/dev/*            → DevHeader + Dev pages
+```
+
+### Archivos Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `apps/web/src/App.tsx:58-65` | isProductRoute/isAppShellRoute |
+| `apps/web/src/App.tsx:81-85` | Router / handling |
+| `apps/web/src/layouts/Sidebar.tsx:29` | Control → Control avanzado |
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+- ✅ / renderiza ProductDashboard con AppShell
+- ✅ /control sigue accesible como panel técnico
+- ✅ Sidebar muestra "Control avanzado"
+- ✅ Rutas producto funcionan correctamente

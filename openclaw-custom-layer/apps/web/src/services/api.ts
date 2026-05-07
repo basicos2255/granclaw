@@ -1,9 +1,45 @@
 /**
  * GranClaw API Client
  * FEATURE 072: Auth guard + error translation
+ * P2.2: API Base URL & Runtime State Fetch Fix
+ * P5.2: Config consistency - unified naming
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001"
+// P5.2: Unified naming with backward compatibility
+const API_BASE = import.meta.env.VITE_API_BASE_URL ||
+                 import.meta.env.VITE_API_URL ||  // deprecated
+                 "http://localhost:3001"
+
+/**
+ * P2.2: Check if error is API connection error
+ */
+export function isApiConnectionError(error: unknown): boolean {
+  if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
+    return true
+  }
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase()
+    return msg.includes('network') ||
+           msg.includes('connection') ||
+           msg.includes('offline') ||
+           msg.includes('non-json')
+  }
+  return false
+}
+
+/**
+ * P2.2: Error for non-JSON responses
+ */
+export class ApiNonJsonError extends Error {
+  constructor(
+    public status: number,
+    public url: string,
+    public preview: string
+  ) {
+    super(`API returned non-JSON response (status ${status}). Preview: ${preview}`)
+    this.name = 'ApiNonJsonError'
+  }
+}
 const TOKEN_KEY = 'granclaw_token'
 
 /**
@@ -170,6 +206,38 @@ function handleUnauthorized(json: { error?: string }): void {
  * FEATURE 072: Request with guard - returns error if not authenticated
  * FIX 105: Handle 401 by clearing token
  */
+/**
+ * P2.2: Raw fetch with JSON validation
+ * Returns data directly or throws on error
+ */
+export async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const url = `${API_BASE}${path}`
+
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      ...getAuthHeaders(),
+      ...options?.headers
+    }
+  })
+
+  // Check content-type before parsing
+  const contentType = response.headers.get('content-type') || ''
+
+  if (!contentType.includes('application/json')) {
+    const text = await response.text()
+    const preview = text.substring(0, 100).replace(/\n/g, ' ')
+    throw new ApiNonJsonError(response.status, url, preview)
+  }
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
+    throw new Error(errorData.error || `HTTP ${response.status}`)
+  }
+
+  return response.json() as Promise<T>
+}
+
 async function request<T>(endpoint: string): Promise<ApiResponse<T>> {
   try {
     const response = await fetch(`${API_BASE}${endpoint}`, {
@@ -187,6 +255,19 @@ async function request<T>(endpoint: string): Promise<ApiResponse<T>> {
       }
     }
 
+    // P2.2: Validate content-type
+    const contentType = response.headers.get('content-type') || ''
+    if (!contentType.includes('application/json')) {
+      const text = await response.text()
+      const preview = text.substring(0, 50)
+      console.error(`[API] Non-JSON response from ${endpoint}:`, preview)
+      return {
+        success: false,
+        data: null,
+        error: 'API devolvio respuesta no-JSON. Verifica que el backend este corriendo.'
+      }
+    }
+
     const json = await response.json() as ApiResponse<T>
     if (!json.success && json.error) {
       json.error = translateError(json.error)
@@ -194,10 +275,11 @@ async function request<T>(endpoint: string): Promise<ApiResponse<T>> {
     }
     return json
   } catch (err) {
+    const isConnection = isApiConnectionError(err)
     return {
       success: false,
       data: null,
-      error: 'Error de conexion'
+      error: isConnection ? 'No se pudo conectar con el servidor API' : 'Error de conexion'
     }
   }
 }
@@ -882,4 +964,102 @@ export interface RetryRepairResult {
   success: boolean
   repairSession?: RepairSessionData
   originalInput?: string
+}
+
+/**
+ * P2.2: Runtime State types
+ */
+export interface RuntimeStateData {
+  queueStats?: {
+    pendingJobs: number
+    runningJobs: number
+    completedJobs: number
+    failedJobs: number
+  }
+  queuePressure?: {
+    status: 'ok' | 'warning' | 'critical'
+    message: string
+  }
+  queueState?: {
+    totalPending: number
+    totalRunning: number
+    pressure: number
+    avgWaitTime: number
+    deadLetters: number
+    pendingRetries: number
+  }
+  orchestratorState?: {
+    totalWorkers: number
+    busyWorkers: number
+    idleWorkers: number
+  }
+  dagState?: {
+    activeWorkflows: number
+    completedToday: number
+    failedToday: number
+  }
+  wsState?: {
+    activeConnections: number
+    totalSubscriptions: number
+    messagesSentLastMinute: number
+  }
+  resources?: {
+    memoryUsageMb: number
+    cpuPercent: number
+  }
+  deadLetters?: {
+    count: number
+  }
+  activeWorkflows?: {
+    count: number
+  }
+  websocket?: {
+    activeConnections: number
+  }
+}
+
+/**
+ * P2.2: Get runtime state (centralized)
+ */
+export async function getRuntimeState(): Promise<{ success: boolean; data: RuntimeStateData | null; error: string | null }> {
+  try {
+    const data = await apiFetch<RuntimeStateData>('/runtime/state')
+    return { success: true, data, error: null }
+  } catch (err) {
+    if (err instanceof ApiNonJsonError) {
+      return {
+        success: false,
+        data: null,
+        error: 'API devolvio HTML en lugar de JSON. Verifica que el backend este corriendo.'
+      }
+    }
+    if (isApiConnectionError(err)) {
+      return {
+        success: false,
+        data: null,
+        error: 'No se pudo conectar con Runtime API'
+      }
+    }
+    return {
+      success: false,
+      data: null,
+      error: err instanceof Error ? err.message : 'Error desconocido'
+    }
+  }
+}
+
+/**
+ * P2.2: Get queue stats
+ */
+export async function getQueueStats(): Promise<{ success: boolean; data: unknown; error: string | null }> {
+  try {
+    const data = await apiFetch('/queue/stats')
+    return { success: true, data, error: null }
+  } catch (err) {
+    return {
+      success: false,
+      data: null,
+      error: err instanceof Error ? err.message : 'Error'
+    }
+  }
 }

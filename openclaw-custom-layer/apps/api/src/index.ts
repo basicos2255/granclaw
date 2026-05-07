@@ -121,9 +121,11 @@ import {
   handleQueueHealth
 } from './modules/runtime-queue/routes'
 // H1.1: Runtime State routes
+// P5.2: Added consistency endpoint
 import {
   handleGetRuntimeState,
-  handleGetRuntimeHealth
+  handleGetRuntimeHealth,
+  handleGetConsistency
 } from './modules/runtime-queue/runtime-routes'
 // H1.2: Runtime Queue initialization
 import { initializeRuntimeQueue, getRegisteredHandlers } from './modules/runtime-queue'
@@ -220,7 +222,9 @@ const getRoutes: Record<string, RouteHandler> = {
   '/queue/health': handleQueueHealth,
   // H1.1: Runtime State routes
   '/runtime/state': handleGetRuntimeState,
-  '/runtime/health': handleGetRuntimeHealth
+  '/runtime/health': handleGetRuntimeHealth,
+  // P5.2: Consistency check
+  '/runtime/consistency': handleGetConsistency
 }
 
 // POST routes

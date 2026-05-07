@@ -1,6 +1,7 @@
 /**
  * Runtime WebSocket Client
  * P1.2: Realtime Product Shell & WS Runtime
+ * P5.2: Config consistency - unified naming
  *
  * Frontend WebSocket client for realtime runtime communication.
  */
@@ -133,11 +134,21 @@ class RuntimeWsClient {
 
   /**
    * Get WebSocket URL
+   * P5.2: Unified config naming
    */
   private getWsUrl(): string {
+    // P5.2: Use VITE_WS_BASE_URL if available
+    const wsBaseUrl = import.meta.env.VITE_WS_BASE_URL ||
+                      import.meta.env.VITE_WS_URL  // deprecated
+
+    if (wsBaseUrl) {
+      return `${wsBaseUrl}/ws`
+    }
+
+    // Fallback: derive from current location
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.hostname
-    const port = import.meta.env.VITE_API_PORT || '3001'
+    const port = import.meta.env.VITE_API_PORT || '3001'  // deprecated
     return `${protocol}//${host}:${port}/ws`
   }
 

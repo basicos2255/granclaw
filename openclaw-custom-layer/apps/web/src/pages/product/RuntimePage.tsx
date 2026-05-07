@@ -1,12 +1,14 @@
 /**
  * Runtime Monitor Page
  * P2: Product Experience Layer
+ * P2.2: API Base URL & Runtime State Fetch Fix
  *
  * Advanced runtime monitoring for devops/power users.
  */
 
 import { useState, useEffect } from 'react'
 import { useRuntimeWs, useQueueEvents } from '../../hooks/useRuntimeWs'
+import { getRuntimeState, RuntimeStateData } from '../../services/api'
 
 interface RuntimeState {
   queue: {
@@ -53,13 +55,15 @@ export function RuntimePage() {
   const [loading, setLoading] = useState(true)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
+  const [apiError, setApiError] = useState<string | null>(null)
 
-  // Fetch runtime state
+  // P2.2: Fetch runtime state using centralized API client
   const fetchState = async () => {
     try {
-      const res = await fetch('/api/runtime/state')
-      if (res.ok) {
-        const data = await res.json()
+      const result = await getRuntimeState()
+
+      if (result.success && result.data) {
+        const data = result.data as RuntimeStateData
         setState({
           queue: {
             pending: data.queueState?.totalPending ?? 0,
@@ -98,9 +102,13 @@ export function RuntimePage() {
           }
         })
         setLastUpdate(new Date())
+        setApiError(null)
+      } else {
+        setApiError(result.error || 'Error desconocido')
       }
     } catch (err) {
       console.error('Failed to fetch runtime state:', err)
+      setApiError('Error inesperado')
     } finally {
       setLoading(false)
     }
@@ -203,10 +211,33 @@ export function RuntimePage() {
         </div>
       </div>
 
+      {/* P2.2: API Error Banner */}
+      {apiError && (
+        <div style={{
+          backgroundColor: '#fef2f2',
+          border: '1px solid #fecaca',
+          borderRadius: '12px',
+          padding: '16px 20px',
+          marginBottom: '24px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span style={{ fontSize: '20px' }}>⚠️</span>
+            <div>
+              <span style={{ fontWeight: '600', color: '#dc2626' }}>API Error: </span>
+              <span style={{ color: '#7f1d1d' }}>{apiError}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <div style={{ textAlign: 'center', padding: '60px', color: '#64748b' }}>Loading runtime state...</div>
-      ) : !state ? (
+      ) : !state && !apiError ? (
         <div style={{ textAlign: 'center', padding: '60px', color: '#dc2626' }}>Failed to load runtime state</div>
+      ) : !state ? (
+        <div style={{ textAlign: 'center', padding: '60px', color: '#94a3b8' }}>
+          Estado no disponible - Backend offline
+        </div>
       ) : (
         <>
           {/* Queue Pressure Banner */}

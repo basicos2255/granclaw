@@ -7710,3 +7710,185 @@ function isAppShellRoute(path: string): boolean {
 - ✅ /control sigue accesible como panel técnico
 - ✅ Sidebar muestra "Control avanzado"
 - ✅ Rutas producto funcionan correctamente
+
+---
+
+## P2.2 — API Base URL & Runtime State Fetch Fix
+
+**Fecha:** 2026-05-07
+**Objetivo:** Corregir error de parseo HTML como JSON en ProductDashboard.
+
+### Problema
+
+```
+SyntaxError: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+```
+
+ProductDashboard usaba `fetch('/api/runtime/state')` directo, sin API_BASE_URL.
+Vite servia HTML en lugar del backend.
+
+### Solucion
+
+#### API Client Centralizado (api.ts)
+
+```typescript
+// Nuevas funciones
+export function isApiConnectionError(error: unknown): boolean
+export class ApiNonJsonError extends Error
+export async function apiFetch<T>(path: string, options?): Promise<T>
+export async function getRuntimeState(): Promise<{ success, data, error }>
+
+// Validacion de content-type antes de JSON.parse
+const contentType = response.headers.get('content-type')
+if (!contentType.includes('application/json')) {
+  // Error legible, no SyntaxError
+}
+```
+
+#### ProductDashboard.tsx
+
+```typescript
+// ANTES
+const response = await fetch('/api/runtime/state')
+const data = await response.json()  // CRASH con HTML
+
+// DESPUES
+import { getRuntimeState } from '../../services/api'
+const result = await getRuntimeState()
+if (result.success && result.data) {
+  // Usar data
+} else {
+  setApiError(result.error)  // Mostrar degraded state
+}
+```
+
+#### RuntimePage.tsx
+
+Mismo patron: usar `getRuntimeState()` centralizado.
+
+#### Vite Proxy (vite.config.ts)
+
+```typescript
+server: {
+  proxy: {
+    '/runtime': 'http://localhost:3001',
+    '/queue': 'http://localhost:3001',
+    '/api': 'http://localhost:3001'
+    // ...
+  }
+}
+```
+
+#### .env.example
+
+```
+VITE_API_URL=http://localhost:3001
+VITE_WS_URL=ws://localhost:3001
+```
+
+### Archivos Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `apps/web/src/services/api.ts` | isApiConnectionError, ApiNonJsonError, apiFetch, getRuntimeState |
+| `apps/web/src/pages/product/ProductDashboard.tsx` | Usar getRuntimeState, mostrar degraded state |
+| `apps/web/src/pages/product/RuntimePage.tsx` | Usar getRuntimeState, mostrar error |
+| `apps/web/vite.config.ts` | Proxy para /runtime, /api, etc |
+| `apps/web/.env.example` | Variables de entorno |
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+- ✅ ProductDashboard no crashea con HTML
+- ✅ Muestra degraded state si API offline
+- ✅ Error legible (no SyntaxError)
+- ✅ Proxy configurable
+
+---
+
+## P5.2 — Consistency Hardening & Technical Debt Cleanup
+
+**Fecha:** 2026-05-07
+**Objetivo:** Cerrar inconsistencias y deuda tecnica antes de escalar.
+
+### Config Consistency
+
+Unificado env naming:
+
+```bash
+# CANONICAL
+VITE_API_BASE_URL=http://localhost:3001
+VITE_WS_BASE_URL=ws://localhost:3001
+
+# DEPRECATED (backward compatible)
+# VITE_API_URL
+# VITE_WS_URL
+# VITE_API_PORT
+```
+
+### API Client Consolidation
+
+Todos los fetches centralizados en `api.ts`:
+- `apiFetch<T>()` - Raw fetch con validacion JSON
+- `getRuntimeState()` - Runtime state tipado
+- `isApiConnectionError()` - Detector de errores
+- `ApiNonJsonError` - Error clase para HTML responses
+
+### Route Consistency
+
+Backend: 40+ endpoints sin duplicados
+Frontend: Producto, Control, Dev - separados
+
+### Status Normalization
+
+| Domain | Canonical Statuses |
+|--------|-------------------|
+| Queue | pending, running, completed, failed, dead-lettered |
+| Task | pending, running, success, blocked, error, unconfirmed |
+| Node | pending, queued, running, completed, validated, failed |
+| Proposal | pending, approved, rejected, archived |
+
+### Provider/Adapter Clarity
+
+| Role | Type |
+|------|------|
+| Providers | openclaw, local, task_memory, capability, proposal |
+| Adapters | openclaw-runtime, channel-specific |
+
+### Consistency Endpoint
+
+```
+GET /runtime/consistency
+```
+
+Retorna:
+- configDrift
+- canonicalStatuses
+- providerRoles
+- legacyInventory
+- queueBypassRisk
+
+### Archivos Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `.env.example` | VITE_API_BASE_URL, VITE_WS_BASE_URL |
+| `api.ts` | Backward compat VITE_API_BASE_URL |
+| `runtime-ws.ts` | Backward compat VITE_WS_BASE_URL |
+| `ProductDashboard.tsx` | VITE_API_BASE_URL reference |
+| `vite.config.ts` | Comment update |
+| `runtime-routes.ts` | handleGetConsistency |
+| `index.ts` | /runtime/consistency route |
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+- ✅ Config naming unificado
+- ✅ API client centralizado
+- ✅ Rutas sin duplicados
+- ✅ Estados canonicos
+- ✅ Provider/adapter claro
+- ✅ WS-first mantenido
+- ✅ Queue authority mantenido

@@ -1,12 +1,14 @@
 /**
  * Product Dashboard
  * P2: Product Experience Layer
+ * P2.2: API Base URL & Runtime State Fetch Fix
  *
  * Main dashboard showing runtime health, tasks, automations, token savings.
  */
 
 import { useState, useEffect } from 'react'
 import { useRuntimeWs, useQueueEvents } from '../../hooks/useRuntimeWs'
+import { getRuntimeState, RuntimeStateData } from '../../services/api'
 
 interface RuntimeState {
   queueStats: {
@@ -36,6 +38,7 @@ export function ProductDashboard() {
 
   const [runtimeState, setRuntimeState] = useState<RuntimeState | null>(null)
   const [loading, setLoading] = useState(true)
+  const [apiError, setApiError] = useState<string | null>(null)
 
   useEffect(() => {
     loadRuntimeState()
@@ -50,15 +53,37 @@ export function ProductDashboard() {
     }
   }, [queueEvent])
 
+  // P2.2: Use centralized API client
   const loadRuntimeState = async () => {
     try {
-      const response = await fetch('/api/runtime/state')
-      if (response.ok) {
-        const data = await response.json()
-        setRuntimeState(data)
+      const result = await getRuntimeState()
+
+      if (result.success && result.data) {
+        // Map API response to component state
+        const data = result.data as RuntimeStateData
+        setRuntimeState({
+          queueStats: data.queueStats || {
+            pendingJobs: data.queueState?.totalPending || 0,
+            runningJobs: data.queueState?.totalRunning || 0,
+            completedJobs: 0,
+            failedJobs: 0
+          },
+          queuePressure: data.queuePressure || {
+            status: (data.queueState?.pressure || 0) < 0.5 ? 'ok' : (data.queueState?.pressure || 0) < 0.8 ? 'warning' : 'critical',
+            message: ''
+          },
+          deadLetters: data.deadLetters || { count: data.queueState?.deadLetters || 0 },
+          activeWorkflows: data.activeWorkflows || { count: data.dagState?.activeWorkflows || 0 },
+          websocket: data.websocket || { activeConnections: data.wsState?.activeConnections || 0 }
+        })
+        setApiError(null)
+      } else {
+        // P2.2: Show degraded state instead of crashing
+        setApiError(result.error || 'Error desconocido')
       }
     } catch (err) {
       console.error('Error loading runtime state:', err)
+      setApiError('Error inesperado al cargar estado')
     } finally {
       setLoading(false)
     }
@@ -146,8 +171,33 @@ export function ProductDashboard() {
     )
   }
 
+  // P2.2: Show degraded state card if API error
+  const ApiErrorCard = () => apiError ? (
+    <div style={{
+      backgroundColor: '#fef2f2',
+      border: '1px solid #fecaca',
+      borderRadius: '12px',
+      padding: '20px',
+      marginBottom: '24px'
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+        <span style={{ fontSize: '24px' }}>⚠️</span>
+        <span style={{ fontWeight: '600', color: '#dc2626' }}>No se pudo conectar con Runtime API</span>
+      </div>
+      <p style={{ color: '#7f1d1d', fontSize: '14px', margin: 0 }}>
+        {apiError}
+      </p>
+      <p style={{ color: '#991b1b', fontSize: '12px', marginTop: '8px', marginBottom: 0 }}>
+        Verifica que el backend este corriendo en VITE_API_BASE_URL
+      </p>
+    </div>
+  ) : null
+
   return (
     <div>
+      {/* P2.2: API Error Banner */}
+      <ApiErrorCard />
+
       {/* Header */}
       <div style={headerStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>

@@ -7,13 +7,19 @@
 
 /**
  * Un paso de la traza de ejecucion
+ * FEATURE 130.2: Added composite stages
+ * FEATURE 130.3: Added validation stages
+ * FEATURE 131: Added DAG stages
  */
 export interface ExecutionTraceStep {
   id: string
   requestId?: string
   timestamp: string
   stage: 'hub' | 'orchestrator' | 'openclaw' | 'tool' | 'result' | 'error' | 'task-memory'
-  status: 'pending' | 'running' | 'success' | 'blocked' | 'error'
+    | 'composite-plan' | 'composite-step' | 'composite-complete'
+    | 'artifact-validation' | 'validation-failed' | 'validation-success'
+    | 'dag-build' | 'dag-schedule' | 'dag-node-start' | 'dag-node-complete' | 'dag-node-failed' | 'dag-complete'
+  status: 'pending' | 'running' | 'success' | 'blocked' | 'error' | 'skipped' | 'validation_failed' | 'queued'
   label: string
   detail?: string
   raw?: unknown
@@ -32,6 +38,8 @@ export interface AdapterStatus {
 /**
  * FEATURE 075: Debug Snapshot - estado real de cada ejecucion
  * FEATURE 090: Added 'granclaw' and 'error' sources
+ * FEATURE 130.3: Added validation tracking
+ * FEATURE 131: Added DAG tracking
  */
 export interface DebugSnapshot {
   requestId: string
@@ -46,10 +54,18 @@ export interface DebugSnapshot {
   orchestratorCalled: boolean
   openclawCalled?: boolean
   toolCalled?: boolean
-  source?: 'openclaw' | 'tool' | 'mock' | 'fallback' | 'unknown' | 'granclaw' | 'error' | 'setup-required' | 'task-memory'
+  source?: 'openclaw' | 'tool' | 'mock' | 'fallback' | 'unknown' | 'granclaw' | 'error' | 'setup-required' | 'task-memory' | 'composite' | 'validation' | 'dag'
   executionConfirmed: boolean
   tracePresent: boolean
   error?: string
+  // FEATURE 130.3: Validation info
+  validationRan?: boolean
+  validationPassed?: boolean
+  validationReason?: string
+  // FEATURE 131: DAG info
+  dagExecuted?: boolean
+  dagParallelNodes?: number
+  dagTimeSavedMs?: number
 }
 
 /**
@@ -119,6 +135,14 @@ export class ExecutionTraceBuilder {
   private _toolCalled?: boolean
   private _source?: DebugSnapshot['source']
   private _error?: string
+  // FEATURE 130.3: Validation tracking
+  private _validationRan: boolean = false
+  private _validationPassed?: boolean
+  private _validationReason?: string
+  // FEATURE 131: DAG tracking
+  private _dagExecuted: boolean = false
+  private _dagParallelNodes: number = 0
+  private _dagTimeSavedMs: number = 0
 
   constructor(requestId?: string) {
     this.requestId = requestId || generateRequestId()
@@ -299,6 +323,123 @@ export class ExecutionTraceBuilder {
   }
 
   /**
+   * FEATURE 130.3: Validation start
+   */
+  validationStart(stepId: string, validationType: string): void {
+    this._validationRan = true
+    this.steps.push(this.createStep(
+      'artifact-validation',
+      'running',
+      `Validando: ${validationType}`,
+      `Step: ${stepId}`
+    ))
+  }
+
+  /**
+   * FEATURE 130.3: Validation passed
+   */
+  validationPassed(stepId: string, evidence?: string): void {
+    this._validationPassed = true
+    this.steps.push(this.createStep(
+      'validation-success',
+      'success',
+      'Validación completada',
+      evidence || `Step ${stepId} validado correctamente`
+    ))
+  }
+
+  /**
+   * FEATURE 130.3: Validation failed
+   */
+  validationFailed(stepId: string, reason: string): void {
+    this._validationPassed = false
+    this._validationReason = reason
+    this.steps.push(this.createStep(
+      'validation-failed',
+      'validation_failed',
+      'Validación fallida',
+      `Step ${stepId}: ${reason}`
+    ))
+  }
+
+  /**
+   * FEATURE 131: DAG graph built
+   */
+  dagBuild(graphId: string, totalNodes: number, parallelGroups: number): void {
+    this._dagExecuted = true
+    this.steps.push(this.createStep(
+      'dag-build',
+      'success',
+      `DAG construido: ${totalNodes} nodos`,
+      `Graph: ${graphId}, ${parallelGroups} grupos paralelos`
+    ))
+  }
+
+  /**
+   * FEATURE 131: DAG node scheduled
+   */
+  dagSchedule(nodeId: string, queueSize: number): void {
+    this.steps.push(this.createStep(
+      'dag-schedule',
+      'queued',
+      `Nodo programado: ${nodeId}`,
+      `Queue: ${queueSize} nodos`
+    ))
+  }
+
+  /**
+   * FEATURE 131: DAG node started
+   */
+  dagNodeStart(nodeId: string, description: string): void {
+    this._dagParallelNodes++
+    this.steps.push(this.createStep(
+      'dag-node-start',
+      'running',
+      `Iniciando: ${description}`,
+      `Node: ${nodeId}`
+    ))
+  }
+
+  /**
+   * FEATURE 131: DAG node completed
+   */
+  dagNodeComplete(nodeId: string, description: string): void {
+    this._dagParallelNodes = Math.max(0, this._dagParallelNodes - 1)
+    this.steps.push(this.createStep(
+      'dag-node-complete',
+      'success',
+      `Completado: ${description}`,
+      `Node: ${nodeId}`
+    ))
+  }
+
+  /**
+   * FEATURE 131: DAG node failed
+   */
+  dagNodeFailed(nodeId: string, error: string): void {
+    this._dagParallelNodes = Math.max(0, this._dagParallelNodes - 1)
+    this.steps.push(this.createStep(
+      'dag-node-failed',
+      'error',
+      `Fallido: ${nodeId}`,
+      error
+    ))
+  }
+
+  /**
+   * FEATURE 131: DAG execution complete
+   */
+  dagComplete(graphId: string, completed: number, total: number, timeSavedMs: number): void {
+    this._dagTimeSavedMs = timeSavedMs
+    this.steps.push(this.createStep(
+      'dag-complete',
+      'success',
+      `DAG completado: ${completed}/${total} nodos`,
+      `Graph: ${graphId}, tiempo ahorrado: ${Math.round(timeSavedMs / 1000)}s`
+    ))
+  }
+
+  /**
    * Obtener todos los pasos
    */
   getSteps(): ExecutionTraceStep[] {
@@ -307,6 +448,8 @@ export class ExecutionTraceBuilder {
 
   /**
    * FEATURE 075: Obtener debug snapshot
+   * FEATURE 130.3: Added validation fields
+   * FEATURE 131: Added DAG fields
    */
   getDebugSnapshot(): DebugSnapshot {
     const tracePresent = this.steps.length > 0
@@ -329,7 +472,15 @@ export class ExecutionTraceBuilder {
       source: this._source,
       executionConfirmed,
       tracePresent,
-      error: this._error
+      error: this._error,
+      // FEATURE 130.3: Validation info
+      validationRan: this._validationRan,
+      validationPassed: this._validationPassed,
+      validationReason: this._validationReason,
+      // FEATURE 131: DAG info
+      dagExecuted: this._dagExecuted,
+      dagParallelNodes: this._dagParallelNodes,
+      dagTimeSavedMs: this._dagTimeSavedMs
     }
   }
 

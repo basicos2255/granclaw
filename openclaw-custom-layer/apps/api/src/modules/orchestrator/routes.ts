@@ -418,7 +418,7 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
               fromPattern: true,
               patternId: executionPlan.patternId,
               tokensEstimatedSaved: executionPlan.tokensEstimatedSaved,
-              message: `Ejecutado usando patrón aprendido (${taskMemoryCheck.pattern.executionCount} ejecuciones previas)`
+              message: `Ejecutado usando patrón aprendido (${taskMemoryCheck.pattern.useCount} ejecuciones previas)`
             },
             statusResolution,
             meta: {
@@ -434,7 +434,7 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
               taskMemory: {
                 patternId: executionPlan.patternId,
                 tokensEstimatedSaved: executionPlan.tokensEstimatedSaved,
-                patternExecutions: taskMemoryCheck.pattern.executionCount,
+                patternExecutions: taskMemoryCheck.pattern.useCount,
                 patternSuccessRate: taskMemoryCheck.pattern.successRate
               },
               routerDecision: {
@@ -610,9 +610,12 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           // FIX 123.1: Record successful execution (resolves specific scope/capability)
           recordOpenClawSuccess({ scopeKey, capabilityKey })
 
-          // FEATURE 130: Learn from successful execution
+          // FEATURE 130 + FIX 130.1: Learn from successful execution (SAFE)
+          // Only learns if executionConfirmed=true and no classifier override
           const learnResult = learnFromExecution({
             originalInput: input.message,
+            tenantId: context.tenant.id,
+            userId: context.user.id,
             steps: trace.getSteps().map((step, idx) => ({
               id: `step-${idx}`,
               order: idx + 1,
@@ -623,11 +626,19 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
               estimatedDuration: 'medium' as const
             })),
             success: true,
+            executionConfirmed: debugSnapshot.executionConfirmed,
             duration: executionDuration,
             scopeKey,
-            capabilityKey
+            capabilityKey,
+            // FIX 130.1: Pass status resolution info for safe learning
+            finalUiStatus: statusResolution.finalUiStatus,
+            requiresSetup: false,
+            requiresReauth: false,
+            timeout: false,
+            partial: false,
+            classifierOverride: statusResolution.classifierOverride
           })
-          console.log(`[GranClaw] FEATURE 130: ${learnResult.reason}`)
+          console.log(`[GranClaw] FIX 130.1: ${learnResult.reason}`)
         }
 
         completeTask(

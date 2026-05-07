@@ -5243,3 +5243,1255 @@ Archivo: `data/task-memory.json`
 - ✅ Tipos añadidos correctamente (task-memory stage/source)
 - ✅ Rutas API registradas
 - ✅ Integración con orchestrator completa
+
+---
+
+## FIX 130.1 - Safe Task Memory Matching & Validation
+
+**Fecha:** 2026-05-06
+**Estado:** ✅ Completado
+
+### Problema
+FEATURE 130 (Task Memory) aprendía de cualquier ejecución "success" sin validar:
+1. Matching inseguro - sin verificar tenant, actionType, targetEntity
+2. Aprendía de ejecuciones parciales, timeouts, setup_required
+3. No había invalidación de patrones que fallaran
+4. Sin precondiciones antes de reutilizar patrones
+
+### Solución implementada
+
+#### A. TaskPattern extendido con campos seguros
+
+```typescript
+export interface TaskPattern {
+  id: string
+  tenantId: string                    // Required: tenant isolation
+  userId?: string
+  actionType: TaskActionType          // Classified action type
+  targetEntity?: string               // Target of action (chrome, vscode, etc.)
+  environmentFingerprint: EnvironmentFingerprint  // Platform, hostname, provider
+  signature: string                   // "actionType:targetEntity"
+  successRate: number                 // 0.0 - 1.0
+  confidence: number                  // Match confidence
+  useCount: number                    // Total uses
+  failureCount: number                // Consecutive failures
+  version: number                     // Pattern version for migration
+  invalidated: boolean                // Manually or auto-invalidated
+  invalidationReason?: string
+  // ... other fields
+}
+
+export const CURRENT_TASK_PATTERN_VERSION = 1
+```
+
+#### B. Normalización intent-aware
+
+```typescript
+export type TaskActionType =
+  | 'open_app' | 'close_app' | 'install_app' | 'uninstall_app'
+  | 'download_file' | 'navigate_url' | 'search_web'
+  | 'file_operation' | 'folder_operation' | 'system_command'
+  | 'play_media' | 'control_media' | 'script_execution'
+  | 'clipboard_action' | 'keyboard_action' | 'mouse_action'
+  | 'general_task'
+
+export interface NormalizedIntent {
+  signature: string           // "actionType:targetEntity"
+  actionType: TaskActionType
+  targetEntity?: string
+  normalizedIntent: string
+  confidence: number
+  language: 'es' | 'en'
+}
+```
+
+Normalización de nombres de apps:
+- "google chrome", "chrome browser" → "chrome"
+- "visual studio code", "vs code" → "vscode"
+- "vlc media player" → "vlc"
+
+#### C. Safe Matching con criterios estrictos
+
+```typescript
+const MIN_SUCCESS_RATE = 0.75    // 75% mínimo
+const MIN_CONFIDENCE = 0.75      // 75% similitud mínima
+const MAX_FAILURE_COUNT = 3      // Auto-invalidar después de 3 fallos
+
+// Filtros en findPatternByInput:
+// 1. !invalidated
+// 2. version === CURRENT_VERSION
+// 3. tenantId matches
+// 4. successRate >= MIN_SUCCESS_RATE
+// 5. confidence >= MIN_CONFIDENCE
+// 6. failureCount < MAX_FAILURE_COUNT
+// 7. actionType matches exactly
+// 8. targetEntity matches exactly (if present)
+// 9. environment compatible (same platform, provider)
+```
+
+#### D. Precondition Checks
+
+```typescript
+export interface PreconditionCheckResult {
+  ok: boolean
+  reason?: string
+  warnings: string[]
+}
+
+// Checks antes de reutilizar:
+// - Ambiente compatible (platform, OS)
+// - Provider igual
+// - No tiene failureCount > 0 reciente
+```
+
+#### E. Learning seguro (solo executed confirmado)
+
+```typescript
+// learnFromExecution() ahora bloquea learning si:
+if (!success) return { learned: false, reason: 'Execution failed' }
+if (!executionConfirmed) return { learned: false, reason: 'Execution not confirmed' }
+if (finalUiStatus !== 'executed') return { learned: false, reason: `Status not executed: ${finalUiStatus}` }
+if (requiresSetup) return { learned: false, reason: 'Requires setup - not learning' }
+if (requiresReauth) return { learned: false, reason: 'Requires reauth - not learning' }
+if (timeout) return { learned: false, reason: 'Timeout - not learning' }
+if (partial) return { learned: false, reason: 'Partial execution - not learning' }
+if (classifierOverride) return { learned: false, reason: 'Classifier override detected - not learning' }
+```
+
+#### F. Failure Feedback & Auto-invalidación
+
+```typescript
+export function recordPatternReuse(
+  patternId: string,
+  success: boolean,
+  duration: number
+): void {
+  if (success) {
+    pattern.failureCount = 0
+    pattern.useCount++
+    // Recalculate successRate
+  } else {
+    pattern.failureCount++
+    pattern.successRate = calculateNewRate(...)
+
+    // Auto-invalidate after 3 consecutive failures or <50% success
+    if (pattern.failureCount >= MAX_FAILURE_COUNT || pattern.successRate < 0.5) {
+      invalidatePattern(patternId, 'Auto-invalidated: too many failures')
+    }
+  }
+}
+```
+
+#### G. Pattern Versioning
+
+```typescript
+export const CURRENT_TASK_PATTERN_VERSION = 1
+
+// En findPatternByInput:
+if (pattern.version !== CURRENT_TASK_PATTERN_VERSION) {
+  // Skip incompatible patterns
+  continue
+}
+```
+
+### API Endpoints nuevos
+
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| POST | /task-memory/patterns/:id/invalidate | Invalidar patrón manualmente |
+| POST | /task-memory/patterns/:id/validate | Revalidar patrón invalidado |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/modules/task-memory/types.ts | +TaskActionType, +EnvironmentFingerprint, +NormalizedIntent, +PreconditionCheckResult, +TaskMemoryDebugInfo, campos seguros en TaskPattern |
+| apps/api/src/modules/task-memory/service.ts | +classifyActionType, +extractTargetEntity, +normalizeAppName, +safe findPatternByInput, +runPreconditionChecks, +invalidatePattern, +validatePattern |
+| apps/api/src/modules/task-memory/routes.ts | +handleInvalidatePattern, +handleValidatePattern, updated handleFindPattern (requires tenantId) |
+| apps/api/src/modules/task-memory/index.ts | +exports nuevas funciones y tipos |
+| apps/api/src/modules/orchestrator/task-memory-integration.ts | +checkTaskMemory safe, +learnFromExecution safe con nuevos params |
+| apps/api/src/modules/orchestrator/routes.ts | +params seguros a learnFromExecution (tenantId, userId, executionConfirmed, finalUiStatus, requiresSetup, requiresReauth, timeout, partial, classifierOverride) |
+| apps/api/src/index.ts | +rutas /task-memory/patterns/:id/invalidate y /validate |
+
+### Flujo actualizado en orchestrator
+
+```typescript
+// 1. Check task memory ANTES de OpenClaw (SAFE)
+const taskMemoryCheck = checkTaskMemory({
+  input: input.message,
+  tenantId: context.tenant.id,
+  userId: context.user.id
+})
+
+// checkTaskMemory ahora verifica:
+// - actionType exact match
+// - targetEntity exact match
+// - tenantId match
+// - environment compatible
+// - successRate >= 0.75
+// - confidence >= 0.75
+// - failureCount < 3
+// - !invalidated
+// - version match
+
+// 2. Si taskStatus === 'success', learn SAFE
+const learnResult = learnFromExecution({
+  originalInput: input.message,
+  tenantId: context.tenant.id,
+  userId: context.user.id,
+  steps: trace.getSteps().map(...),
+  success: true,
+  executionConfirmed: debugSnapshot.executionConfirmed,  // FIX 130.1
+  duration: executionDuration,
+  scopeKey,
+  capabilityKey,
+  finalUiStatus: statusResolution.finalUiStatus,        // FIX 130.1
+  requiresSetup: false,
+  requiresReauth: false,
+  timeout: false,
+  partial: false,
+  classifierOverride: statusResolution.classifierOverride  // FIX 130.1
+})
+// Ahora solo aprende si TODO está correcto
+```
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build:api exitoso
+- ✅ Matching requiere actionType + targetEntity exactos
+- ✅ Learning solo de status=executed + executionConfirmed=true
+- ✅ Bloquea learning de setup_required, reauth, timeout, partial
+- ✅ Auto-invalidación después de 3 fallos consecutivos
+- ✅ API para invalidar/validar patrones manualmente
+- ✅ Pattern versioning para migraciones futuras
+
+---
+
+## FEATURE 130.2 - Composite Tasks & Intelligent Task Chaining
+
+**Fecha:** 2026-05-06
+**Estado:** ✅ Completado
+
+### Problema
+El sistema recordaba tareas simples pero NO:
+- Componía tareas aprendidas
+- Reutilizaba subflujos
+- Encadenaba capacidades
+- Optimizaba workflows complejos
+
+Ejemplo: "descargar VLC, instalarlo y abrirlo" no reutilizaba los patrones individuales de download, install y open.
+
+### Solución implementada
+
+#### Arquitectura Composite Tasks
+
+```
+apps/api/src/modules/composite-tasks/
+├── types.ts       # CompositeTask, CompositeTaskStep, CompositeExecutionPlan
+├── service.ts     # Persistencia y CRUD
+├── planner.ts     # buildCompositeExecutionPlan, splitInputIntoSteps
+├── executor.ts    # executeCompositePlan, retryFailedStep
+├── routes.ts      # API handlers
+└── index.ts       # Exports
+```
+
+#### CompositeTask Model
+
+```typescript
+export interface CompositeTask {
+  id: string
+  tenantId: string
+  name: string
+  normalizedIntent: string
+  signature: string                    // "download_file:vlc|install_app:vlc|open_app:vlc"
+  triggerPatterns: string[]
+  steps: CompositeTaskStep[]
+  successRate: number
+  executionCount: number
+  failureCount: number
+  version: number
+  invalidated: boolean
+}
+
+export interface CompositeTaskStep {
+  stepId: string
+  order: number
+  type: 'task_memory' | 'capability' | 'openclaw' | 'manual'
+  actionType: TaskActionType
+  targetEntity?: string
+  taskPatternId?: string
+  capabilityKey?: string
+  requiresAi: boolean
+  requiresConfirmation: boolean
+  dependsOnPrevious: boolean
+}
+```
+
+#### Planner: buildCompositeExecutionPlan
+
+```typescript
+// 1. Detectar si es composite candidate
+isCompositeCandidate(input)  // busca "y", "e", ",", "entonces"
+
+// 2. Dividir en substeps
+splitInputIntoSteps("descargar VLC e instalarlo")
+// → ["descargar VLC", "instalarlo"]
+
+// 3. Detectar action chains predefinidas
+detectActionChain("instalar vlc")
+// → ['download_file', 'install_app']
+
+// 4. Buscar patterns/capabilities para cada step
+buildStepFromInput(substep, order, tenantId)
+// → { type: 'task_memory', taskPatternId: '...' }
+// → { type: 'capability', capabilityKey: '...' }
+// → { type: 'openclaw', requiresAi: true }
+```
+
+#### Executor: executeCompositePlan
+
+```typescript
+// Ejecuta steps secuencialmente
+for (const step of plan.steps) {
+  // Check preconditions (skip if already done)
+  const precondition = checkStepPreconditions(step, tenantId)
+  if (precondition.shouldSkip) {
+    step.status = 'skipped'
+    continue
+  }
+
+  // Execute based on type
+  switch (step.type) {
+    case 'task_memory':
+      // Reuse learned pattern
+      const pattern = checkTaskMemory({ input: step.description, tenantId })
+      if (pattern.canReuse) { ... }
+      break
+
+    case 'capability':
+      // Execute local capability
+      const result = await dispatchCapabilityExecution(capability, { ... })
+      break
+
+    case 'openclaw':
+      // Delegate to OpenClaw
+      const result = await runSimpleAgentTask({ message: step.description, tenantId })
+      break
+  }
+}
+```
+
+#### Recovery & Learning
+
+```typescript
+// Partial completion allowed
+if (failedStep && completedSteps.length > 0) {
+  executionStatus = 'partial'
+}
+
+// Learn new composite if >80% success
+if (success && successRate >= 0.8 && !existingComposite) {
+  saveCompositeTask({ tenantId, name, steps: successfulSteps })
+}
+
+// Retry failed step
+retryFailedStep(plan, stepId, input)
+
+// Continue from step
+continueFromStep(plan, fromStepId, input)
+```
+
+### API Endpoints
+
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| GET | /composite-tasks | Lista composite tasks del tenant |
+| GET | /composite-tasks/stats | Estadísticas |
+| GET | /composite-tasks/:id | Obtener por ID |
+| POST | /composite-tasks/find | Buscar/crear plan |
+| POST | /composite-tasks/execute | Ejecutar plan |
+| POST | /composite-tasks/:id/invalidate | Invalidar |
+| POST | /composite-tasks/:id/validate | Revalidar |
+| DELETE | /composite-tasks/:id | Eliminar |
+| POST | /composite-tasks/clear | Limpiar todos |
+
+### Trace Stages
+
+Añadidos a ExecutionTraceStep:
+- `composite-plan` - Plan creado
+- `composite-step` - Step ejecutándose
+- `composite-complete` - Workflow completado
+
+Añadido a DebugSnapshot.source:
+- `composite`
+
+### Archivos creados
+
+| Archivo | Descripción |
+|---------|-------------|
+| apps/api/src/modules/composite-tasks/types.ts | Tipos: CompositeTask, CompositeExecutionPlan, etc. |
+| apps/api/src/modules/composite-tasks/service.ts | Persistencia en data/composite-tasks.json |
+| apps/api/src/modules/composite-tasks/planner.ts | buildCompositeExecutionPlan, splitInputIntoSteps |
+| apps/api/src/modules/composite-tasks/executor.ts | executeCompositePlan, retryFailedStep |
+| apps/api/src/modules/composite-tasks/routes.ts | API handlers |
+| apps/api/src/modules/composite-tasks/index.ts | Exports |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/modules/orchestrator/trace.ts | +composite stages y source |
+| apps/api/src/index.ts | +rutas composite-tasks |
+
+### Flujo ejemplo
+
+```
+Input: "descargar VLC, instalarlo y abrirlo"
+
+1. isCompositeCandidate() → true (detecta ",")
+
+2. detectActionChain() → ['download_file', 'install_app', 'open_app']
+
+3. buildCompositeExecutionPlan():
+   Step 1: download_file:vlc → task_memory (si existe pattern)
+   Step 2: install_app:vlc → openclaw (no hay pattern)
+   Step 3: open_app:vlc → capability (si existe)
+
+4. executeCompositePlan():
+   Step 1: Reuse pattern → success
+   Step 2: Call OpenClaw → success
+   Step 3: Execute capability → success
+
+5. Learn as composite (>80% success rate)
+
+6. Next time: Reuse composite sin AI
+```
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build:api exitoso
+- ✅ Composite planner detecta workflows
+- ✅ Reutiliza task-memory patterns
+- ✅ Ejecuta secuencial con recovery parcial
+- ✅ Aprende nuevos composites
+
+---
+
+## FEATURE 130.3: Validated Workflows & Artifact Verification
+
+**Fecha:** 2026-05-06
+**Dependencia:** FEATURE 130.2 (Composite Tasks)
+
+### Problema
+
+El sistema aprendía workflows sin verificar que cada paso realmente se ejecutó correctamente:
+- Asumía éxito basado solo en la respuesta de OpenClaw
+- No verificaba artefactos generados (archivos descargados, apps instaladas, procesos activos)
+- Podía aprender workflows parcialmente exitosos
+- No distinguía entre "ejecutado" y "verificado"
+
+### Solución implementada
+
+#### Arquitectura Workflow Validation
+
+```
+apps/api/src/modules/workflow-validation/
+├── types.ts           # ValidationType, ValidationResult, StepValidation, ValidationPolicy
+├── validators.ts      # Funciones de validación por plataforma
+├── artifact-checks.ts # runValidation, runValidationWithRetry, canLearnWorkflow
+├── service.ts         # validateWorkflowStep, shouldLearnWorkflow, getRecoveryOptions
+└── index.ts           # Exports
+```
+
+#### Tipos de validación
+
+```typescript
+export type ValidationType =
+  | 'file_exists'        // Archivo existe
+  | 'file_downloaded'    // Archivo descargado (con verificación de tamaño)
+  | 'app_installed'      // App instalada en sistema
+  | 'app_opened'         // App ejecutándose (proceso activo)
+  | 'process_running'    // Proceso activo
+  | 'url_reachable'      // URL accesible
+  | 'directory_exists'   // Directorio existe
+  | 'custom'             // Validación personalizada
+```
+
+#### Mapeo ActionType → ValidationType
+
+```typescript
+export const ACTION_VALIDATION_MAP: Record<TaskActionType, ValidationType | undefined> = {
+  'download_file': 'file_downloaded',
+  'install_app': 'app_installed',
+  'uninstall_app': 'app_installed',    // inverted check
+  'open_app': 'app_opened',
+  'close_app': 'process_running',      // inverted check
+  'open_file': 'file_exists',
+  'open_url': 'url_reachable',
+  'create_file': 'file_exists',
+  'create_folder': 'directory_exists',
+  // ... más acciones
+}
+```
+
+#### Validadores por plataforma
+
+```typescript
+// validators.ts
+export async function validateDownloadedFile(target: string, options?): Promise<ValidationResult>
+export async function validateInstalledApplication(target: string, options?): Promise<ValidationResult>
+export async function validateOpenedApplication(target: string, options?): Promise<ValidationResult>
+export async function validateUrlReachable(url: string, options?): Promise<ValidationResult>
+export function validateFileExists(filePath: string): ValidationResult
+export function validateDirectoryExists(dirPath: string): ValidationResult
+```
+
+Cada validador detecta la plataforma (win32/darwin/linux) y usa comandos apropiados:
+- **Windows**: `wmic`, `tasklist`, `where`, `reg query`
+- **macOS**: `mdfind`, `pgrep`, `ls`
+- **Linux**: `which`, `dpkg`, `pgrep`
+
+#### Política de validación
+
+```typescript
+export const DEFAULT_VALIDATION_POLICY: ValidationPolicy = {
+  strictMode: true,               // Requiere validación exitosa
+  allowContinueWithWarnings: true,// Continuar con advertencias
+  learnOnlyFullyValidated: true,  // Solo aprender si todo validado
+  maxRetries: 2,                  // Intentos por validación
+  retryDelayMs: 1000,             // Delay entre reintentos
+  validationTimeout: 10000        // Timeout por validación
+}
+```
+
+#### Extensión de CompositeTaskStep
+
+```typescript
+export interface CompositeTaskStep {
+  // ... campos existentes
+  // FEATURE 130.3: Validation
+  validationRequired?: boolean
+  validationType?: string
+  validationTarget?: string
+  validationCritical?: boolean
+  validationResult?: {
+    ok: boolean
+    reason?: string
+    warnings: string[]
+    evidence: string[]
+    attempts: number
+  }
+}
+
+export type CompositeStepStatus =
+  | 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'blocked'
+  | 'validation_failed'    // NUEVO: ejecutado pero validación falló
+```
+
+#### Ejecución con validación
+
+```typescript
+// executor.ts - executeCompositePlan()
+for (const step of plan.steps) {
+  // 1. Ejecutar step
+  const result = await executeStep(step, input)
+
+  if (result.success) {
+    // 2. Validar si requerido
+    if (step.validationRequired) {
+      const validationResult = await validateWorkflowStep(
+        step.stepId, step.order, step.actionType, step.targetEntity, tenantId
+      )
+
+      step.validationResult = {
+        ok: validationResult.ok,
+        reason: validationResult.reason,
+        warnings: validationResult.warnings,
+        evidence: validationResult.evidence,
+        attempts: validationResult.validationAttempts
+      }
+
+      // 3. Si critical y falló, detener workflow
+      if (step.validationCritical && !validationResult.ok) {
+        step.status = 'validation_failed'
+        validationStoppedWorkflow = true
+        break
+      }
+    }
+  }
+}
+```
+
+#### Learning con validación
+
+```typescript
+// Solo aprender si todas las validaciones pasaron
+const learnDecision = shouldLearnWorkflow(stepValidationResults, tenantId)
+
+if (!learnDecision.shouldLearn) {
+  learnRejectedReason = learnDecision.reason
+  // Ej: "Validaciones fallidas: install_app:vlc"
+}
+```
+
+#### CompositeExecutionResult extendido
+
+```typescript
+export interface CompositeExecutionResult {
+  // ... campos existentes
+  validatedSteps: string[]           // Steps que pasaron validación
+  validationFailedSteps: string[]    // Steps que fallaron validación
+  executionStatus: 'completed' | 'partial' | 'failed' | 'blocked' | 'validation_failed'
+  learnRejectedReason?: string       // Razón si no se aprendió
+}
+```
+
+#### Trace stages para validación
+
+```typescript
+// trace.ts
+stage: '...' | 'artifact-validation' | 'validation-failed' | 'validation-success'
+status: '...' | 'validation_failed'
+source: '...' | 'validation'
+```
+
+```typescript
+// Nuevos métodos en ExecutionTraceBuilder
+validationStart(stepId: string, validationType: string): void
+validationPassed(stepId: string, evidence?: string): void
+validationFailed(stepId: string, reason: string): void
+```
+
+### Archivos creados
+
+| Archivo | Descripción |
+|---------|-------------|
+| apps/api/src/modules/workflow-validation/types.ts | Tipos: ValidationType, ValidationResult, etc. |
+| apps/api/src/modules/workflow-validation/validators.ts | Funciones de validación por plataforma |
+| apps/api/src/modules/workflow-validation/artifact-checks.ts | runValidation, canLearnWorkflow |
+| apps/api/src/modules/workflow-validation/service.ts | validateWorkflowStep, shouldLearnWorkflow |
+| apps/api/src/modules/workflow-validation/index.ts | Exports |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| apps/api/src/modules/composite-tasks/types.ts | +validation fields en CompositeTaskStep, +validation_failed status |
+| apps/api/src/modules/composite-tasks/executor.ts | +validación después de cada step, +learning con validación |
+| apps/api/src/modules/orchestrator/trace.ts | +validation stages y status |
+
+### Flujo ejemplo con validación
+
+```
+Input: "descargar VLC e instalarlo"
+
+1. executeCompositePlan()
+
+2. Step 1: download_file:vlc
+   - Ejecutar: success
+   - Validar (validationType: 'file_downloaded')
+   - validateDownloadedFile('VLC-*.exe', { downloadPath: Downloads })
+   - ✅ ok=true, evidence=['VLC-3.0.20-win64.exe (42MB)']
+
+3. Step 2: install_app:vlc
+   - Ejecutar: success
+   - Validar (validationType: 'app_installed')
+   - validateInstalledApplication('VLC', { platform: 'win32' })
+   - ✅ ok=true, evidence=['C:\\Program Files\\VideoLAN\\VLC\\vlc.exe']
+
+4. Learning check:
+   - validatedSteps: 2
+   - validationFailedSteps: 0
+   - shouldLearnWorkflow() → true
+   - ✅ saveCompositeTask()
+
+5. Result:
+   - success: true
+   - executionStatus: 'completed'
+   - validatedSteps: ['step-1', 'step-2']
+   - learnedAsComposite: true
+```
+
+### Ejemplo de validación fallida
+
+```
+Input: "instalar notepad++"
+
+1. Step 1: download_file:notepad++
+   - Ejecutar: success (OpenClaw dice que sí)
+   - Validar: validateDownloadedFile('notepad++*.exe')
+   - ❌ ok=false, reason='No se encontró archivo'
+
+2. Si validationCritical=true:
+   - step.status = 'validation_failed'
+   - executionStatus = 'validation_failed'
+   - learnedAsComposite: false
+   - learnRejectedReason: 'Validaciones fallidas: download_file:notepad++'
+```
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+- ✅ Validators detectan plataforma y ejecutan comandos apropiados
+- ✅ Executor valida después de cada step
+- ✅ Learning rechazado si validación falla
+- ✅ Trace incluye stages de validación
+- ✅ API completa para gestión
+
+---
+
+## FEATURE 131: DAG Execution Engine & Parallel Tasks
+
+**Fecha:** 2026-05-06
+**Dependencia:** FEATURE 130.2 (Composite Tasks), FEATURE 130.3 (Validated Workflows)
+
+### Problema
+
+El sistema ejecutaba workflows secuencialmente:
+- No entendía dependencias reales entre pasos
+- No paralelizaba pasos independientes
+- No optimizaba recursos
+- No tenía scheduler inteligente
+- No modelaba grafos de ejecución
+
+Ejemplo: "descargar VLC y CCleaner" podían ejecutarse en paralelo pero se hacían secuencialmente.
+
+### Solución implementada
+
+#### Arquitectura DAG Execution
+
+```
+apps/api/src/modules/dag-execution/
+├── types.ts              # WorkflowNode, ExecutionGraph, SchedulerConfig
+├── dependency-resolver.ts # Análisis de dependencias, ciclos, critical path
+├── graph-builder.ts      # Construir DAG desde composite plan
+├── artifact-locks.ts     # Gestión de locks para artefactos
+├── resource-manager.ts   # Control de slots de recursos
+├── scheduler.ts          # DAGScheduler con prioridades
+├── executor.ts           # Ejecución paralela del DAG
+└── index.ts              # Exports
+```
+
+#### Modelo de nodo (WorkflowNode)
+
+```typescript
+interface WorkflowNode {
+  id: string
+  actionType: TaskActionType
+  targetEntity?: string
+  provider: 'local' | 'openclaw' | 'task_memory' | 'capability'
+  dependencies: string[]
+  dependencyType: 'hard' | 'soft'
+  parallelizable: boolean
+  priority: number
+  estimatedDurationMs: number
+  estimatedTokenCost: number
+  validationRequired: boolean
+  retryPolicy: RetryPolicy
+  resourceRequirements: ResourceRequirements
+  status: NodeStatus
+}
+```
+
+#### Modelo de grafo (ExecutionGraph)
+
+```typescript
+interface ExecutionGraph {
+  id: string
+  nodes: Map<string, WorkflowNode>
+  edges: WorkflowEdge[]
+  rootNodes: string[]
+  leafNodes: string[]
+  metadata: GraphMetadata
+  status: GraphStatus
+}
+
+interface GraphMetadata {
+  totalNodes: number
+  maxDepth: number
+  estimatedDurationMs: number           // Sequential
+  estimatedDurationParallelMs: number   // Parallel
+  parallelizableGroups: ParallelGroup[]
+  criticalPath: string[]
+}
+```
+
+#### Dependency Resolver
+
+```typescript
+// Reglas de dependencias automáticas
+const ACTION_DEPENDENCIES = {
+  'install_app': ['download_file'],
+  'open_app': ['install_app'],
+  'configure_setting': ['install_app'],
+  'edit_file': ['download_file', 'create_file']
+}
+
+// Funciones principales
+analyzeDependencies(nodeId, graph)
+computeCriticalPath(graph)
+detectCycles(graph)
+topologicalSort(graph)
+getReadyNodes(graph, completed, running, failed)
+findParallelGroups(graph)
+canRunInParallel(nodeA, nodeB, graph)
+```
+
+#### Resource Manager
+
+```typescript
+const DEFAULT_RESOURCE_LIMITS = {
+  maxParallelLocal: 3,
+  maxParallelOpenClaw: 2,
+  maxConcurrentDownloads: 2,
+  maxConcurrentInstalls: 1,
+  maxConcurrentProcesses: 5,
+  globalConcurrencyLimit: 6
+}
+
+class ResourceManager {
+  hasAvailableSlots(node): boolean
+  tryAcquire(node): boolean
+  release(node): void
+  getUtilization(): { byType, overall }
+}
+```
+
+#### Artifact Locks
+
+```typescript
+class ArtifactLockManager {
+  tryAcquire(artifactId, nodeId, lockType): boolean
+  acquire(artifactId, nodeId, lockType): Promise<void>
+  release(artifactId, nodeId): void
+  getAllLocks(): ArtifactLock[]
+}
+
+// Tipos de lock
+type LockType = 'read' | 'write' | 'exclusive'
+
+// Conflictos detectados automáticamente
+analyzeConflicts(graph): ConflictAnalysis
+```
+
+#### Scheduler
+
+```typescript
+class DAGScheduler {
+  getNextNodes(maxCount): string[]
+  calculateScore(nodeId): number  // Prioridad
+  markRunning(nodeId): void
+  markCompleted(nodeId, validated): void
+  markFailed(nodeId, error): void
+  isComplete(): boolean
+  getStats(): { total, completed, failed, running, queued, progress }
+}
+```
+
+#### Executor
+
+```typescript
+async function executeGraph(input): Promise<ExecuteGraphResult> {
+  // 1. Crear scheduler y resource manager
+  const { scheduler, resourceManager, lockManager } = createScheduler(graph)
+
+  // 2. Loop principal
+  while (!scheduler.isComplete()) {
+    const nextNodes = scheduler.getNextNodes()
+
+    // 3. Ejecutar nodos en paralelo
+    await Promise.all(nextNodes.map(async nodeId => {
+      // Acquire resources
+      // Acquire locks
+      // Execute with retry
+      // Validate if required
+      // Release locks
+      // Mark complete/failed
+    }))
+  }
+
+  // 4. Calcular métricas
+  return {
+    completedNodes, failedNodes, blockedNodes,
+    timeSavedMs,  // Tiempo ahorrado por paralelismo
+    tokensSaved   // Tokens ahorrados
+  }
+}
+```
+
+#### Trace stages para DAG
+
+```typescript
+// Nuevos stages
+stage: '...'
+  | 'dag-build'        // DAG construido
+  | 'dag-schedule'     // Nodo programado
+  | 'dag-node-start'   // Nodo iniciado
+  | 'dag-node-complete'// Nodo completado
+  | 'dag-node-failed'  // Nodo fallido
+  | 'dag-complete'     // DAG completado
+
+// Nuevos métodos en ExecutionTraceBuilder
+dagBuild(graphId, totalNodes, parallelGroups)
+dagSchedule(nodeId, queueSize)
+dagNodeStart(nodeId, description)
+dagNodeComplete(nodeId, description)
+dagNodeFailed(nodeId, error)
+dagComplete(graphId, completed, total, timeSavedMs)
+```
+
+### Archivos creados
+
+| Archivo | Descripción |
+|---------|-------------|
+| dag-execution/types.ts | WorkflowNode, ExecutionGraph, SchedulerConfig, etc. |
+| dag-execution/dependency-resolver.ts | Análisis de dependencias y ciclos |
+| dag-execution/graph-builder.ts | buildExecutionGraph, rebuildGraph |
+| dag-execution/artifact-locks.ts | ArtifactLockManager |
+| dag-execution/resource-manager.ts | ResourceManager |
+| dag-execution/scheduler.ts | DAGScheduler, createScheduler |
+| dag-execution/executor.ts | executeGraph, retryNode, continueExecution |
+| dag-execution/index.ts | Exports públicos |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| orchestrator/trace.ts | +DAG stages, +DAG tracking en DebugSnapshot |
+
+### Flujo ejemplo
+
+```
+Input: "descargar VLC y CCleaner e instalarlos"
+
+1. buildExecutionGraph():
+   Node A: download_file:vlc (root, parallelizable)
+   Node B: download_file:ccleaner (root, parallelizable)
+   Node C: install_app:vlc (depends on A)
+   Node D: install_app:ccleaner (depends on B)
+
+2. Grafo resultante:
+   download VLC ─┐
+                 ├→ install VLC
+   download CC ──┘
+                 └→ install CC
+
+3. executeGraph():
+   Tick 1: Start A + B (parallel downloads)
+   Tick 2: A completes → Start C
+   Tick 3: B completes → Start D (but install limit=1, D queued)
+   Tick 4: C completes → Start D
+   Tick 5: D completes → Done
+
+4. Resultado:
+   - timeSavedMs: ~30000 (downloads en paralelo)
+   - parallelDurationMs: 150000
+   - sequentialDurationMs: 180000
+```
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+- ✅ Graph builder detecta dependencias automáticamente
+- ✅ Scheduler respeta límites de recursos
+- ✅ Artifact locks previenen conflictos
+- ✅ Retry granular por nodo
+- ✅ Integración con validation (130.3)
+- ✅ Trace incluye stages de DAG
+
+---
+
+## FIX 131.1 — Wire DAG Engine into Composite Execution + Minimal DAG UI
+
+**Fecha:** 2026-05-06
+
+### Descripción
+
+Conecta el DAG Execution Engine (FEATURE 131) al flujo real de producto:
+- `/composite-tasks/execute` ahora usa DAG cuando aplica
+- Endpoints `/dag/*` para gestión directa
+- UI WorkflowGraphViewer para visualización
+- Persistencia de ejecuciones DAG
+- Legacy executeCompositePlan como fallback
+
+### Archivos creados
+
+| Archivo | Descripción |
+|---------|-------------|
+| dag-execution/dag-helper.ts | shouldUseDagExecution, dagResultToResponse, config |
+| dag-execution/persistence.ts | GraphExecutionState, saveGraphExecution |
+| dag-execution/routes.ts | Endpoints /dag/* |
+| web/components/control/WorkflowGraphViewer.tsx | UI de visualización DAG |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| composite-tasks/routes.ts | Integración con DAG (buildExecutionGraph, executeGraph) |
+| api/src/index.ts | Registro de rutas /dag/* |
+| dag-execution/index.ts | Exports de dag-helper y persistence |
+
+### Criterio para usar DAG
+
+```typescript
+function shouldUseDagExecution(plan): boolean {
+  // Retorna true si:
+  // - plan.steps.length > 1
+  // - hay steps independientes (parallelizable)
+  // - hay validationRequired
+  // - hay dependencies complejas
+  // - config.enableDagExecution === true
+}
+```
+
+### Endpoints DAG registrados
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| GET | /dag/executions | Lista ejecuciones recientes |
+| GET | /dag/executions/:id | Detalle de ejecución |
+| GET | /dag/config | Configuración DAG actual |
+| POST | /dag/config | Actualizar configuración |
+| POST | /dag/execute | Ejecutar DAG directo |
+| POST | /dag/executions/:id/retry-node | Reintentar nodo fallido |
+| POST | /dag/executions/:id/cancel | Cancelar ejecución |
+| DELETE | /dag/executions/:id | Eliminar registro |
+| POST | /dag/clear | Limpiar historial |
+
+### Respuesta compatible
+
+```typescript
+interface DAGExecutionResponse {
+  // Campos legacy (compatibilidad)
+  planId, success, completedSteps, failedStep, ...
+
+  // Campos DAG nuevos
+  executionMode: 'dag' | 'legacy'
+  graphId?: string
+  graphExecution?: ExecuteGraphResult
+  graphSummary?: {
+    totalNodes, completedNodes, failedNodes,
+    parallelGroups, timeSavedMs, tokenSavingEstimate
+  }
+}
+```
+
+### WorkflowGraphViewer
+
+- Vista de nodos con estado visual (colores, iconos)
+- Dependencias como texto
+- Progress bar global
+- Resumen: completados, fallidos, tiempo ahorrado
+- Acciones: reintentar, saltar (si aplica)
+- Toggle JSON para datos avanzados
+
+### Persistencia DAG
+
+```typescript
+interface GraphExecutionState {
+  id: string
+  graphId: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'partial' | 'cancelled'
+  nodes: Record<string, { status, startedAt, error, retries }>
+  events: GraphExecutionEvent[]
+  summary?: GraphSummary
+}
+
+// Persistido en data/dag-executions.json
+// Máximo 100 ejecuciones
+```
+
+### Verificaciones
+
+- ✅ /composite-tasks/execute usa DAG cuando aplica
+- ✅ Fallback a legacy si DAG build falla
+- ✅ Endpoints /dag/* registrados
+- ✅ WorkflowGraphViewer creado
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+
+---
+
+## PHASE H1 — Runtime Hardening & Platform Stabilization
+
+**Fecha:** 2026-05-06
+
+### Descripción
+
+Fase de endurecimiento del runtime para garantizar estabilidad y resiliencia en producción. Incluye cola durable, reintentos inteligentes, observabilidad, y recuperación de crashes.
+
+### Módulos Creados
+
+#### 1. Runtime Queue (`modules/runtime-queue/`)
+
+Cola de ejecución durable con prioridades y gestión de ciclo de vida.
+
+| Archivo | Descripción |
+|---------|-------------|
+| `types.ts` | Tipos: QueuedJob, JobStatus, JobPriority, RetryPolicy, etc. |
+| `queue.ts` | Cola en memoria con eventos, filtros, estadísticas |
+| `retry-engine.ts` | Clasificación de errores, backoff exponencial, políticas |
+| `scheduler.ts` | Polling, ejecución paralela, manejo de timeout |
+| `persistence.ts` | Persistencia atómica, dead letter, recuperación |
+| `dead-letter.ts` | Gestión de DLQ, requeue, análisis |
+| `startup-recovery.ts` | Recuperación de jobs huérfanos al iniciar |
+| `routes.ts` | Endpoints REST para gestión de cola |
+| `index.ts` | Exports del módulo |
+
+#### 2. Observability (`modules/observability/`)
+
+Bus de eventos y logging estructurado.
+
+| Archivo | Descripción |
+|---------|-------------|
+| `events.ts` | EventBus, tipos de eventos, suscripciones, historial |
+| `logger.ts` | Logger estructurado con contexto, niveles, timers |
+| `index.ts` | Exports del módulo |
+
+#### 3. Shared Utilities (`shared/`)
+
+| Archivo | Descripción |
+|---------|-------------|
+| `atomic-persistence.ts` | Escritura atómica, backups, recuperación |
+| `hard-limits.ts` | Límites de seguridad globales |
+
+### Mejoras a Módulos Existentes
+
+#### Resource Manager (`dag-execution/resource-manager.ts`)
+
+- Slots con timeout/expiración
+- Heartbeat para detectar stale
+- Escalado adaptativo (auto-scale up/down)
+- Eventos de recurso
+- Health monitoring
+
+#### Artifact Locks (`dag-execution/artifact-locks.ts`)
+
+- Locks con expiración automática
+- Detección de deadlocks
+- Heartbeat para prevenir stale
+- Eventos de lock
+- Cleanup automático
+
+### Componentes UI
+
+#### QueueDashboard (`web/components/control/QueueDashboard.tsx`)
+
+- Vista general con estadísticas
+- Lista de jobs con filtros
+- Tab de salud con issues/recomendaciones
+- Controles pause/resume
+- Dead letter viewer
+
+### Endpoints Queue API
+
+| Método | Ruta | Handler |
+|--------|------|---------|
+| GET | /queue/stats | Estadísticas de cola |
+| GET | /queue/jobs | Listar jobs con filtros |
+| GET | /queue/jobs/:id | Detalle de job |
+| POST | /queue/jobs/:id/cancel | Cancelar job |
+| POST | /queue/pause | Pausar scheduler |
+| POST | /queue/resume | Reanudar scheduler |
+| GET | /queue/dead-letter | Listar DLQ |
+| POST | /queue/dead-letter/:id/requeue | Reencolar de DLQ |
+| DELETE | /queue/dead-letter/:id | Eliminar de DLQ |
+| POST | /queue/dead-letter/clear | Limpiar DLQ |
+| GET | /queue/events | Historial de eventos |
+| GET | /queue/events/:correlationId | Timeline por correlación |
+| GET | /queue/health | Health check |
+
+### Tipos Principales
+
+```typescript
+// Job en cola
+interface QueuedJob<T = unknown> {
+  id: string
+  type: string
+  payload: T
+  context: JobContext
+  status: JobStatus
+  priority: JobPriority
+  retryPolicy?: Partial<RetryPolicy>
+  retryCount: number
+  nextRetryAt?: string
+  lastError?: JobError
+  errorHistory: JobError[]
+  createdAt: string
+  deadlineAt?: string
+  progress?: number
+}
+
+// Categorías de error para retry
+type ErrorCategory =
+  | 'transient'    // Reintentar
+  | 'resource'     // Backoff y reintentar
+  | 'validation'   // No reintentar
+  | 'auth'         // No reintentar
+  | 'dependency'   // Puede reintentar
+  | 'internal'     // Puede reintentar
+  | 'unknown'      // Conservador
+
+// Evento runtime
+interface RuntimeEvent {
+  id: string
+  category: EventCategory
+  type: string
+  severity: EventSeverity
+  timestamp: string
+  source: string
+  message: string
+  correlationId?: string
+  entityId?: string
+  data?: Record<string, unknown>
+}
+
+// Hard limits
+interface HardLimits {
+  maxQueuedJobs: number
+  maxConcurrentJobs: number
+  maxRetryAttempts: number
+  maxDagNodes: number
+  maxLockHoldTimeMs: number
+  // ... más límites
+}
+```
+
+### Flujo de Recuperación al Iniciar
+
+```
+Startup
+  │
+  ├─ loadQueueState() → Cargar jobs persistidos
+  │
+  ├─ findOrphanedJobs() → Jobs running/scheduled sin proceso
+  │
+  ├─ performStartupRecovery()
+  │   │
+  │   ├─ Jobs running → reset a pending
+  │   ├─ Jobs scheduled → reset a pending
+  │   ├─ Jobs con deadline expirado → dead letter
+  │   └─ Jobs retrying stale → reset a pending
+  │
+  ├─ startScheduler() → Comenzar polling
+  │
+  └─ startPeriodicPersistence() → Guardar cada 5s
+```
+
+### Verificaciones
+
+- ✅ Runtime queue module completo
+- ✅ Retry engine con clasificación de errores
+- ✅ Resource manager con adaptación y health
+- ✅ Artifact locks con expiración y deadlock detection
+- ✅ Observability module (events + logger)
+- ✅ Atomic persistence helper
+- ✅ Startup recovery
+- ✅ Hard limits config
+- ✅ Queue dashboard UI
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso

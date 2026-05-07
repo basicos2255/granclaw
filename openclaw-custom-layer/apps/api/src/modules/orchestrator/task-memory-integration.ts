@@ -1,8 +1,9 @@
 /**
  * Task Memory Integration
  * FEATURE 130: Advanced Tasks (Persistent, Reusable, Optimized Execution)
+ * FIX 130.1: Safe Task Memory Matching & Validation
  *
- * Integrates task memory with orchestrator for pattern reuse.
+ * Integrates task memory with orchestrator for SAFE pattern reuse.
  */
 
 import {
@@ -10,25 +11,27 @@ import {
   savePattern,
   recordPatternReuse,
   normalizeTaskInput,
-  generateInputSignature,
-  detectTaskCategory,
-  detectLanguage,
+  getCurrentEnvironment,
+  runPreconditionChecks,
   type FindPatternResult,
-  type TaskPattern
+  type TaskPattern,
+  type NormalizedIntent,
+  type TaskMemoryDebugInfo,
+  type PreconditionCheckResult
 } from '../task-memory'
 import type { TaskStep } from '../task-planner/types'
 
 /**
- * Input for checking task memory
+ * FIX 130.1: Input for checking task memory (safe)
  */
 export interface CheckTaskMemoryInput {
   input: string
-  tenantId?: string
+  tenantId: string          // Required for safe matching
   userId?: string
 }
 
 /**
- * Result of task memory check
+ * FIX 130.1: Result of task memory check (safe)
  */
 export interface CheckTaskMemoryResult {
   hasPattern: boolean
@@ -37,17 +40,41 @@ export interface CheckTaskMemoryResult {
   matchType: 'exact' | 'normalized' | 'similar' | 'none'
   canReuse: boolean
   reason: string
+  normalizedIntent: NormalizedIntent
+  preconditions?: PreconditionCheckResult
+  debugInfo: TaskMemoryDebugInfo
 }
 
 /**
- * Check task memory for a reusable pattern
+ * FIX 130.1: Check task memory for a reusable pattern (SAFE)
  * Call this BEFORE sending to OpenClaw
  */
 export function checkTaskMemory(params: CheckTaskMemoryInput): CheckTaskMemoryResult {
-  const { input, tenantId } = params
+  const { input, tenantId, userId } = params
+  const environment = getCurrentEnvironment()
 
-  // Find matching pattern
-  const result: FindPatternResult = findPatternByInput({ input, tenantId })
+  // Normalize input
+  const normalizedIntent = normalizeTaskInput(input)
+
+  // Find matching pattern with SAFE criteria
+  const result: FindPatternResult = findPatternByInput({
+    input,
+    tenantId,
+    userId,
+    environment
+  })
+
+  // Build debug info
+  const debugInfo: TaskMemoryDebugInfo = {
+    taskMemoryChecked: true,
+    taskMemoryUsed: false,
+    signature: normalizedIntent.signature,
+    actionType: normalizedIntent.actionType,
+    targetEntity: normalizedIntent.targetEntity,
+    matchConfidence: result.confidence,
+    tokenSaving: false,
+    reason: result.reason
+  }
 
   if (!result.found || !result.pattern) {
     return {
@@ -55,31 +82,43 @@ export function checkTaskMemory(params: CheckTaskMemoryInput): CheckTaskMemoryRe
       confidence: 0,
       matchType: 'none',
       canReuse: false,
-      reason: 'No se encontró patrón previo'
+      reason: result.reason,
+      normalizedIntent,
+      debugInfo
     }
   }
 
   const pattern = result.pattern
 
-  // Check if we can reuse (high success rate and confidence)
-  const canReuse = pattern.successRate >= 0.7 &&
-                   result.confidence >= 0.8 &&
-                   pattern.executionCount >= 1
+  // FIX 130.1: Check preconditions before allowing reuse
+  const preconditions = result.preconditions || runPreconditionChecks(pattern, environment)
+
+  // Determine if we can safely reuse
+  // Must pass preconditions or have very high success rate
+  const canReuse = preconditions.ok || pattern.successRate >= 0.95
 
   if (!canReuse) {
+    debugInfo.preconditionWarnings = preconditions.warnings
     return {
       hasPattern: true,
       pattern,
       confidence: result.confidence,
       matchType: result.matchType,
       canReuse: false,
-      reason: pattern.successRate < 0.7
-        ? `Tasa de éxito baja (${(pattern.successRate * 100).toFixed(0)}%)`
-        : `Confianza insuficiente (${(result.confidence * 100).toFixed(0)}%)`
+      reason: preconditions.reason || 'Preconditions failed',
+      normalizedIntent,
+      preconditions,
+      debugInfo
     }
   }
 
-  console.log(`[TaskMemory] Pattern reuse available: ${pattern.id} (${pattern.executionCount} ejecuciones, ${(pattern.successRate * 100).toFixed(0)}% éxito)`)
+  // Safe to reuse
+  debugInfo.taskMemoryUsed = true
+  debugInfo.patternId = pattern.id
+  debugInfo.tokenSaving = true
+  debugInfo.preconditionWarnings = preconditions.warnings
+
+  console.log(`[TaskMemory] Safe pattern reuse: ${pattern.id} (${pattern.useCount} uses, ${(pattern.successRate * 100).toFixed(0)}% success)`)
 
   return {
     hasPattern: true,
@@ -87,25 +126,38 @@ export function checkTaskMemory(params: CheckTaskMemoryInput): CheckTaskMemoryRe
     confidence: result.confidence,
     matchType: result.matchType,
     canReuse: true,
-    reason: `Patrón reutilizable (${pattern.executionCount} ejecuciones previas)`
+    reason: `Patrón reutilizable (${pattern.useCount} usos, ${(pattern.successRate * 100).toFixed(0)}% éxito)`,
+    normalizedIntent,
+    preconditions,
+    debugInfo
   }
 }
 
 /**
- * Input for learning from execution
+ * FIX 130.1: Input for learning from execution (safe)
  */
 export interface LearnFromExecutionInput {
   originalInput: string
+  tenantId: string
+  userId?: string
   steps: TaskStep[]
   success: boolean
+  executionConfirmed: boolean   // Must be true to learn
   duration: number
   error?: string
   scopeKey?: string
   capabilityKey?: string
+  // FIX 130.1: Status checks
+  finalUiStatus?: string
+  requiresSetup?: boolean
+  requiresReauth?: boolean
+  timeout?: boolean
+  partial?: boolean
+  classifierOverride?: boolean
 }
 
 /**
- * Result of learning
+ * FIX 130.1: Result of learning
  */
 export interface LearnFromExecutionResult {
   learned: boolean
@@ -115,19 +167,103 @@ export interface LearnFromExecutionResult {
 }
 
 /**
- * Learn from a successful (or failed) execution
- * Call this AFTER OpenClaw execution completes
+ * FIX 130.1: Learn from a successful execution (SAFE)
+ * Only learns from confirmed executed results
  */
 export function learnFromExecution(params: LearnFromExecutionInput): LearnFromExecutionResult {
   const {
     originalInput,
+    tenantId,
+    userId,
     steps,
     success,
+    executionConfirmed,
     duration,
     error,
     scopeKey,
-    capabilityKey
+    capabilityKey,
+    finalUiStatus,
+    requiresSetup,
+    requiresReauth,
+    timeout,
+    partial,
+    classifierOverride
   } = params
+
+  // FIX 130.1: Only learn from robust successes
+  // Check all failure conditions
+  if (!success) {
+    return {
+      learned: false,
+      patternId: '',
+      isNew: false,
+      reason: 'Execution failed'
+    }
+  }
+
+  if (!executionConfirmed) {
+    return {
+      learned: false,
+      patternId: '',
+      isNew: false,
+      reason: 'Execution not confirmed'
+    }
+  }
+
+  // FIX 130.1: Block learning for specific statuses
+  if (finalUiStatus && finalUiStatus !== 'executed') {
+    return {
+      learned: false,
+      patternId: '',
+      isNew: false,
+      reason: `Status not executed: ${finalUiStatus}`
+    }
+  }
+
+  if (requiresSetup) {
+    return {
+      learned: false,
+      patternId: '',
+      isNew: false,
+      reason: 'Requires setup - not learning'
+    }
+  }
+
+  if (requiresReauth) {
+    return {
+      learned: false,
+      patternId: '',
+      isNew: false,
+      reason: 'Requires reauth - not learning'
+    }
+  }
+
+  if (timeout) {
+    return {
+      learned: false,
+      patternId: '',
+      isNew: false,
+      reason: 'Timeout - not learning'
+    }
+  }
+
+  if (partial) {
+    return {
+      learned: false,
+      patternId: '',
+      isNew: false,
+      reason: 'Partial execution - not learning'
+    }
+  }
+
+  if (classifierOverride) {
+    return {
+      learned: false,
+      patternId: '',
+      isNew: false,
+      reason: 'Classifier override detected - not learning'
+    }
+  }
 
   // Don't learn from empty steps
   if (!steps || steps.length === 0) {
@@ -135,38 +271,47 @@ export function learnFromExecution(params: LearnFromExecutionInput): LearnFromEx
       learned: false,
       patternId: '',
       isNew: false,
-      reason: 'Sin pasos para aprender'
+      reason: 'No steps to learn'
     }
   }
 
-  // Normalize and generate signature
-  const normalizedInput = normalizeTaskInput(originalInput)
-  const inputSignature = generateInputSignature(originalInput)
-
-  // Detect metadata
-  const category = detectTaskCategory(originalInput)
-  const language = detectLanguage(originalInput)
+  // Normalize input
+  const normalizedIntent = normalizeTaskInput(originalInput)
 
   // Save pattern
   const pattern = savePattern({
+    tenantId,
+    userId,
     originalInput,
-    normalizedInput,
-    inputSignature,
+    normalizedIntent,
     steps,
     duration,
-    success,
+    success: true,
+    executionConfirmed: true,
     error,
+    environment: getCurrentEnvironment(),
     metadata: {
-      category,
-      language,
+      category: normalizedIntent.actionType,
+      language: normalizedIntent.language,
       isMultiStep: steps.length > 1,
-      requiredScopes: scopeKey ? [scopeKey] : undefined
+      requiredScopes: scopeKey ? [scopeKey] : undefined,
+      capabilityKey,
+      scopeKey
     }
   })
 
-  const isNew = pattern.executionCount === 1
+  if (!pattern) {
+    return {
+      learned: false,
+      patternId: '',
+      isNew: false,
+      reason: 'Pattern save failed'
+    }
+  }
 
-  console.log(`[TaskMemory] ${isNew ? 'New' : 'Updated'} pattern: ${pattern.id} (category: ${category})`)
+  const isNew = pattern.useCount === 1
+
+  console.log(`[TaskMemory] ${isNew ? 'New' : 'Updated'} pattern: ${pattern.id} (${normalizedIntent.signature})`)
 
   return {
     learned: true,
@@ -174,7 +319,7 @@ export function learnFromExecution(params: LearnFromExecutionInput): LearnFromEx
     isNew,
     reason: isNew
       ? 'Nuevo patrón aprendido'
-      : `Patrón actualizado (${pattern.executionCount} ejecuciones)`
+      : `Patrón actualizado (${pattern.useCount} ejecuciones)`
   }
 }
 
@@ -193,6 +338,8 @@ export interface ExecuteFromPatternResult {
   estimatedDuration: number
   tokensEstimatedSaved: number
   patternId: string
+  actionType: string
+  targetEntity?: string
 }
 
 /**
@@ -208,21 +355,23 @@ export function getExecutionPlanFromPattern(params: ExecuteFromPatternInput): Ex
   }))
 
   // Estimate tokens saved (based on typical AI call)
-  const tokensEstimatedSaved = 500 // Conservative estimate
+  const tokensEstimatedSaved = 500
 
-  console.log(`[TaskMemory] Providing execution plan from pattern ${pattern.id} (${steps.length} steps)`)
+  console.log(`[TaskMemory] Execution plan from pattern ${pattern.id} (${steps.length} steps, ${pattern.actionType}:${pattern.targetEntity || 'none'})`)
 
   return {
     steps,
     estimatedDuration: pattern.avgDuration,
     tokensEstimatedSaved,
-    patternId: pattern.id
+    patternId: pattern.id,
+    actionType: pattern.actionType,
+    targetEntity: pattern.targetEntity
   }
 }
 
 /**
- * Record that a pattern was reused
- * Call this after successfully executing a cached pattern
+ * FIX 130.1: Record pattern execution result
+ * Handles both success and failure with proper invalidation
  */
 export function recordPatternExecution(
   patternId: string,
@@ -241,13 +390,14 @@ export interface TaskMemorySummary {
   totalExecutions: number
   tokensEstimatedSaved: number
   avgSuccessRate: number
+  invalidatedPatterns: number
+  totalFailures: number
 }
 
 /**
  * Get summary for UI display
  */
 export function getTaskMemorySummary(): TaskMemorySummary {
-  // Import stats function
   const { getTaskMemoryStats } = require('../task-memory')
   const stats = getTaskMemoryStats()
 
@@ -255,6 +405,8 @@ export function getTaskMemorySummary(): TaskMemorySummary {
     patternsAvailable: stats.totalPatterns,
     totalExecutions: stats.totalExecutions,
     tokensEstimatedSaved: stats.tokensEstimatedSaved,
-    avgSuccessRate: stats.avgSuccessRate
+    avgSuccessRate: stats.avgSuccessRate,
+    invalidatedPatterns: stats.invalidatedPatterns,
+    totalFailures: stats.totalFailures
   }
 }

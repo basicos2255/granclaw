@@ -69,15 +69,41 @@ import {
   handleGetRepairHistory
 } from './modules/openclaw-repair'
 import { handleOrchestratorRun, handleOrchestratorRunStream } from './modules/orchestrator'
-// FEATURE 130: Task Memory routes
+// FEATURE 130 + FIX 130.1: Task Memory routes
 import {
   handleGetPatterns,
   handleGetStats,
   handleFindPattern,
   handleDeletePattern,
   handleClearPatterns,
-  handleNormalizeInput
+  handleNormalizeInput,
+  handleInvalidatePattern,
+  handleValidatePattern
 } from './modules/task-memory'
+// FEATURE 130.2: Composite Tasks routes
+import {
+  handleGetCompositeTasks,
+  handleGetCompositeStats,
+  handleGetCompositeById,
+  handleFindCompositePlan,
+  handleExecuteCompositePlan,
+  handleInvalidateComposite,
+  handleValidateComposite,
+  handleDeleteComposite,
+  handleClearCompositeTasks
+} from './modules/composite-tasks'
+// FIX 131.1: DAG Execution routes
+import {
+  handleListDagExecutions,
+  handleGetDagExecution,
+  handleGetDagConfig,
+  handleSetDagConfig,
+  handleExecuteDag,
+  handleRetryDagNode,
+  handleCancelDagExecution,
+  handleDeleteDagExecution,
+  handleClearDagExecutions
+} from './modules/dag-execution/routes'
 import { handleLogin, handleGetMe, handleRegister, handleLogout } from './modules/auth'
 import { handleListTools, handleGetTool } from './modules/tools'
 import { handleGetAllConfig, handleGetTenantConfig, handleSetTenantConfig, handleDeleteTenantConfig } from './modules/granclaw-hub'
@@ -154,7 +180,13 @@ const getRoutes: Record<string, RouteHandler> = {
   '/openclaw/repair/history': handleGetRepairHistory,
   // FEATURE 130: Task Memory routes
   '/task-memory/patterns': handleGetPatterns,
-  '/task-memory/stats': handleGetStats
+  '/task-memory/stats': handleGetStats,
+  // FEATURE 130.2: Composite Tasks routes
+  '/composite-tasks': handleGetCompositeTasks,
+  '/composite-tasks/stats': wrapHandler(handleGetCompositeStats),
+  // FIX 131.1: DAG Execution routes
+  '/dag/executions': handleListDagExecutions,
+  '/dag/config': handleGetDagConfig
 }
 
 // POST routes
@@ -184,7 +216,15 @@ const postRoutes: Record<string, RouteHandler> = {
   // FEATURE 130: Task Memory routes
   '/task-memory/find': handleFindPattern,
   '/task-memory/normalize': handleNormalizeInput,
-  '/task-memory/clear': handleClearPatterns
+  '/task-memory/clear': handleClearPatterns,
+  // FEATURE 130.2: Composite Tasks routes
+  '/composite-tasks/find': handleFindCompositePlan,
+  '/composite-tasks/execute': handleExecuteCompositePlan,
+  '/composite-tasks/clear': handleClearCompositeTasks,
+  // FIX 131.1: DAG Execution routes
+  '/dag/config': handleSetDagConfig,
+  '/dag/execute': handleExecuteDag,
+  '/dag/clear': handleClearDagExecutions
 }
 
 // Rutas dinámicas con parámetros
@@ -222,6 +262,16 @@ const getDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/openclaw\/repair\/([^/]+)$/,
     handler: wrapRepairGetHandler
+  },
+  // FEATURE 130.2: Composite Tasks
+  {
+    pattern: /^\/composite-tasks\/([^/]+)$/,
+    handler: handleGetCompositeById
+  },
+  // FIX 131.1: DAG Execution
+  {
+    pattern: /^\/dag\/executions\/([^/]+)$/,
+    handler: handleGetDagExecution
   }
 ]
 
@@ -266,6 +316,50 @@ const postDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/openclaw\/repair\/([^/]+)\/retry$/,
     handler: wrapRepairRetryHandler
+  },
+]
+
+// FIX 130.1: Wrappers for task memory handlers
+const wrapInvalidatePatternHandler: DynamicRouteHandler = (req, res, param, _context) => {
+  handleInvalidatePattern(req, res, param)
+}
+const wrapValidatePatternHandler: DynamicRouteHandler = (req, res, param, _context) => {
+  handleValidatePattern(req, res, param)
+}
+
+// FIX 130.1: Task Memory invalidate/validate routes
+const postDynamicRoutesTaskMemory: DynamicRoute[] = [
+  {
+    pattern: /^\/task-memory\/patterns\/([^/]+)\/invalidate$/,
+    handler: wrapInvalidatePatternHandler
+  },
+  {
+    pattern: /^\/task-memory\/patterns\/([^/]+)\/validate$/,
+    handler: wrapValidatePatternHandler
+  }
+]
+
+// FEATURE 130.2: Composite Tasks dynamic routes
+const postDynamicRoutesComposite: DynamicRoute[] = [
+  {
+    pattern: /^\/composite-tasks\/([^/]+)\/invalidate$/,
+    handler: handleInvalidateComposite
+  },
+  {
+    pattern: /^\/composite-tasks\/([^/]+)\/validate$/,
+    handler: handleValidateComposite
+  }
+]
+
+// FIX 131.1: DAG Execution dynamic routes
+const postDynamicRoutesDag: DynamicRoute[] = [
+  {
+    pattern: /^\/dag\/executions\/([^/]+)\/retry-node$/,
+    handler: handleRetryDagNode
+  },
+  {
+    pattern: /^\/dag\/executions\/([^/]+)\/cancel$/,
+    handler: handleCancelDagExecution
   }
 ]
 
@@ -288,6 +382,16 @@ const deleteDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/task-memory\/patterns\/([^/]+)$/,
     handler: wrapDeletePatternHandler
+  },
+  // FEATURE 130.2: Composite Tasks delete
+  {
+    pattern: /^\/composite-tasks\/([^/]+)$/,
+    handler: handleDeleteComposite
+  },
+  // FIX 131.1: DAG Execution delete
+  {
+    pattern: /^\/dag\/executions\/([^/]+)$/,
+    handler: handleDeleteDagExecution
   }
 ]
 
@@ -350,6 +454,27 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     const dynamicMatch = matchDynamicRoute(pathname, postDynamicRoutes)
     if (dynamicMatch) {
       dynamicMatch.handler(req, res, dynamicMatch.param, context)
+      return
+    }
+
+    // FIX 130.1: Task Memory dynamic routes
+    const taskMemoryMatch = matchDynamicRoute(pathname, postDynamicRoutesTaskMemory)
+    if (taskMemoryMatch) {
+      taskMemoryMatch.handler(req, res, taskMemoryMatch.param, context)
+      return
+    }
+
+    // FEATURE 130.2: Composite Tasks dynamic routes
+    const compositeMatch = matchDynamicRoute(pathname, postDynamicRoutesComposite)
+    if (compositeMatch) {
+      compositeMatch.handler(req, res, compositeMatch.param, context)
+      return
+    }
+
+    // FIX 131.1: DAG Execution dynamic routes
+    const dagMatch = matchDynamicRoute(pathname, postDynamicRoutesDag)
+    if (dagMatch) {
+      dagMatch.handler(req, res, dagMatch.param, context)
       return
     }
   }

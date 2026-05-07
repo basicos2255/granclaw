@@ -1,6 +1,7 @@
 /**
  * Task Memory Routes
  * FEATURE 130: Advanced Tasks (Persistent, Reusable, Optimized Execution)
+ * FIX 130.1: Safe Task Memory Matching & Validation
  *
  * API endpoints for task memory management.
  * Uses native http (not Express) to match project conventions.
@@ -18,7 +19,8 @@ import {
   deletePattern,
   clearAllPatterns,
   normalizeTaskInput,
-  generateInputSignature
+  invalidatePattern,
+  validatePattern
 } from './service'
 
 /**
@@ -76,6 +78,7 @@ export function handleGetStats(req: IncomingMessage, res: ServerResponse): void 
 /**
  * POST /task-memory/find
  * Find a matching pattern for an input
+ * FIX 130.1: Now requires tenantId for safe matching
  */
 export function handleFindPattern(req: IncomingMessage, res: ServerResponse): void {
   let body = ''
@@ -94,13 +97,19 @@ export function handleFindPattern(req: IncomingMessage, res: ServerResponse): vo
         return
       }
 
+      if (!tenantId || typeof tenantId !== 'string') {
+        badRequest(res, 'Se requiere tenantId')
+        return
+      }
+
+      const normalizedIntent = normalizeTaskInput(input)
       const result = findPatternByInput({ input, tenantId })
 
       ok(res, {
         success: true,
         ...result,
-        normalizedInput: normalizeTaskInput(input),
-        signature: generateInputSignature(input)
+        normalizedIntent,
+        signature: normalizedIntent.signature
       })
     } catch (err) {
       console.error('[TaskMemory] Error finding pattern:', err)
@@ -182,6 +191,7 @@ export function handleClearPatterns(req: IncomingMessage, res: ServerResponse): 
 /**
  * POST /task-memory/normalize
  * Normalize an input (for testing/debugging)
+ * FIX 130.1: Returns full NormalizedIntent
  */
 export function handleNormalizeInput(req: IncomingMessage, res: ServerResponse): void {
   let body = ''
@@ -200,11 +210,12 @@ export function handleNormalizeInput(req: IncomingMessage, res: ServerResponse):
         return
       }
 
+      const normalizedIntent = normalizeTaskInput(input)
+
       ok(res, {
         success: true,
         original: input,
-        normalized: normalizeTaskInput(input),
-        signature: generateInputSignature(input)
+        ...normalizedIntent
       })
     } catch (err) {
       console.error('[TaskMemory] Error normalizing input:', err)
@@ -215,4 +226,76 @@ export function handleNormalizeInput(req: IncomingMessage, res: ServerResponse):
   req.on('error', () => {
     badRequest(res, 'Error reading request body')
   })
+}
+
+/**
+ * POST /task-memory/patterns/:id/invalidate
+ * FIX 130.1: Manually invalidate a pattern
+ */
+export function handleInvalidatePattern(req: IncomingMessage, res: ServerResponse, patternId?: string): void {
+  let body = ''
+
+  req.on('data', (chunk) => {
+    body += chunk.toString()
+  })
+
+  req.on('end', () => {
+    try {
+      if (!patternId) {
+        badRequest(res, 'Se requiere ID del patrón')
+        return
+      }
+
+      const data = body ? JSON.parse(body) : {}
+      const reason = data.reason || 'Invalidado manualmente'
+
+      const success = invalidatePattern(patternId, reason)
+
+      if (success) {
+        ok(res, {
+          success: true,
+          message: 'Patrón invalidado',
+          patternId,
+          reason
+        })
+      } else {
+        notFound(res, 'Patrón no encontrado')
+      }
+    } catch (err) {
+      console.error('[TaskMemory] Error invalidating pattern:', err)
+      serverError(res, 'Error al invalidar patrón')
+    }
+  })
+
+  req.on('error', () => {
+    badRequest(res, 'Error reading request body')
+  })
+}
+
+/**
+ * POST /task-memory/patterns/:id/validate
+ * FIX 130.1: Revalidate an invalidated pattern
+ */
+export function handleValidatePattern(req: IncomingMessage, res: ServerResponse, patternId?: string): void {
+  try {
+    if (!patternId) {
+      badRequest(res, 'Se requiere ID del patrón')
+      return
+    }
+
+    const success = validatePattern(patternId)
+
+    if (success) {
+      ok(res, {
+        success: true,
+        message: 'Patrón revalidado',
+        patternId
+      })
+    } else {
+      notFound(res, 'Patrón no encontrado')
+    }
+  } catch (err) {
+    console.error('[TaskMemory] Error validating pattern:', err)
+    serverError(res, 'Error al validar patrón')
+  }
 }

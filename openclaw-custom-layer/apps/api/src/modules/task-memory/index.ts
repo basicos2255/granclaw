@@ -1,6 +1,7 @@
 /**
  * Task Memory Module
  * FEATURE 130: Advanced Tasks (Persistent, Reusable, Optimized Execution)
+ * FIX 130.1: Safe Task Memory Matching & Validation
  *
  * Exports for task pattern storage and reuse.
  */
@@ -14,10 +15,19 @@ export type {
   FindPatternInput,
   FindPatternResult,
   SavePatternInput,
-  PatternExecutionResult
+  PatternExecutionResult,
+  // FIX 130.1: New types
+  TaskActionType,
+  EnvironmentFingerprint,
+  NormalizedIntent,
+  PreconditionCheckResult,
+  TaskMemoryDebugInfo
 } from './types'
 
-export { DEFAULT_TASK_MEMORY_STATE } from './types'
+export {
+  DEFAULT_TASK_MEMORY_STATE,
+  CURRENT_TASK_PATTERN_VERSION
+} from './types'
 
 // Service functions
 export {
@@ -34,7 +44,12 @@ export {
   clearAllPatterns,
   reloadTaskMemory,
   detectTaskCategory,
-  detectLanguage
+  detectLanguage,
+  // FIX 130.1: New functions
+  getCurrentEnvironment,
+  runPreconditionChecks,
+  invalidatePattern,
+  validatePattern
 } from './service'
 
 // Route handlers
@@ -44,5 +59,8 @@ export {
   handleFindPattern,
   handleDeletePattern,
   handleClearPatterns,
-  handleNormalizeInput
+  handleNormalizeInput,
+  // FIX 130.1: New handlers
+  handleInvalidatePattern,
+  handleValidatePattern
 } from './routes'

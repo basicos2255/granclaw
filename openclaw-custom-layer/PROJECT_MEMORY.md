@@ -6863,3 +6863,775 @@ npm run build   # ✅ Build exitoso
 - `apps/api/src/index.ts` - Inicialización WS Gateway + Event Bridge
 - `apps/api/src/modules/runtime-queue/runtime-routes.ts` - WS stats en /runtime/state
 - `apps/web/src/components/control/GlobalHeader.tsx` - NotificationBell integrado
+
+---
+
+## P2 — Product Experience Layer & Task Operating System
+
+**Fecha:** 2026-05-07
+
+### Objetivo
+
+Transformar GranClaw de panel técnico a "sistema operativo agente" usable por humanos y empresas. Crear una experiencia de producto completa con navegación, dashboard, tareas, automatizaciones, canales y configuración.
+
+### Reglas Implementadas
+
+1. ✅ NO romper runtime existente
+2. ✅ NO duplicar estados ya existentes
+3. ✅ Runtime queue/DAG siguen siendo autoridad
+4. ✅ WebSocket sigue siendo canal principal
+5. ✅ REST solo fallback/snapshot
+6. ✅ UX simple para usuario final
+7. ✅ Mantener compatibilidad con /control técnico
+
+### Componentes Implementados
+
+#### App Shell (apps/web/src/layouts/)
+
+| Archivo | Descripción |
+|---------|-------------|
+| `AppShell.tsx` | Layout principal con sidebar y content area |
+| `Sidebar.tsx` | Navegación lateral con items dinámicos |
+| `Topbar.tsx` | Barra superior con notificaciones y usuario |
+| `index.ts` | Exports del módulo |
+
+#### Product Pages (apps/web/src/pages/product/)
+
+| Archivo | Ruta | Descripción |
+|---------|------|-------------|
+| `ProductDashboard.tsx` | `/dashboard` | Dashboard principal con runtime health, tareas activas, quick actions |
+| `TasksPage.tsx` | `/tasks` | Task Operating System con vistas list/timeline/grouped |
+| `AutomationsPage.tsx` | `/automations` | Gestión de automatizaciones periódicas/event/conditional |
+| `ChannelsPage.tsx` | `/channels` | Canales de comunicación (email, ftp, browser, filesystem) |
+| `CredentialsPage.tsx` | `/credentials` | Vault de credenciales sin mostrar secrets |
+| `ApprovalsPage.tsx` | `/approvals` | Centro de aprobaciones con eventos live |
+| `NotificationsPage.tsx` | `/notifications` | Centro de notificaciones live |
+| `RuntimePage.tsx` | `/runtime` | Monitor avanzado de runtime (queue, workers, DAG, WS) |
+| `SettingsPage.tsx` | `/settings` | Configuración de usuario y sistema |
+| `index.ts` | - | Exports de todas las páginas |
+
+### Rutas Producto (P2)
+
+| Ruta | Página | Descripción |
+|------|--------|-------------|
+| `/dashboard` | ProductDashboard | Vista general del agente |
+| `/tasks` | TasksPage | Tareas del usuario |
+| `/automations` | AutomationsPage | Automatizaciones |
+| `/channels` | ChannelsPage | Canales conectados |
+| `/credentials` | CredentialsPage | Credenciales seguras |
+| `/approvals` | ApprovalsPage | Aprobaciones pendientes |
+| `/notifications` | NotificationsPage | Centro de notificaciones |
+| `/runtime` | RuntimePage | Monitor runtime (devops) |
+| `/settings` | SettingsPage | Configuración |
+| `/control/*` | Control pages | Panel técnico (preservado) |
+
+### Características UX
+
+- **AppShell:** Sidebar colapsable, navegación visual, indicador de conexión WS
+- **Dashboard:** Runtime health, tareas activas, quick actions, live updates
+- **Tasks:** Vistas múltiples (list, timeline, grouped), filtros por estado, retry actions
+- **Automations:** Tipos periodic/event/conditional, toggle enable/disable
+- **Channels:** Estado de conexión, acciones test/configure
+- **Credentials:** Vault seguro sin revelar secrets, scopes, expiración
+- **Approvals:** Eventos live via WebSocket, approve/deny actions
+- **Notifications:** Filtro read/unread, mark all as read
+- **Runtime:** Métricas avanzadas (queue pressure, workers, DAG, WS health)
+- **Settings:** Notificaciones, ejecución, visualización
+
+### Integración WebSocket
+
+Todas las páginas de producto utilizan los hooks de P1.2:
+- `useRuntimeWs()` - Estado de conexión
+- `useQueueEvents()` - Eventos de cola
+- `useApprovalEvents()` - Eventos de aprobación
+- `useNotificationEvents()` - Notificaciones
+
+### App.tsx Actualizado
+
+- Agregadas rutas de producto (`/dashboard`, `/tasks`, etc.)
+- Función `isAppShellRoute()` para detectar rutas P2
+- AppShell wrapper para páginas de producto
+- ProductHeader preservado para `/control/*`
+- DevHeader preservado para `/dev/*`
+
+### Verificación
+
+```bash
+npm run check   # ✅ Sin errores TS
+npm run build   # ✅ Build exitoso
+```
+
+### Archivos Creados/Modificados
+
+**Nuevos:**
+- `apps/web/src/layouts/AppShell.tsx`
+- `apps/web/src/layouts/Sidebar.tsx`
+- `apps/web/src/layouts/Topbar.tsx`
+- `apps/web/src/layouts/index.ts`
+- `apps/web/src/pages/product/ProductDashboard.tsx`
+- `apps/web/src/pages/product/TasksPage.tsx`
+- `apps/web/src/pages/product/AutomationsPage.tsx`
+- `apps/web/src/pages/product/ChannelsPage.tsx`
+- `apps/web/src/pages/product/CredentialsPage.tsx`
+- `apps/web/src/pages/product/ApprovalsPage.tsx`
+- `apps/web/src/pages/product/NotificationsPage.tsx`
+- `apps/web/src/pages/product/RuntimePage.tsx`
+- `apps/web/src/pages/product/SettingsPage.tsx`
+- `apps/web/src/pages/product/index.ts`
+
+**Modificados:**
+- `apps/web/src/App.tsx` - Integración AppShell y rutas P2
+
+
+---
+
+## P3 — Real Integrations & Operational Channels
+
+**Fecha:** 2026-05-07
+**Estado:** Completado
+**Objetivo:** Conectar GranClaw al mundo real con canales operacionales
+
+### Resumen
+
+P3 implementa la infraestructura de canales operacionales que permite al agente interactuar con sistemas externos (email, FTP, WhatsApp, browser automation, calendar). Incluye arquitectura de runtime para canales, sistema de permisos/scopes, integración con credenciales vault, eventos WebSocket, y UI de gestión.
+
+### Reglas Aplicadas
+
+1. ✅ NO modificar OpenClaw core
+2. ✅ NO romper runtime queue/DAG
+3. ✅ Canales integran con runtime y workflows
+4. ✅ WebSocket como realtime principal
+5. ✅ REST como fallback
+6. ✅ No hardcoded credentials
+7. ✅ Todo a través de vault/permissions/scopes
+8. ✅ npm run check + build exitosos
+
+### Arquitectura de Canales
+
+#### Módulo channels-runtime (apps/api/src/modules/channels-runtime/)
+
+| Archivo | Descripción |
+|---------|-------------|
+| `types.ts` | Tipos base: ChannelType, ChannelStatus, ChannelConfig, ChannelEvent, ApprovalMode |
+| `registry.ts` | Registro de providers con metadata (stability, scopes, capabilities) |
+| `permissions.ts` | Sistema de scopes y validación de permisos por canal |
+| `event-adapter.ts` | Puente eventos de canal -> runtime queue -> WebSocket |
+| `runtime-integration.ts` | Integración con cola de runtime (enqueue, triggers) |
+| `channel-manager.ts` | Gestión de instancias de canal (lifecycle, health checks) |
+| `index.ts` | Exports e inicialización |
+
+#### Tipos de Canal
+
+| Tipo | Stability | Descripción |
+|------|-----------|-------------|
+| `email` | stable | IMAP/SMTP con clasificación automática |
+| `ftp` | stable | FTP/SFTP para transferencia de archivos |
+| `browser` | beta | Automatización web con Playwright |
+| `whatsapp` | experimental | WhatsApp Business API |
+| `calendar` | beta | Google/Outlook Calendar |
+| `api` | stable | APIs REST/GraphQL |
+| `filesystem` | stable | Acceso local a archivos |
+| `webhook` | stable | Webhooks entrantes |
+
+### Implementaciones de Canal (apps/api/src/modules/channels/)
+
+| Módulo | Características |
+|--------|-----------------|
+| `email/index.ts` | Connect, send, fetch inbox, classify, reply |
+| `ftp/index.ts` | Upload, download, list, sync directories |
+| `browser/index.ts` | Navigate, click, fill, screenshot, execute script |
+| `whatsapp/index.ts` | Send message, auto-reply modes (safe/approval/autonomous) |
+| `calendar/index.ts` | List events, create, update, delete, search |
+| `routes.ts` | HTTP handlers para API de canales |
+
+### Sistema de Permisos
+
+Scopes por canal definidos en `permissions.ts`:
+- Email: `email.read`, `email.send`, `email.reply`, `email.classify`
+- FTP: `ftp.read`, `ftp.write`, `ftp.delete`, `ftp.sync`
+- Browser: `browser.navigate`, `browser.click`, `browser.fill`, `browser.script`
+- WhatsApp: `whatsapp.read`, `whatsapp.send`, `whatsapp.reply`
+- Calendar: `calendar.read`, `calendar.write`, `calendar.delete`
+
+### Modos de Aprobación
+
+| Modo | Descripción |
+|------|-------------|
+| `auto` | Sin aprobación, límites automáticos |
+| `approval_required` | Requiere aprobación humana |
+| `always_ask` | Siempre preguntar al usuario |
+| `always_allow` | Permitir todo (usar con cuidado) |
+
+### Seguridad WhatsApp
+
+- **Auto-reply tracker:** Límite por hora (default 20)
+- **Modos:** off, safe (solo templates), approval (requiere OK), autonomous
+- **Rate limiting:** Prevención de spam por canal
+- **Human escalation:** Cuando se detectan temas sensibles
+
+### UI de Canales
+
+| Página | Ruta | Descripción |
+|--------|------|-------------|
+| `WhatsAppPage.tsx` | `/channels/whatsapp` | Gestión WhatsApp: chats, reglas, settings |
+| `EmailPage.tsx` | `/channels/email` | Inbox con clasificación, reglas, IMAP/SMTP config |
+| `ChannelsPage.tsx` (actualizado) | `/channels` | Lista todos los canales con stability badges |
+
+### Event Bus (apps/api/src/modules/event-bus/)
+
+Sistema de eventos interno para comunicación entre módulos:
+- Eventos soportados: `channel:event`, `credential:expired`, `workflow:trigger`, etc.
+- Métodos: `on`, `once`, `off`, `emit`, `emitAsync`
+
+### Integración Runtime
+
+El `runtime-integration.ts` conecta eventos de canal con la cola:
+- `createJobFromChannelEvent()` - Crea job de canal
+- `enqueueChannelAction()` - Encola acción de canal
+- Escucha eventos `workflow:trigger` para ejecutar workflows
+
+### API Endpoints
+
+| Método | Ruta | Handler |
+|--------|------|---------|
+| GET | `/api/channels/providers` | `handleGetProviders` |
+| GET | `/api/channels` | `handleGetChannels` |
+| GET | `/api/channels/stats` | `handleGetStats` |
+| POST | `/api/channels` | `handleCreateChannel` |
+| GET | `/api/channels/:id` | `handleGetChannelById` |
+| POST | `/api/channels/:id/connect` | `handleConnectChannel` |
+| POST | `/api/channels/:id/disconnect` | `handleDisconnectChannel` |
+| GET | `/api/channels/:id/events` | `handleGetChannelEvents` |
+
+### Verificación
+
+```bash
+npm run check   # ✅ Sin errores TS
+npm run build   # ✅ Build exitoso
+```
+
+### Archivos Creados
+
+**Nuevos:**
+- `apps/api/src/modules/event-bus/index.ts`
+- `apps/api/src/modules/channels-runtime/types.ts`
+- `apps/api/src/modules/channels-runtime/registry.ts`
+- `apps/api/src/modules/channels-runtime/permissions.ts`
+- `apps/api/src/modules/channels-runtime/event-adapter.ts`
+- `apps/api/src/modules/channels-runtime/runtime-integration.ts`
+- `apps/api/src/modules/channels-runtime/channel-manager.ts`
+- `apps/api/src/modules/channels-runtime/index.ts`
+- `apps/api/src/modules/channels/email/index.ts`
+- `apps/api/src/modules/channels/ftp/index.ts`
+- `apps/api/src/modules/channels/browser/index.ts`
+- `apps/api/src/modules/channels/whatsapp/index.ts`
+- `apps/api/src/modules/channels/calendar/index.ts`
+- `apps/api/src/modules/channels/index.ts`
+- `apps/api/src/modules/channels/routes.ts`
+- `apps/web/src/pages/product/WhatsAppPage.tsx`
+- `apps/web/src/pages/product/EmailPage.tsx`
+
+**Modificados:**
+- `apps/api/src/shared/response.ts` - Agregado `created()`
+- `apps/web/src/pages/product/ChannelsPage.tsx` - WhatsApp type, stability badges
+- `apps/web/src/pages/product/index.ts` - Exports nuevas páginas
+- `apps/web/src/App.tsx` - Rutas `/channels/whatsapp`, `/channels/email`
+
+### Próximos Pasos (P4+)
+
+- Implementar conexión real con APIs externas (Gmail, Outlook, WhatsApp Business)
+- Agregar más canales (Slack, Teams, Telegram)
+- Dashboard de métricas de canal
+- Configuración avanzada de rate limiting
+- Integración con sistema de auditoría
+
+---
+
+## P4.1R — OpenClaw-First Integrations & Productionization
+
+**Fecha:** 2026-05-07
+**Estrategia:** OpenClaw-first + GranClaw adapters/fallbacks
+
+### Objetivo
+
+Establecer estrategia correcta de integración:
+1. OpenClaw capabilities son preferidas
+2. GranClaw adapta/extiende donde OpenClaw existe
+3. GranClaw provee donde OpenClaw no tiene soporte
+4. Fallback strategy cuando OpenClaw falla
+
+### Auditoría OpenClaw
+
+**Tools Nativos:**
+| Tool | Tipo | Estado |
+|------|------|--------|
+| http | tool | Implementado |
+| echo | tool | Implementado |
+| time | tool | Implementado |
+
+**OS Tools (Capabilities):**
+| Capability | Riesgo | Modo |
+|------------|--------|------|
+| open_calculator | Low | passthrough |
+| open_web_browser | Low | passthrough |
+| open_text_editor_os | Low | passthrough |
+| open_file_explorer | Low | passthrough |
+| open_terminal | Medium | strict |
+
+**Hallazgo:** OpenClaw NO tiene MCPs nativos. Usa sistema propio de Capabilities + Approval.
+
+### Channel Classification
+
+**Channel Sources:**
+```typescript
+type ChannelSource =
+  | 'openclaw_native'     // OpenClaw tool/MCP/capability
+  | 'granclaw_adapter'    // GranClaw wraps OpenClaw
+  | 'granclaw_provider'   // GranClaw implementa completo
+  | 'fallback'            // Fallback cuando primario falla
+  | 'experimental'        // Inestable/experimental
+```
+
+**Clasificación Final:**
+
+| Canal | Source | OpenClaw Ref | Razón |
+|-------|--------|--------------|-------|
+| email | granclaw_provider | - | OpenClaw no tiene email tool |
+| ftp | granclaw_provider | - | OpenClaw no tiene FTP tool |
+| sftp | granclaw_provider | - | OpenClaw no tiene SFTP tool |
+| browser | granclaw_provider | open_web_browser | OpenClaw solo lanza, GranClaw automatiza |
+| whatsapp | granclaw_provider | - | OpenClaw no tiene WhatsApp tool |
+| calendar | granclaw_provider | - | OpenClaw no tiene Calendar tool |
+| api | granclaw_adapter | http | GranClaw adapta http con queue/validation |
+| filesystem | granclaw_provider | open_file_explorer | OpenClaw solo lanza explorer |
+| webhook | granclaw_adapter | http | GranClaw adapta http + incoming handling |
+
+### Channel Discovery Layer
+
+Nueva capa para resolver "¿Quién ejecuta esto?":
+
+```
+apps/api/src/modules/channel-discovery/
+├── types.ts       # ChannelSource, DiscoveryResult, AdapterConfig
+├── registry.ts    # OpenClaw capabilities, source mappings
+├── discovery.ts   # discoverChannel, getRecommendedSource
+├── adapters.ts    # API/Webhook adapters config
+├── fallback.ts    # Fallback strategies per channel
+└── index.ts       # Exports
+```
+
+### GranClaw Enhancements
+
+Cuando GranClaw adapta o provee, añade:
+- Queue (runtime-queue integration)
+- Validation (workflow-validation)
+- Retries (exponential backoff)
+- Runtime Events (event-bus)
+- WebSocket (real-time updates)
+- Approvals (capability system)
+- Metrics (messagesPerHour, errors, latency)
+- Audit (audit module)
+- Rate Limiting (per channel)
+- Fallback (when primary fails)
+
+### Fallback Strategy
+
+| Canal | Fallback Action | Max Retries |
+|-------|-----------------|-------------|
+| api | queue_for_retry | 3 |
+| webhook | queue_for_retry | 5 |
+| email | queue_for_retry | 3 |
+| whatsapp | escalate_human | 0 |
+| browser | escalate_human | 1 |
+| ftp/sftp | queue_for_retry | 3 |
+| calendar | queue_for_retry | 3 |
+| filesystem | require_setup | 0 |
+
+### Archivos Creados
+
+| Archivo | Descripción |
+|---------|-------------|
+| `channel-discovery/types.ts` | ChannelSource, DiscoveryResult, AdapterConfig |
+| `channel-discovery/registry.ts` | OpenClaw capabilities, source mappings |
+| `channel-discovery/discovery.ts` | discoverChannel, getRecommendedSource |
+| `channel-discovery/adapters.ts` | API/Webhook adapter configs |
+| `channel-discovery/fallback.ts` | Fallback strategies, executeFallback |
+| `channel-discovery/index.ts` | Module exports |
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+- ✅ OpenClaw-first strategy aplicada
+- ✅ No duplicación de canales/conectores
+- ✅ Channel classification completa
+- ✅ Fallback strategy definida
+
+---
+
+## P4.2 — OpenClaw Capability Mapping & Adapter Consolidation
+
+**Fecha:** 2026-05-07
+**Objetivo:** Corregir deriva arquitectónica, confirmar clasificación
+
+### Auditoría de Código Real
+
+**OpenClaw Tools Nativos (REAL):**
+| Tool | Estado | Limitaciones |
+|------|--------|--------------|
+| `echo` | Implementado | Ninguna |
+| `time` | Implementado | Ninguna |
+| `http` | Implementado | GET/POST only, 10s timeout, no internal URLs |
+
+**OpenClaw OS Tools:**
+| Capability | Funcionalidad |
+|------------|---------------|
+| open_calculator | Solo lanza app |
+| open_web_browser | Solo lanza browser |
+| open_file_explorer | Solo lanza explorer |
+| open_terminal | Solo lanza terminal |
+
+**Conclusión:** OpenClaw es MUY limitado. Solo 3 tools básicos.
+
+### GranClaw Channels - Estado Real
+
+Los channels de GranClaw son **abstracciones/stubs**:
+- Funciones WRITE → encolan acciones (`enqueueChannelAction`)
+- Funciones READ → stubs que retornan `[]` o `null`
+- Event handlers → implementados para workflow triggers
+
+**NO hay implementación real de:**
+- IMAP/SMTP
+- FTP/SFTP
+- Playwright browser automation
+- WhatsApp API
+- Calendar APIs
+
+### Clasificación Confirmada
+
+**No hay duplicación** porque OpenClaw no tiene estas capabilities.
+
+| Tipo | Canales | Razón |
+|------|---------|-------|
+| `granclaw_adapter` | api, webhook | Usan OpenClaw `http` tool |
+| `granclaw_provider` | email, ftp, sftp, browser, whatsapp, calendar, filesystem | OpenClaw no soporta |
+
+### Provider Justifications (Obligatorias)
+
+Cada provider documenta por qué es necesario:
+
+```typescript
+interface ProviderJustification {
+  reason: string
+  whyOpenClawNotEnough: string
+  fallbackStrategy: FallbackAction
+  stability: 'stable' | 'beta' | 'experimental'
+  futureMigrationPossible: boolean
+}
+```
+
+### Runtime Responsibility Split
+
+**OpenClaw:**
+- reasoning
+- tool_execution
+- native_capabilities
+- chat_sessions
+- rpc_gateway
+
+**GranClaw:**
+- workflows
+- queue
+- dag_execution
+- validation
+- recovery
+- approvals
+- websocket_realtime
+- memory_patterns
+- metrics
+- audit
+- ux_product
+- channel_abstraction
+
+### Módulo openclaw-adapters
+
+Nueva capa que conecta adapters con OpenClaw tools:
+
+```
+apps/api/src/modules/openclaw-adapters/
+├── types.ts                  # AdapterContext, AdapterResult, ProviderJustification
+├── api-adapter.ts            # Usa OpenClaw http tool (GET/POST)
+├── webhook-adapter.ts        # Usa OpenClaw http tool + incoming handling
+├── provider-justifications.ts # Justificaciones obligatorias
+└── index.ts                  # Exports
+```
+
+### Archivos Creados
+
+| Archivo | Descripción |
+|---------|-------------|
+| `openclaw-adapters/types.ts` | Types para adapters y justificaciones |
+| `openclaw-adapters/api-adapter.ts` | API adapter usando http tool |
+| `openclaw-adapters/webhook-adapter.ts` | Webhook adapter |
+| `openclaw-adapters/provider-justifications.ts` | Justificaciones |
+| `openclaw-adapters/index.ts` | Exports |
+
+### Reportes Creados
+
+| Reporte | Contenido |
+|---------|-----------|
+| `P4_2_openclaw_capability_inventory.md` | Inventario completo de OpenClaw |
+| `P4_2_adapter_consolidation_report.md` | Consolidación de adapters |
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+- ✅ Auditoría de código real completada
+- ✅ Clasificación P4.1R confirmada correcta
+- ✅ Provider justifications documentadas
+- ✅ Runtime responsibility split definida
+- ✅ NO hay duplicación con OpenClaw
+
+---
+
+## P5 — Durable Operational Workers & Real Connectors
+
+**Fecha:** 2026-05-07
+**Objetivo:** Convertir stubs de channels en workers persistentes con lifecycle management real.
+
+### Problema Identificado
+
+Los channels de GranClaw eran **stubs/frameworks**:
+- Solo encolaban acciones vía `enqueueChannelAction()`
+- No había workers persistentes
+- No había heartbeat/health monitoring
+- No había recovery/reconnection logic
+- No había persistencia de estado entre reinicios
+
+### Solución Implementada
+
+Nuevo módulo `channel-workers` con:
+- **Worker Registry**: Registro central de workers activos
+- **Lifecycle Management**: start/stop/restart con graceful shutdown
+- **Heartbeat Monitoring**: Health checks periódicos
+- **Recovery Service**: Reconnect con exponential backoff
+- **Persistence**: Estado guardado a JSON para sobrevivir reinicios
+- **Safety Controls**: Límites y protección contra runaway workers
+
+### Arquitectura channel-workers
+
+```
+apps/api/src/modules/channel-workers/
+├── types.ts              # Worker types, status, health, config
+├── worker-registry.ts    # Registry de workers activos
+├── lifecycle.ts          # Start/stop/restart workers
+├── heartbeat.ts          # Health monitoring
+├── recovery.ts           # Reconnect/restore logic
+├── persistence.ts        # Save/load state to disk
+├── health.ts             # System health aggregation
+├── worker-manager.ts     # Central manager
+├── routes.ts             # HTTP endpoints
+├── safety.ts             # Safety controls
+├── index.ts              # Module exports
+└── workers/
+    ├── base-worker.ts    # Abstract base class
+    ├── email-worker.ts   # Email (IMAP/SMTP)
+    ├── whatsapp-worker.ts # WhatsApp Business API
+    ├── browser-worker.ts  # Browser automation
+    ├── ftp-worker.ts      # FTP/SFTP
+    ├── calendar-worker.ts # Calendar (Google/Outlook)
+    ├── filesystem-worker.ts # Local filesystem
+    └── index.ts           # Worker exports
+```
+
+### Worker Types
+
+```typescript
+type WorkerStatus = 
+  | 'starting' 
+  | 'running' 
+  | 'reconnecting' 
+  | 'degraded' 
+  | 'failed' 
+  | 'stopped'
+
+interface ChannelWorker {
+  id: string
+  channelType: ChannelType
+  channelId: string
+  tenantId: string
+  status: WorkerStatus
+  health: WorkerHealth
+  reconnectCount: number
+  queuePressure: number
+  runtimeState: WorkerRuntimeState
+}
+
+interface WorkerHandler {
+  connect(): Promise<void>
+  disconnect(): Promise<void>
+  isConnected(): boolean
+  heartbeat(): Promise<boolean>
+  reconnect(): Promise<void>
+  saveState(): WorkerPersistedState
+  restoreState(state: WorkerPersistedState): Promise<void>
+}
+```
+
+### Workers Implementados
+
+| Worker | Channel | Status | Justification |
+|--------|---------|--------|---------------|
+| EmailWorker | email | Scaffold | OpenClaw no tiene IMAP/SMTP |
+| WhatsAppWorker | whatsapp | Scaffold | OpenClaw no tiene WhatsApp API |
+| BrowserWorker | browser | Scaffold | open_web_browser solo lanza browser |
+| FTPWorker | ftp | Scaffold | OpenClaw no tiene FTP protocol |
+| SFTPWorker | sftp | Scaffold | OpenClaw no tiene SSH/SFTP |
+| CalendarWorker | calendar | Scaffold | OpenClaw no tiene Calendar API |
+| FilesystemWorker | filesystem | Scaffold | open_file_explorer solo abre explorer |
+
+### Lifecycle Flow
+
+```
+                    ┌─────────────┐
+                    │   starting  │
+                    └──────┬──────┘
+                           │ connect()
+                           ▼
+         ┌─────────┐   ┌─────────────┐   ┌────────────┐
+         │ stopped │◄──│   running   │──►│  degraded  │
+         └─────────┘   └──────┬──────┘   └─────┬──────┘
+              ▲               │                │
+              │               │                │
+              │               ▼                ▼
+              │        ┌─────────────┐   ┌──────────┐
+              └────────│   failed    │◄──│reconnect │
+                       └─────────────┘   └──────────┘
+```
+
+### Safety Controls
+
+```typescript
+interface SafetyConfig {
+  maxWorkersPerTenant: number      // 10
+  maxWorkersTotal: number          // 100
+  maxFailedWorkers: number         // 20
+  maxQueuePressure: number         // 0.9
+  maxReconnectRate: number         // 30/min
+  emergencyShutdownThreshold: number // 0.5 (50% failed)
+}
+```
+
+### Health Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/workers/health` | System-wide health |
+| `GET /api/workers/health/all` | All workers health |
+| `GET /api/workers/health/:id` | Single worker health |
+| `GET /api/workers/operational` | Is system operational |
+| `GET /api/workers/metrics` | Prometheus-style metrics |
+| `GET /api/workers` | List workers |
+| `POST /api/workers` | Create worker |
+| `DELETE /api/workers/:id` | Stop/remove worker |
+| `POST /api/workers/:id/restart` | Restart worker |
+
+### Persistence
+
+Workers guardan estado a `data/worker-states.json`:
+- Session data
+- Cursor positions  
+- Auth tokens
+- Last processed IDs
+
+Debounced save (1 segundo de inactividad antes de flush).
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+- ✅ 7 workers implementados (scaffold)
+- ✅ Lifecycle management completo
+- ✅ Heartbeat monitoring
+- ✅ Recovery con backoff
+- ✅ Persistence a disco
+- ✅ Safety controls
+- ✅ Health endpoints
+
+---
+
+## P5.1 — Controlled Real Testing & Connector Hardening
+
+**Fecha:** 2026-05-07
+**Objetivo:** Pruebas reales controladas y endurecimiento de conectores.
+
+### Módulo testing Creado
+
+```
+apps/api/src/modules/channel-workers/testing/
+├── environments.ts       # RuntimeEnvironment: simulation, sandbox, controlled_real, production
+├── worker-modes.ts       # supportedModes y currentMode por worker
+├── email-sandbox.ts      # IMAP/SMTP sandbox, dedupe, test threads
+├── whatsapp-controls.ts  # Dry-run, approval, anti-loop, cooldown, max replies
+├── browser-health.ts     # Crash recovery, memory leak detection, context reuse
+├── ftp-hardening.ts      # Reconnect, retry, checksum, partial upload, rollback
+├── soak-tests.ts         # Tests de 1h, 6h, 24h duración
+├── failure-simulation.ts # Simulación de websocket_lost, auth_expired, crashes
+├── observability.ts      # Métricas Prometheus para workers
+├── safety-gates.ts       # Gates para autonomous_whatsapp, mass_send, etc
+└── index.ts              # Module exports
+```
+
+### RuntimeEnvironment
+
+| Mode | Real Connections | Autonomous | Approval |
+|------|-----------------|------------|----------|
+| simulation | No | Yes | No |
+| sandbox | Yes | No | Yes |
+| controlled_real | Yes | No | Yes |
+| production | Yes | No | Yes |
+
+Default: **sandbox**
+
+### Safety Gates
+
+| Gate | Blocked by Default |
+|------|-------------------|
+| autonomous_whatsapp | ✅ |
+| unrestricted_browser | ✅ |
+| mass_send | ✅ |
+| production_without_approvals | ✅ |
+| uncontrolled_filesystem | ✅ |
+
+### Métricas Observability
+
+- `granclaw_worker_reconnect_total`
+- `granclaw_workflow_success_rate`
+- `granclaw_queue_lag_seconds`
+- `granclaw_ws_reconnect_total`
+- `granclaw_validation_failure_rate`
+- `granclaw_browser_crash_total`
+- `granclaw_workers_healthy/degraded/failed`
+
+### Failure Simulation
+
+Tipos simulables:
+- websocket_lost
+- auth_expired
+- browser_crash
+- imap_disconnect
+- ftp_timeout
+- openclaw_unavailable
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+- ✅ Environment configuration
+- ✅ Worker mode support
+- ✅ Channel-specific hardening
+- ✅ Soak test infrastructure
+- ✅ Failure simulation
+- ✅ Observability metrics
+- ✅ Safety gates

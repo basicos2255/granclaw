@@ -2,6 +2,7 @@
  * App.tsx - GranClaw Shell
  * FEATURE 065: Product shell clean - modo producto vs dev
  * FEATURE 071: Auth state + user visible
+ * P2: Product Experience Layer integration
  */
 
 import { useState, useEffect } from 'react'
@@ -9,7 +10,7 @@ import { useAuth } from './hooks/useAuth'
 import { DashboardPage } from './pages/dashboard'
 import { AgentsPage } from './pages/agents'
 import { SessionsPage } from './pages/sessions'
-import { TasksPage } from './pages/tasks'
+import { TasksPage as DevTasksPage } from './pages/tasks'
 import { PresetsPage } from './pages/presets'
 import { ConfigPage } from './pages/config'
 import { ChatPage } from './pages/chat'
@@ -17,6 +18,20 @@ import { LoginPage } from './pages/login'
 import { RegisterPage } from './pages/register'
 import { DebugPage } from './pages/debug'
 import { Execute, Clientes, Dashboard as ControlDashboard, Historial, Tools, Settings, Setup } from './pages/control'
+import { AppShell } from './layouts'
+import {
+  ProductDashboard,
+  TasksPage,
+  AutomationsPage,
+  ChannelsPage,
+  CredentialsPage,
+  ApprovalsPage,
+  NotificationsPage,
+  RuntimePage,
+  SettingsPage,
+  WhatsAppPage,
+  EmailPage
+} from './pages/product'
 
 type Route = string
 
@@ -34,12 +49,35 @@ const devRoutes = [
   { path: '/register', label: 'Register' }
 ]
 
+// Product routes (new P2 experience)
+const productRoutes = [
+  '/dashboard', '/tasks', '/automations', '/channels',
+  '/credentials', '/approvals', '/notifications', '/runtime', '/settings'
+]
+
 function isProductRoute(path: string): boolean {
-  return path === '/' || path.startsWith('/control')
+  return path === '/' || path.startsWith('/control') || productRoutes.some(r => path === r || path.startsWith(r + '/'))
+}
+
+function isAppShellRoute(path: string): boolean {
+  return productRoutes.some(r => path === r || path.startsWith(r + '/'))
 }
 
 function Router({ path }: { path: Route }) {
-  // Rutas producto
+  // P2/P3 Product Experience routes
+  if (path === '/dashboard') return <ProductDashboard />
+  if (path === '/tasks') return <TasksPage />
+  if (path === '/automations') return <AutomationsPage />
+  if (path === '/channels') return <ChannelsPage />
+  if (path === '/channels/whatsapp') return <WhatsAppPage />
+  if (path === '/channels/email') return <EmailPage />
+  if (path === '/credentials') return <CredentialsPage />
+  if (path === '/approvals') return <ApprovalsPage />
+  if (path === '/notifications') return <NotificationsPage />
+  if (path === '/runtime') return <RuntimePage />
+  if (path === '/settings') return <SettingsPage />
+
+  // Control panel routes (technical)
   if (path === '/' || path === '/control') return <Execute />
   if (path === '/control/clientes') return <Clientes />
   if (path === '/control/dashboard') return <ControlDashboard />
@@ -53,7 +91,7 @@ function Router({ path }: { path: Route }) {
   if (path === '/dev/chat') return <ChatPage />
   if (path === '/dev/agents') return <AgentsPage />
   if (path === '/dev/sessions') return <SessionsPage />
-  if (path === '/dev/tasks') return <TasksPage />
+  if (path === '/dev/tasks') return <DevTasksPage />
   if (path === '/dev/presets') return <PresetsPage />
   if (path === '/dev/config') return <ConfigPage />
   if (path === '/dev/debug') return <DebugPage />
@@ -247,7 +285,16 @@ export function App() {
     )
   }
 
-  // Modo producto: shell limpio con auth
+  // P2 Product Experience with AppShell
+  if (isAppShellRoute(currentPath)) {
+    return (
+      <AppShell currentPath={currentPath} onNavigate={navigate}>
+        <Router path={currentPath} />
+      </AppShell>
+    )
+  }
+
+  // Modo producto (control panel): shell limpio con auth
   if (isProduct) {
     return (
       <div style={{ minHeight: '100vh', backgroundColor: '#f8fafc' }}>

@@ -8141,3 +8141,103 @@ useEffect(() => {
 - ✅ Logout navega a /login
 - ✅ Login redirectea a /dashboard
 - ✅ session-expired redirige a /login globalmente
+
+## P6.3 — Operational UX, Result Visibility & Real Task Outcomes
+
+**Fecha:** 2026-05-09
+**Objetivo:** Mostrar resultados reales de tareas, no solo "completed".
+
+### Problema
+
+- Tareas completadas no mostraban outputs reales
+- No habia summary legible para humanos
+- Artifacts no se mostraban
+- No habia pagina de detalle /tasks/:id
+- Automations llamaban endpoints inexistentes (404)
+
+### Solucion
+
+1. **TaskResult Model** (`apps/api/src/modules/task-results/`)
+
+```typescript
+interface TaskResult {
+  taskId: string
+  status: string
+  summary: string           // Human-readable
+  outputs: TaskOutput[]     // Structured outputs
+  artifacts: TaskArtifact[] // Files/resources
+  provider?: string
+  durationMs?: number
+}
+
+interface TaskOutput {
+  type: 'text' | 'link' | 'json' | 'table' | 'warning' | 'code' | 'list'
+  label?: string
+  value: unknown
+}
+
+interface TaskArtifact {
+  type: 'file' | 'download' | 'screenshot' | 'report' | 'url'
+  name: string
+  path?: string
+  url?: string
+}
+```
+
+2. **Result Capture**
+- `completeTask()` genera TaskResult automaticamente
+- Extrae summary, outputs, artifacts del raw result
+- Persiste en `data/task-results.json`
+
+3. **Task Detail Page** (`/tasks/:id`)
+- Summary destacado
+- Outputs renderizados por tipo
+- Artifacts listados
+- Workflow trace visual
+- Metadata
+
+4. **Result Renderers** (`components/results/ResultRenderers.tsx`)
+- TextResult, LinkResult, TableResult, JsonResult
+- WarningResult, CodeResult, ImageResult
+- ArtifactsRenderer
+
+5. **Task Cards mejoradas**
+- Muestran summary
+- Preview de primer output
+- Badge de artifacts count
+- Click navega a detalle
+
+6. **Automations Reality Check**
+- Backend no existe
+- Agregado banner de advertencia en UI
+
+### Archivos Backend
+
+| Archivo | Cambio |
+|---------|--------|
+| `modules/task-results/*` | CREATED - TaskResult model |
+| `modules/tasks/types.ts` | Added structured result fields |
+| `modules/tasks/service.ts` | completeTask generates TaskResult |
+| `modules/tasks/routes.ts` | GET /tasks/:id/result |
+| `index.ts` | Register new route |
+
+### Archivos Frontend
+
+| Archivo | Cambio |
+|---------|--------|
+| `services/api.ts` | TaskOutput, TaskArtifact types |
+| `components/results/ResultRenderers.tsx` | CREATED |
+| `pages/product/TaskDetailPage.tsx` | CREATED |
+| `pages/product/TasksPage.tsx` | Enhanced cards |
+| `pages/product/AutomationsPage.tsx` | Backend notice |
+| `App.tsx` | Route /tasks/:id |
+
+### Verificaciones
+
+- ✅ npm run build exitoso (api)
+- ✅ npm run build exitoso (web)
+- ✅ TaskResult persiste con outputs/artifacts
+- ✅ /tasks/:id muestra resultados estructurados
+- ✅ Task cards muestran summary
+- ✅ Result renderers funcionan por tipo
+- ✅ Automations muestra advertencia de backend no disponible

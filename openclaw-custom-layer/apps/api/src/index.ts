@@ -47,7 +47,7 @@ import { handleUsers } from './modules/users'
 import { handlePresets, handleCreatePreset } from './modules/presets'
 import { handleAgents, handleCreateAgent } from './modules/agents'
 import { handleListSessions, handleGetSession, handleCreateSession, handleAddMessage } from './modules/sessions'
-import { handleTasks, handleGetTaskById, handleExecuteSteps } from './modules/tasks'
+import { handleTasks, handleGetTaskById, handleGetTaskResult, handleExecuteSteps } from './modules/tasks'
 import { handleGetToolProposals, handleGetToolProposalById, handleApproveToolProposal, handleRejectToolProposal, handleArchiveToolProposal } from './modules/tool-proposals'
 import { handleGetCapabilities, handleGetCapabilityById, handleEnableCapability, handleDisableCapability, handleDeleteCapability } from './modules/capabilities'
 // FIX 113: OS Tools routes
@@ -283,6 +283,11 @@ const getDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/tasks\/([^/]+)$/,
     handler: handleGetTaskById
+  },
+  // P6.3: Task result endpoint
+  {
+    pattern: /^\/tasks\/([^/]+)\/result$/,
+    handler: handleGetTaskResult
   },
   {
     pattern: /^\/tools\/([^/]+)$/,

@@ -290,7 +290,11 @@ export function TasksPage() {
           {filteredTasks.map(task => {
             const statusInfo = getStatusColor(task.status)
             return (
-              <div key={task.id} style={cardStyle}>
+              <div
+                key={task.id}
+                style={{ ...cardStyle, cursor: 'pointer' }}
+                onClick={() => navigate(`/tasks/${task.id}`)}
+              >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
@@ -304,15 +308,54 @@ export function TasksPage() {
                       }}>
                         {statusInfo.label}
                       </span>
-                      {task.source && (
+                      {task.provider && (
                         <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-                          via {task.source}
+                          via {task.provider}
+                        </span>
+                      )}
+                      {task.artifacts && task.artifacts.length > 0 && (
+                        <span style={{
+                          padding: '2px 8px',
+                          borderRadius: '10px',
+                          backgroundColor: '#f1f5f9',
+                          color: '#475569',
+                          fontSize: '11px'
+                        }}>
+                          {task.artifacts.length} artifact{task.artifacts.length !== 1 ? 's' : ''}
                         </span>
                       )}
                     </div>
-                    <div style={{ fontSize: '15px', fontWeight: '500', color: '#0f172a', marginBottom: '4px' }}>
-                      {task.input}
-                    </div>
+                    {/* P6.3: Show summary if available, otherwise input */}
+                    {task.summary ? (
+                      <>
+                        <div style={{ fontSize: '15px', fontWeight: '500', color: '#0f172a', marginBottom: '4px' }}>
+                          {task.summary}
+                        </div>
+                        <div style={{ fontSize: '13px', color: '#64748b', marginBottom: '4px' }}>
+                          {task.input}
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ fontSize: '15px', fontWeight: '500', color: '#0f172a', marginBottom: '4px' }}>
+                        {task.input}
+                      </div>
+                    )}
+                    {/* P6.3: Show output preview */}
+                    {task.outputs && task.outputs.length > 0 && task.outputs[0].type === 'text' && (
+                      <div style={{
+                        fontSize: '13px',
+                        color: '#475569',
+                        marginTop: '8px',
+                        padding: '8px',
+                        backgroundColor: '#f8fafc',
+                        borderRadius: '6px',
+                        maxHeight: '60px',
+                        overflow: 'hidden'
+                      }}>
+                        {String(task.outputs[0].value).substring(0, 150)}
+                        {String(task.outputs[0].value).length > 150 && '...'}
+                      </div>
+                    )}
                     {task.error && (
                       <div style={{ fontSize: '13px', color: '#dc2626', marginTop: '8px' }}>
                         Error: {task.error}

@@ -22,6 +22,7 @@ import { AppShell } from './layouts'
 import {
   ProductDashboard,
   TasksPage,
+  TaskDetailPage,
   AutomationsPage,
   ChannelsPage,
   CredentialsPage,
@@ -68,6 +69,11 @@ function Router({ path }: { path: Route }) {
   // P2/P3 Product Experience routes
   if (path === '/dashboard') return <ProductDashboard />
   if (path === '/tasks') return <TasksPage />
+
+  // P6.3: Task detail route
+  const taskMatch = path.match(/^\/tasks\/([^/]+)$/)
+  if (taskMatch) return <TaskDetailPage taskId={taskMatch[1]} />
+
   if (path === '/automations') return <AutomationsPage />
   if (path === '/channels') return <ChannelsPage />
   if (path === '/channels/whatsapp') return <WhatsAppPage />

@@ -1,9 +1,11 @@
 /**
  * Task System Types
  * FEATURE 080: Task System v1
+ * P6.3: Added structured result support
  */
 
 import type { DebugSnapshot } from '../orchestrator/trace'
+import type { TaskOutput, TaskArtifact } from '../task-results/types'
 
 /**
  * Estado de una tarea
@@ -26,6 +28,7 @@ export interface TaskExecutionTraceStep {
 
 /**
  * Tarea de GranClaw
+ * P6.3: Added structured result fields
  */
 export interface GranClawTask {
   id: string
@@ -43,6 +46,12 @@ export interface GranClawTask {
   executionDurationMs?: number
   createdAt: string
   updatedAt: string
+
+  // P6.3: Structured result fields
+  summary?: string
+  outputs?: TaskOutput[]
+  artifacts?: TaskArtifact[]
+  provider?: string
 }
 
 /**
@@ -57,6 +66,7 @@ export interface CreateTaskInput {
 
 /**
  * Input para actualizar tarea
+ * P6.3: Added structured result fields
  */
 export interface UpdateTaskInput {
   status?: TaskStatus
@@ -67,4 +77,10 @@ export interface UpdateTaskInput {
   executionTrace?: TaskExecutionTraceStep[]
   debugSnapshot?: DebugSnapshot
   executionDurationMs?: number
+
+  // P6.3: Structured result fields
+  summary?: string
+  outputs?: TaskOutput[]
+  artifacts?: TaskArtifact[]
+  provider?: string
 }

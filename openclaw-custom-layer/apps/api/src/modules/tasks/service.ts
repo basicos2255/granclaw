@@ -1,11 +1,13 @@
 /**
  * Task Service
  * FEATURE 080: Task System v1
+ * P6.3: Added structured result capture
  * Persistencia de tareas en JSON
  */
 
 import { read, write, getById, update as dbUpdate } from '../../storage/file-db'
 import type { GranClawTask, CreateTaskInput, UpdateTaskInput, TaskStatus } from './types'
+import { formatTaskResult, saveTaskResult } from '../task-results'
 
 const ENTITY = 'tasks'
 
@@ -90,6 +92,7 @@ export function setTaskStatus(id: string, status: TaskStatus): GranClawTask | nu
 
 /**
  * Completa una tarea con resultado
+ * P6.3: Also generates and saves structured TaskResult
  */
 export function completeTask(
   id: string,
@@ -102,6 +105,20 @@ export function completeTask(
   reason?: string,
   error?: string
 ): GranClawTask | null {
+  // P6.3: Generate structured result
+  const taskResult = formatTaskResult({
+    taskId: id,
+    status,
+    rawResult: result,
+    provider: source,
+    durationMs: executionDurationMs,
+    error
+  })
+
+  // Save structured result
+  saveTaskResult(taskResult)
+
+  // Update task with structured fields
   return updateTask(id, {
     status,
     result,
@@ -110,7 +127,12 @@ export function completeTask(
     debugSnapshot,
     executionDurationMs,
     reason,
-    error
+    error,
+    // P6.3: Include structured result fields in task
+    summary: taskResult.summary,
+    outputs: taskResult.outputs,
+    artifacts: taskResult.artifacts,
+    provider: taskResult.provider
   })
 }
 

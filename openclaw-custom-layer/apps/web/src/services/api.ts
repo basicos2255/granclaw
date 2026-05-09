@@ -369,8 +369,50 @@ interface MeResponse {
 
 /**
  * FEATURE 080: Tipos para tareas
+ * P6.3: Added structured result types
  */
 export type TaskStatus = 'pending' | 'running' | 'success' | 'blocked' | 'error' | 'unconfirmed'
+
+/**
+ * P6.3: Task output types
+ */
+export type TaskOutputType =
+  | 'text'
+  | 'link'
+  | 'json'
+  | 'file'
+  | 'image'
+  | 'table'
+  | 'warning'
+  | 'code'
+  | 'list'
+
+export interface TaskOutput {
+  type: TaskOutputType
+  label?: string
+  value: unknown
+}
+
+/**
+ * P6.3: Task artifact types
+ */
+export type TaskArtifactType =
+  | 'file'
+  | 'download'
+  | 'screenshot'
+  | 'report'
+  | 'url'
+  | 'log'
+
+export interface TaskArtifact {
+  type: TaskArtifactType
+  name: string
+  path?: string
+  url?: string
+  size?: number
+  mimeType?: string
+  metadata?: Record<string, unknown>
+}
 
 export interface GranClawTask {
   id: string
@@ -388,6 +430,12 @@ export interface GranClawTask {
   executionDurationMs?: number
   createdAt: string
   updatedAt: string
+
+  // P6.3: Structured result fields
+  summary?: string
+  outputs?: TaskOutput[]
+  artifacts?: TaskArtifact[]
+  provider?: string
 }
 
 /**
@@ -462,8 +510,20 @@ export const api = {
   getAgents: () => requestProtected<unknown[]>('/agents'),
   getSessions: () => requestProtected<unknown[]>('/sessions'),
   // FEATURE 080: Tareas tipadas
+  // P6.3: Added getTaskResult
   getTasks: () => requestProtected<GranClawTask[]>('/tasks'),
   getTask: (id: string) => requestProtected<GranClawTask>(`/tasks/${id}`),
+  getTaskResult: (id: string) => requestProtected<{
+    taskId: string
+    status: string
+    summary: string
+    details?: string
+    outputs: TaskOutput[]
+    artifacts: TaskArtifact[]
+    provider?: string
+    durationMs?: number
+    createdAt: string
+  }>(`/tasks/${id}/result`),
   getPresets: () => requestProtected<unknown[]>('/presets'),
   getTenants: () => requestProtected<unknown[]>('/tenants'),
   getUsers: () => requestProtected<unknown[]>('/users'),

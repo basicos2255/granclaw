@@ -186,6 +186,26 @@ export function AutomationsPage() {
 
   return (
     <div>
+      {/* P6.3: Backend not available notice */}
+      <div style={{
+        backgroundColor: '#fef3c7',
+        border: '1px solid #fde68a',
+        borderRadius: '8px',
+        padding: '12px 16px',
+        marginBottom: '20px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px'
+      }}>
+        <span style={{ fontSize: '20px' }}>!</span>
+        <div>
+          <div style={{ fontWeight: '500', color: '#92400e' }}>Backend de automatizaciones no disponible</div>
+          <div style={{ fontSize: '13px', color: '#a16207' }}>
+            Las automatizaciones mostradas son datos de ejemplo. Los botones Activar/Pausar y Ejecutar no realizan cambios reales.
+          </div>
+        </div>
+      </div>
+
       {/* Header */}
       <div style={headerStyle}>
         <div>

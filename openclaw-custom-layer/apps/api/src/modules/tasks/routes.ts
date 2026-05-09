@@ -2,12 +2,14 @@
  * Tasks Routes
  * FEATURE 080: Task System v1
  * FIX 126: Timeout Recovery & Multistep Task Execution
+ * P6.3: Added structured result endpoint
  */
 
 import type { IncomingMessage, ServerResponse } from 'http'
 import { ok, badRequest, unauthorized, notFound } from '../../shared/response'
 import type { AuthContext } from '../auth'
 import { listTasks, getTask } from './service'
+import { getTaskResult } from '../task-results'
 import { runSimpleAgentTask } from '../orchestrator/service'
 import type { TaskStepInfo, ExecuteStepsResult } from '../orchestrator/types'
 
@@ -48,6 +50,49 @@ export function handleGetTaskById(_req: IncomingMessage, res: ServerResponse, ta
   }
 
   ok(res, task)
+}
+
+/**
+ * P6.3: GET /tasks/:id/result - Obtiene resultado estructurado de tarea
+ */
+export function handleGetTaskResult(_req: IncomingMessage, res: ServerResponse, taskId: string, context: AuthContext | null): void {
+  if (!context) {
+    unauthorized(res, 'Authentication required')
+    return
+  }
+
+  // First verify task exists and belongs to tenant
+  const task = getTask(taskId)
+
+  if (!task) {
+    notFound(res, 'Task not found')
+    return
+  }
+
+  if (task.tenantId !== context.tenant.id) {
+    notFound(res, 'Task not found')
+    return
+  }
+
+  // Get structured result
+  const result = getTaskResult(taskId)
+
+  if (!result) {
+    // Return task basic info if no structured result yet
+    ok(res, {
+      taskId: task.id,
+      status: task.status,
+      summary: task.summary || task.input,
+      outputs: task.outputs || [],
+      artifacts: task.artifacts || [],
+      provider: task.provider || task.source,
+      durationMs: task.executionDurationMs,
+      createdAt: task.createdAt
+    })
+    return
+  }
+
+  ok(res, result)
 }
 
 /**

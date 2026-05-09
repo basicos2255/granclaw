@@ -8058,3 +8058,86 @@ runAutomationNow(automationId) -> ActionResult
 - ✅ Loading states en acciones async
 - ✅ Error handling con feedback visual
 - ✅ Navegacion funciona sin react-router-dom
+
+## P6.2 — Frontend Functional Audit, API Contracts & Auth Flow Fix
+
+**Fecha:** 2026-05-09
+**Objetivo:** Corregir bug de crear tarea (400 Bad Request) y mejorar flujo de auth.
+
+### Problema Detectado
+
+1. **Bug Critico**: POST `/orchestrator/run` retornaba 400 Bad Request
+   - Error: `Field "message" is required`
+   - Causa: Frontend enviaba `{ input: ... }` pero backend espera `{ message: ... }`
+
+2. **Auth UX Issues**:
+   - No habia boton de Login visible cuando usuario no autenticado
+   - Logout no navegaba a /login
+   - Login redirecteaba a /control en vez de /dashboard (producto)
+   - No habia handler global para session-expired (401)
+
+### Solucion
+
+1. **Fix API Contract** (`services/actions.ts`)
+```typescript
+// ANTES (bug)
+export interface CreateTaskInput {
+  input: string  // <-- INCORRECTO
+}
+body: JSON.stringify({ input: input.input })
+
+// DESPUES (fix)
+export interface CreateTaskInput {
+  message: string  // <-- CORRECTO
+}
+body: JSON.stringify({ message: input.message })
+```
+
+2. **Fix TasksPage** (`pages/product/TasksPage.tsx`)
+```typescript
+// ANTES
+createTask({ input: taskInput.trim() })
+
+// DESPUES
+createTask({ message: taskInput.trim() })
+```
+
+3. **Fix Topbar Auth** (`layouts/Topbar.tsx`)
+- Usa `isAuthenticated` de useAuth
+- Muestra boton "Iniciar Sesion" cuando no autenticado
+- Logout ahora navega a /login despues de cerrar sesion
+
+4. **Fix LoginPage** (`pages/login/index.tsx`)
+- Redirecciona a `/dashboard` en vez de `/control`
+
+5. **Global Session Handler** (`App.tsx`)
+```typescript
+// P6.2: Global session-expired handler - redirect to login on 401
+useEffect(() => {
+  const handleSessionExpired = () => {
+    setCurrentPath('/login')
+    window.history.pushState({}, '', '/login')
+  }
+  window.addEventListener('session-expired', handleSessionExpired)
+  return () => window.removeEventListener('session-expired', handleSessionExpired)
+}, [])
+```
+
+### Archivos Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `services/actions.ts` | CreateTaskInput.input -> .message, body usa message |
+| `pages/product/TasksPage.tsx` | createTask({ message: ... }) |
+| `layouts/Topbar.tsx` | Boton Login cuando !isAuthenticated, logout -> /login |
+| `pages/login/index.tsx` | Redirect a /dashboard en vez de /control |
+| `App.tsx` | Global session-expired handler |
+
+### Verificaciones
+
+- ✅ npm run build exitoso (web)
+- ✅ CreateTaskInput usa `message` (API contract correcto)
+- ✅ Topbar muestra Login cuando no autenticado
+- ✅ Logout navega a /login
+- ✅ Login redirectea a /dashboard
+- ✅ session-expired redirige a /login globalmente

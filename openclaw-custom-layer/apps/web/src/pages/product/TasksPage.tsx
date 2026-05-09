@@ -72,7 +72,7 @@ export function TasksPage() {
 
     setCreating(true)
     const result = await createTask({
-      input: taskInput.trim(),
+      message: taskInput.trim(),
       mode: taskMode,
       priority: 'normal'
     })

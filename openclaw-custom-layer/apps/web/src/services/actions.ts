@@ -25,9 +25,10 @@ export interface ActionResult<T = unknown> {
 
 /**
  * Task creation input
+ * P6.2: Fixed - backend expects "message" not "input"
  */
 export interface CreateTaskInput {
-  input: string
+  message: string
   mode?: 'safe' | 'free'
   priority?: 'low' | 'normal' | 'high' | 'urgent'
   channelId?: string
@@ -50,7 +51,7 @@ export async function createTask(input: CreateTaskInput): Promise<ActionResult<{
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        input: input.input,
+        message: input.message,
         mode: input.mode || 'safe',
         priority: input.priority || 'normal',
         channelId: input.channelId,

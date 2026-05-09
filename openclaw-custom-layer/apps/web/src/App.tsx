@@ -268,6 +268,16 @@ export function App() {
     return () => window.removeEventListener('popstate', handlePopState)
   }, [])
 
+  // P6.2: Global session-expired handler - redirect to login on 401
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      setCurrentPath('/login')
+      window.history.pushState({}, '', '/login')
+    }
+    window.addEventListener('session-expired', handleSessionExpired)
+    return () => window.removeEventListener('session-expired', handleSessionExpired)
+  }, [])
+
   const navigate = (path: string) => {
     window.history.pushState({}, '', path)
     setCurrentPath(path)

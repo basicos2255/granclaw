@@ -15,7 +15,7 @@ interface TopbarProps {
 }
 
 export function Topbar({ isConnected, onNavigate }: TopbarProps) {
-  const { user, logout } = useAuth()
+  const { user, isAuthenticated, logout } = useAuth()
   const { isOpen, toggle, unreadCount, close } = useNotificationPanel()
   const [userMenuOpen, setUserMenuOpen] = useState(false)
 
@@ -143,50 +143,72 @@ export function Topbar({ isConnected, onNavigate }: TopbarProps) {
         {/* Notifications */}
         <NotificationBell onClick={toggle} unreadCount={unreadCount} />
 
-        {/* User Menu */}
-        <div style={{ position: 'relative' }}>
-          <button
-            style={userButtonStyle}
-            onClick={() => setUserMenuOpen(!userMenuOpen)}
-          >
-            <div style={avatarStyle}>
-              {user?.email?.charAt(0).toUpperCase() || 'U'}
-            </div>
-            <span style={{ color: '#374151' }}>
-              {user?.email?.split('@')[0] || 'Usuario'}
-            </span>
-            <span style={{ color: '#9ca3af', fontSize: '10px' }}>▼</span>
-          </button>
+        {/* User Menu or Login Button */}
+        {isAuthenticated ? (
+          <div style={{ position: 'relative' }}>
+            <button
+              style={userButtonStyle}
+              onClick={() => setUserMenuOpen(!userMenuOpen)}
+            >
+              <div style={avatarStyle}>
+                {user?.email?.charAt(0).toUpperCase() || 'U'}
+              </div>
+              <span style={{ color: '#374151' }}>
+                {user?.email?.split('@')[0] || 'Usuario'}
+              </span>
+              <span style={{ color: '#9ca3af', fontSize: '10px' }}>▼</span>
+            </button>
 
-          {userMenuOpen && (
-            <>
-              <div
-                style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99 }}
-                onClick={() => setUserMenuOpen(false)}
-              />
-              <div style={dropdownStyle}>
-                <div style={{ ...dropdownItemStyle, backgroundColor: '#f9fafb' }}>
-                  <div style={{ fontWeight: '500', color: '#111827' }}>{user?.email}</div>
-                  <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>
-                    {user?.role || 'Usuario'}
+            {userMenuOpen && (
+              <>
+                <div
+                  style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99 }}
+                  onClick={() => setUserMenuOpen(false)}
+                />
+                <div style={dropdownStyle}>
+                  <div style={{ ...dropdownItemStyle, backgroundColor: '#f9fafb' }}>
+                    <div style={{ fontWeight: '500', color: '#111827' }}>{user?.email}</div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>
+                      {user?.role || 'Usuario'}
+                    </div>
+                  </div>
+                  <div
+                    style={dropdownItemStyle}
+                    onClick={() => { setUserMenuOpen(false); onNavigate('/settings') }}
+                  >
+                    Configuracion
+                  </div>
+                  <div
+                    style={{ ...dropdownItemStyle, color: '#dc2626', borderBottom: 'none' }}
+                    onClick={async () => {
+                      setUserMenuOpen(false)
+                      await logout()
+                      onNavigate('/login')
+                    }}
+                  >
+                    Cerrar sesion
                   </div>
                 </div>
-                <div
-                  style={dropdownItemStyle}
-                  onClick={() => { setUserMenuOpen(false); onNavigate('/settings') }}
-                >
-                  ⚙️ Configuración
-                </div>
-                <div
-                  style={{ ...dropdownItemStyle, color: '#dc2626', borderBottom: 'none' }}
-                  onClick={() => { setUserMenuOpen(false); logout() }}
-                >
-                  🚪 Cerrar sesión
-                </div>
-              </div>
-            </>
-          )}
-        </div>
+              </>
+            )}
+          </div>
+        ) : (
+          <button
+            onClick={() => onNavigate('/login')}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#0f172a',
+              color: 'white',
+              border: 'none',
+              borderRadius: '8px',
+              fontSize: '13px',
+              fontWeight: '500',
+              cursor: 'pointer'
+            }}
+          >
+            Iniciar Sesion
+          </button>
+        )}
       </div>
 
       {/* Notification Panel */}

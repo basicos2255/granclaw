@@ -5,8 +5,8 @@
 import { FormEvent, useState } from 'react'
 import { api, setToken } from '../../services/api'
 
-function goToControl(): void {
-  window.history.pushState({}, '', '/control')
+function goToDashboard(): void {
+  window.history.pushState({}, '', '/dashboard')
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
 
@@ -35,7 +35,7 @@ export function LoginPage() {
     }
 
     setToken(response.data.token)
-    goToControl()
+    goToDashboard()
   }
 
   return (

@@ -3,6 +3,7 @@
  * FEATURE 072: Auth guard + error translation
  * P2.2: API Base URL & Runtime State Fetch Fix
  * P5.2: Config consistency - unified naming
+ * P6.5: Runtime API Connectivity & Error Handling
  */
 
 // P5.2: Unified naming with backward compatibility
@@ -10,10 +11,30 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ||
                  import.meta.env.VITE_API_URL ||  // deprecated
                  "http://localhost:3001"
 
+// P6.5: Export API_BASE for diagnostics
+export const API_BASE_URL = API_BASE
+
+/**
+ * P6.5: Error for backend offline (ERR_CONNECTION_REFUSED)
+ */
+export class ApiOfflineError extends Error {
+  constructor(
+    public url: string,
+    public originalError?: Error
+  ) {
+    super(`Backend API no esta corriendo en ${API_BASE}. Ejecuta: npm run dev:api`)
+    this.name = 'ApiOfflineError'
+  }
+}
+
 /**
  * P2.2: Check if error is API connection error
+ * P6.5: Enhanced to distinguish offline from other errors
  */
 export function isApiConnectionError(error: unknown): boolean {
+  if (error instanceof ApiOfflineError) {
+    return true
+  }
   if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
     return true
   }
@@ -22,7 +43,21 @@ export function isApiConnectionError(error: unknown): boolean {
     return msg.includes('network') ||
            msg.includes('connection') ||
            msg.includes('offline') ||
-           msg.includes('non-json')
+           msg.includes('err_connection_refused') ||
+           msg.includes('failed to fetch')
+  }
+  return false
+}
+
+/**
+ * P6.5: Check if error is specifically backend offline
+ */
+export function isBackendOffline(error: unknown): boolean {
+  if (error instanceof ApiOfflineError) {
+    return true
+  }
+  if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
+    return true
   }
   return false
 }
@@ -208,18 +243,29 @@ function handleUnauthorized(json: { error?: string }): void {
  */
 /**
  * P2.2: Raw fetch with JSON validation
+ * P6.5: Enhanced error handling for backend offline
  * Returns data directly or throws on error
  */
 export async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`
 
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      ...getAuthHeaders(),
-      ...options?.headers
+  let response: Response
+
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers: {
+        ...getAuthHeaders(),
+        ...options?.headers
+      }
+    })
+  } catch (err) {
+    // P6.5: Network error - backend likely offline
+    if (err instanceof TypeError && err.message.includes('Failed to fetch')) {
+      throw new ApiOfflineError(url, err)
     }
-  })
+    throw err
+  }
 
   // Check content-type before parsing
   const contentType = response.headers.get('content-type') || ''

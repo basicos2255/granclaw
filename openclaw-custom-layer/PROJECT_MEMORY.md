@@ -8310,3 +8310,94 @@ Nueva seccion "OpenClaw Connection" en ProductDashboard:
 - ✅ Health check corre en startup
 - ✅ WS events emiten en cambio de estado
 - ✅ Dashboard muestra OpenClaw health
+
+## P6.5 — Runtime API Connectivity, Endpoint Registry & Dev Startup Fix
+
+**Fecha:** 2026-05-09
+**Objetivo:** Corregir ERR_CONNECTION_REFUSED en Dashboard y mejorar DX
+
+### Problema Original
+
+Dashboard mostraba "No se pudo conectar con Runtime API" con ERR_CONNECTION_REFUSED para:
+- `/runtime/state`
+- `/openclaw/health`
+- `/pairing/health`
+
+### Root Cause
+
+El backend no estaba corriendo. NO era problema de configuración - todos los endpoints estaban correctamente registrados.
+
+### Soluciones Implementadas
+
+| Fase | Descripción | Estado |
+|------|-------------|--------|
+| A | Auditoría de puertos y scripts | ✅ |
+| B | ENV variables normalizadas | ✅ |
+| C | Dev health check visual | ✅ |
+| D | Endpoint registry canónico | ✅ |
+| E | Auditoría endpoints legacy | ✅ |
+| F | Backend route registration audit | ✅ |
+| G | Dev script documentado | ✅ |
+| H | API connectivity test docs | ✅ |
+| I | Frontend error handling mejorado | ✅ |
+| J | Verificación (check + build) | ✅ |
+
+### Archivos Creados/Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `apps/web/.env` | CREATED - VITE_API_BASE_URL, VITE_WS_BASE_URL |
+| `apps/web/src/services/endpoints.ts` | CREATED - Endpoint registry canónico |
+| `apps/web/src/services/api.ts` | ApiOfflineError class, isBackendOffline() |
+| `apps/web/src/pages/product/ProductDashboard.tsx` | isOffline state, mejor error handling |
+| `apps/web/src/services/runtime-ws.ts` | P6.4/P6.4R event types |
+| `apps/api/src/index.ts` | Fix implicit 'any' type |
+| `apps/api/src/modules/pairing-state/sync.ts` | Fix PairingHealthResponse import |
+| `apps/api/src/modules/openclaw-auth/routes.ts` | DELETED (unused, used handlers.ts) |
+| `apps/api/src/modules/openclaw-auth/index.ts` | Remove routes export |
+| `docs/reports/claude/P6_5_startup_audit.md` | CREATED |
+| `docs/reports/claude/P6_5_endpoint_registry_audit.md` | CREATED |
+
+### Endpoint Registry
+
+Nuevo archivo `apps/web/src/services/endpoints.ts` con todos los endpoints:
+- Evita strings hardcodeados
+- Tipado fuerte
+- Centralized para mantenimiento
+
+### Error Handling Mejorado
+
+```typescript
+// api.ts
+export class ApiOfflineError extends Error {
+  constructor(public url: string, public originalError?: Error) {
+    super(`Backend API no esta corriendo en ${API_BASE}. Ejecuta: npm run dev:api`)
+    this.name = 'ApiOfflineError'
+  }
+}
+
+export function isBackendOffline(error: unknown): boolean {
+  if (error instanceof ApiOfflineError) return true
+  if (error instanceof TypeError && error.message.includes('Failed to fetch')) return true
+  return false
+}
+```
+
+### Dashboard Offline Detection
+
+```typescript
+// ProductDashboard.tsx
+const [isOffline, setIsOffline] = useState(false)
+// Shows specific message when backend is offline
+// Includes command to start: npm run dev:api
+```
+
+### Verificaciones
+
+- ✅ npm run check (api) exitoso
+- ✅ npm run check (web) exitoso
+- ✅ npm run build (api) exitoso
+- ✅ npm run build (web) exitoso
+- ✅ Todos los endpoints registrados en backend
+- ✅ Frontend detecta backend offline correctamente
+- ✅ Error messages muestran comando de startup

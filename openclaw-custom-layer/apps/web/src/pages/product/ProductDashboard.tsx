@@ -10,7 +10,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigation } from '../../hooks/useNavigation'
 import { useRuntimeWs, useQueueEvents, useRuntimeEvents } from '../../hooks/useRuntimeWs'
-import { getRuntimeState, RuntimeStateData, getPairingHealth, PairingHealthData, getOpenClawAuthHealth, OpenClawAuthHealthData } from '../../services/api'
+import { getRuntimeState, RuntimeStateData, getPairingHealth, PairingHealthData, getOpenClawAuthHealth, OpenClawAuthHealthData, API_BASE_URL, isBackendOffline } from '../../services/api'
 
 interface RuntimeState {
   queueStats: {
@@ -54,9 +54,11 @@ export function ProductDashboard() {
 
   const [runtimeState, setRuntimeState] = useState<RuntimeState | null>(null)
   const [pairingHealth, setPairingHealth] = useState<PairingHealthData | null>(null)
-  const [openclawHealth, setOpenclawHealth] = useState<OpenClawAuthHealthData | null>(null)
+  // P6.4R: OpenClaw auth health (prepared for future UI integration)
+  const [_openclawHealth, setOpenclawHealth] = useState<OpenClawAuthHealthData | null>(null)
   const [loading, setLoading] = useState(true)
   const [apiError, setApiError] = useState<string | null>(null)
+  const [isOffline, setIsOffline] = useState(false) // P6.5: Track if backend is offline
 
   useEffect(() => {
     loadRuntimeState()
@@ -112,6 +114,7 @@ export function ProductDashboard() {
   }
 
   // P2.2: Use centralized API client
+  // P6.5: Enhanced error handling for backend offline
   const loadRuntimeState = async () => {
     try {
       const result = await getRuntimeState()
@@ -135,13 +138,27 @@ export function ProductDashboard() {
           websocket: data.websocket || { activeConnections: data.wsState?.activeConnections || 0 }
         })
         setApiError(null)
+        setIsOffline(false)
       } else {
-        // P2.2: Show degraded state instead of crashing
-        setApiError(result.error || 'Error desconocido')
+        // P6.5: Check if backend is offline
+        if (result.error && (result.error.includes('Backend API no esta corriendo') || result.error.includes('Failed to fetch'))) {
+          setIsOffline(true)
+          setApiError('Backend API no esta corriendo')
+        } else {
+          setIsOffline(false)
+          setApiError(result.error || 'Error desconocido')
+        }
       }
     } catch (err) {
       console.error('Error loading runtime state:', err)
-      setApiError('Error inesperado al cargar estado')
+      // P6.5: Check if backend offline
+      if (isBackendOffline(err)) {
+        setIsOffline(true)
+        setApiError('Backend API no esta corriendo')
+      } else {
+        setIsOffline(false)
+        setApiError('Error inesperado al cargar estado')
+      }
     } finally {
       setLoading(false)
     }
@@ -230,24 +247,54 @@ export function ProductDashboard() {
   }
 
   // P2.2: Show degraded state card if API error
+  // P6.5: Enhanced error card with specific offline message
   const ApiErrorCard = () => apiError ? (
     <div style={{
-      backgroundColor: '#fef2f2',
-      border: '1px solid #fecaca',
+      backgroundColor: isOffline ? '#fef3c7' : '#fef2f2',
+      border: `1px solid ${isOffline ? '#fcd34d' : '#fecaca'}`,
       borderRadius: '12px',
       padding: '20px',
       marginBottom: '24px'
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-        <span style={{ fontSize: '24px' }}>⚠️</span>
-        <span style={{ fontWeight: '600', color: '#dc2626' }}>No se pudo conectar con Runtime API</span>
+        <span style={{ fontSize: '24px' }}>{isOffline ? '🔌' : '⚠️'}</span>
+        <span style={{ fontWeight: '600', color: isOffline ? '#92400e' : '#dc2626' }}>
+          {isOffline ? 'Backend API Offline' : 'Error de Conexion'}
+        </span>
       </div>
-      <p style={{ color: '#7f1d1d', fontSize: '14px', margin: 0 }}>
-        {apiError}
-      </p>
-      <p style={{ color: '#991b1b', fontSize: '12px', marginTop: '8px', marginBottom: 0 }}>
-        Verifica que el backend este corriendo en VITE_API_BASE_URL
-      </p>
+      {isOffline ? (
+        <>
+          <p style={{ color: '#78350f', fontSize: '14px', margin: 0 }}>
+            El servidor backend no esta corriendo en <strong>{API_BASE_URL}</strong>
+          </p>
+          <div style={{
+            backgroundColor: '#1f2937',
+            color: '#10b981',
+            fontFamily: 'monospace',
+            padding: '12px',
+            borderRadius: '8px',
+            marginTop: '12px',
+            fontSize: '13px'
+          }}>
+            <div style={{ color: '#9ca3af', marginBottom: '4px' }}># Iniciar backend:</div>
+            <div>cd openclaw-custom-layer && npm run dev:api</div>
+            <div style={{ color: '#9ca3af', marginTop: '8px', marginBottom: '4px' }}># O iniciar todo:</div>
+            <div>cd openclaw-custom-layer && npm run dev</div>
+          </div>
+          <p style={{ color: '#92400e', fontSize: '12px', marginTop: '12px', marginBottom: 0 }}>
+            Puerto esperado: 3001 | Una vez iniciado, esta pagina se actualizara automaticamente.
+          </p>
+        </>
+      ) : (
+        <>
+          <p style={{ color: '#7f1d1d', fontSize: '14px', margin: 0 }}>
+            {apiError}
+          </p>
+          <p style={{ color: '#991b1b', fontSize: '12px', marginTop: '8px', marginBottom: 0 }}>
+            Verifica la configuracion de VITE_API_BASE_URL
+          </p>
+        </>
+      )}
     </div>
   ) : null
 

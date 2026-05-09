@@ -14,9 +14,9 @@ import {
   recordSuccessfulExecution as pairingRecordSuccess,
   recordScopeNeedsAuth,
   clearScopeAuth,
-  type PairingHealthResponse
+  getPairingHealth
 } from './service'
-import { getPairingHealth } from './service'
+import type { PairingHealthResponse } from './types'
 import {
   getActiveRequirements,
   recordSuccessfulExecution as systemRecordSuccess,

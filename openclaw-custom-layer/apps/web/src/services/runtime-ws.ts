@@ -62,6 +62,23 @@ export type RuntimeEventType =
   | 'notification:updated'
   // System
   | 'system:health-change'
+  // P6.4: Pairing state events
+  | 'pairing:state-change'
+  | 'pairing:connected'
+  | 'pairing:disconnected'
+  | 'pairing:paired'
+  | 'pairing:degraded'
+  | 'pairing:blocked'
+  | 'pairing:error'
+  // P6.4R: OpenClaw auth events
+  | 'openclaw-connected'
+  | 'openclaw-disconnected'
+  | 'openclaw-degraded'
+  | 'pairing-expired'
+  | 'reauthorization-required'
+  | 'repair-required'
+  | 'pairing-restored'
+  | 'openclaw-health-change'
 
 /**
  * WebSocket frame

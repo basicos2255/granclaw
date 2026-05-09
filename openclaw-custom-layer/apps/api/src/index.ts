@@ -680,7 +680,7 @@ server.listen(PORT, () => {
   runPairingHealthCheck().then((health) => {
     console.log(`[PairingState] Startup check: ${health.overall} (healthy=${health.healthy}, canExecute=${health.canExecute})`)
     if (health.issues.length > 0) {
-      console.log(`[PairingState] Issues: ${health.issues.map(i => i.message).join(', ')}`)
+      console.log(`[PairingState] Issues: ${health.issues.map((i: { message: string }) => i.message).join(', ')}`)
     }
   }).catch((err) => {
     console.warn('[PairingState] Startup check failed:', err.message || err)

@@ -57,6 +57,23 @@ export function createAckFrame(
 }
 
 /**
+ * P5.3: Create subscription ack frame with subscriptionId
+ */
+export function createSubscriptionAckFrame(
+  originalId: string,
+  subscriptionId: string,
+  channel: string,
+  message?: string
+): WsFrame<{ originalId: string; success: boolean; subscriptionId: string; channel: string; message?: string }> {
+  return {
+    id: generateMessageId(),
+    type: 'ack',
+    payload: { originalId, success: true, subscriptionId, channel, message },
+    timestamp: new Date().toISOString()
+  }
+}
+
+/**
  * Create an error frame
  */
 export function createErrorFrame(

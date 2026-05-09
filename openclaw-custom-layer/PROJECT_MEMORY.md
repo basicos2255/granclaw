@@ -7892,3 +7892,66 @@ Retorna:
 - ✅ Provider/adapter claro
 - ✅ WS-first mantenido
 - ✅ Queue authority mantenido
+
+## P5.3 — WebSocket Subscription Registry Consistency
+
+**Fecha:** 2026-05-07
+**Objetivo:** Corregir error SUBSCRIPTION_NOT_FOUND en WS cleanup.
+
+### Causa Raíz
+
+Mismatch de subscriptionId entre frontend y backend:
+- Frontend generaba ID local: `sub_...`
+- Backend generaba ID diferente: `msg_...`
+- Backend NO devolvía ID en ACK de subscribe
+- Frontend usaba ID local al unsubscribe → error
+
+### Solución
+
+1. **Backend devuelve subscriptionId en ACK**
+```typescript
+createSubscriptionAckFrame(originalId, subscriptionId, channel, message)
+```
+
+2. **Frontend almacena serverSubscriptionId**
+```typescript
+interface Subscription {
+  serverSubscriptionId?: string  // Backend-assigned ID
+  pendingSubscribeId?: string    // For ACK correlation
+}
+```
+
+3. **Unsubscribe idempotente**
+- Backend: Si subscription no existe, devuelve success (no error)
+- Frontend: Usa serverSubscriptionId si existe
+
+4. **Error handling non-fatal**
+- `SUBSCRIPTION_NOT_FOUND` tratado como debug, no error
+- `MISSING_SUBSCRIPTION_ID` tratado como debug, no error
+
+### Canales Canonicos
+
+```typescript
+export type WsChannel =
+  | 'runtime'       // global runtime events
+  | 'queue'         // queue/job events
+  | 'workflow'      // workflow-specific events
+  | 'notifications' // user notifications
+  | 'debug'         // debug events
+```
+
+### Archivos Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `serializer.ts` | + createSubscriptionAckFrame() |
+| `gateway.ts` | Unsubscribe idempotente, subscribe devuelve subscriptionId |
+| `runtime-ws.ts` | serverSubscriptionId tracking, non-fatal error handling |
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+- ✅ No SUBSCRIPTION_NOT_FOUND en consola
+- ✅ Unsubscribe idempotente
+- ✅ Reconnect consistency

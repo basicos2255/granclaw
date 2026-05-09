@@ -2,6 +2,7 @@
  * Runtime WebSocket Client
  * P1.2: Realtime Product Shell & WS Runtime
  * P5.2: Config consistency - unified naming
+ * P5.3: Subscription registry consistency - idempotent unsubscribe
  *
  * Frontend WebSocket client for realtime runtime communication.
  */
@@ -84,6 +85,7 @@ export type EventListener<T = unknown> = (payload: T, frame: WsFrame<T>) => void
 
 /**
  * Subscription info
+ * P5.3: Added serverSubscriptionId for backend-assigned ID
  */
 interface Subscription {
   id: string
@@ -91,6 +93,10 @@ interface Subscription {
   workflowId?: string
   eventTypes?: RuntimeEventType[]
   listeners: Map<string, EventListener>
+  /** P5.3: Backend-assigned subscription ID (used for unsubscribe) */
+  serverSubscriptionId?: string
+  /** P5.3: Pending subscribe message ID (to correlate ACK) */
+  pendingSubscribeId?: string
 }
 
 /**
@@ -266,6 +272,7 @@ class RuntimeWsClient {
 
   /**
    * Unsubscribe a listener
+   * P5.3: Use serverSubscriptionId for backend unsubscribe
    */
   unsubscribe(listenerId: string): boolean {
     for (const [key, subscription] of this.subscriptions) {
@@ -274,7 +281,8 @@ class RuntimeWsClient {
 
         // If no more listeners, remove subscription
         if (subscription.listeners.size === 0) {
-          this.sendUnsubscribe(subscription.id)
+          // P5.3: Pass serverSubscriptionId if we have it
+          this.sendUnsubscribe(subscription.id, subscription.serverSubscriptionId)
           this.subscriptions.delete(key)
         }
 
@@ -392,9 +400,29 @@ class RuntimeWsClient {
 
   /**
    * Handle ack frame
+   * P5.3: Updated to handle subscription ACK with serverSubscriptionId
    */
   private handleAck(frame: WsFrame): void {
-    const payload = frame.payload as { originalId: string; success: boolean; message?: string }
+    const payload = frame.payload as {
+      originalId: string
+      success: boolean
+      message?: string
+      subscriptionId?: string
+      channel?: string
+    }
+
+    // P5.3: If this is a subscribe ACK, update the subscription with server ID
+    if (payload.subscriptionId && payload.channel) {
+      for (const subscription of this.subscriptions.values()) {
+        if (subscription.pendingSubscribeId === payload.originalId) {
+          subscription.serverSubscriptionId = payload.subscriptionId
+          subscription.pendingSubscribeId = undefined
+          console.debug(`[RuntimeWs] Subscription registered: ${payload.subscriptionId} (${payload.channel})`)
+          break
+        }
+      }
+    }
+
     const pending = this.pendingAcks.get(payload.originalId)
 
     if (pending) {
@@ -409,10 +437,18 @@ class RuntimeWsClient {
 
   /**
    * Handle error frame
+   * P5.3: Treat SUBSCRIPTION_NOT_FOUND as non-fatal during cleanup
    */
   private handleError(frame: WsFrame): void {
     const payload = frame.payload as { code: string; message: string; originalId?: string }
-    console.error('[RuntimeWs] Server error:', payload.code, payload.message)
+
+    // P5.3: Non-fatal errors during cleanup
+    const nonFatalCodes = ['SUBSCRIPTION_NOT_FOUND', 'MISSING_SUBSCRIPTION_ID']
+    if (nonFatalCodes.includes(payload.code)) {
+      console.debug('[RuntimeWs] Non-fatal:', payload.code, payload.message)
+    } else {
+      console.error('[RuntimeWs] Server error:', payload.code, payload.message)
+    }
 
     if (payload.originalId) {
       const pending = this.pendingAcks.get(payload.originalId)
@@ -436,10 +472,14 @@ class RuntimeWsClient {
 
   /**
    * Send subscribe message
+   * P5.3: Track pendingSubscribeId to correlate ACK
    */
   private sendSubscribe(subscription: Subscription): void {
+    const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    subscription.pendingSubscribeId = messageId
+
     this.send({
-      id: `msg_${Date.now()}`,
+      id: messageId,
       type: 'subscribe',
       channel: subscription.channel,
       workflowId: subscription.workflowId,
@@ -452,12 +492,16 @@ class RuntimeWsClient {
 
   /**
    * Send unsubscribe message
+   * P5.3: Use serverSubscriptionId if available
    */
-  private sendUnsubscribe(subscriptionId: string): void {
+  private sendUnsubscribe(subscriptionId: string, serverSubscriptionId?: string): void {
+    // P5.3: Use server-assigned ID if available, fallback to local ID
+    const idToSend = serverSubscriptionId || subscriptionId
+
     this.send({
-      id: `msg_${Date.now()}`,
+      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       type: 'unsubscribe',
-      payload: { subscriptionId },
+      payload: { subscriptionId: idToSend },
       timestamp: new Date().toISOString()
     })
   }
@@ -476,9 +520,12 @@ class RuntimeWsClient {
 
   /**
    * Resubscribe to all subscriptions
+   * P5.3: Clear old serverSubscriptionIds before resubscribing
    */
   private resubscribeAll(): void {
     for (const subscription of this.subscriptions.values()) {
+      // P5.3: Clear server ID from previous connection
+      subscription.serverSubscriptionId = undefined
       this.sendSubscribe(subscription)
     }
   }

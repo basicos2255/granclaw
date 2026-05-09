@@ -1,6 +1,7 @@
 /**
  * Runtime WebSocket Gateway
  * P1.2: Realtime Product Shell & WS Runtime
+ * P5.3: Subscription registry consistency - idempotent unsubscribe
  *
  * Main WebSocket gateway for realtime runtime communication.
  */
@@ -25,6 +26,7 @@ import {
   deserializeFrame,
   createEventFrame,
   createAckFrame,
+  createSubscriptionAckFrame,
   createErrorFrame,
   createPongFrame,
   generateMessageId,
@@ -223,9 +225,11 @@ export class RuntimeWsGateway {
 
     if (result.success) {
       console.log(`[RuntimeWsGateway] Subscription added: ${subscription.id} (${channel})`)
-      this.sendToClient(client, createAckFrame(
+      // P5.3: Return subscriptionId so frontend can use it for unsubscribe
+      this.sendToClient(client, createSubscriptionAckFrame(
         frame.id,
-        true,
+        subscription.id,
+        channel,
         `Subscribed to ${channel}`
       ))
     } else {
@@ -239,28 +243,26 @@ export class RuntimeWsGateway {
 
   /**
    * Handle unsubscribe request
+   * P5.3: Made idempotent - returns success even if subscription doesn't exist
    */
   private handleUnsubscribe(client: WsClientInfo, frame: WsFrame): void {
     const subscriptionId = (frame.payload as { subscriptionId?: string })?.subscriptionId
     if (!subscriptionId) {
-      this.sendToClient(client, createErrorFrame(
-        'MISSING_SUBSCRIPTION_ID',
-        'Subscription ID is required for unsubscribe',
-        frame.id
-      ))
+      // P5.3: If no subscriptionId, just ack silently (cleanup scenario)
+      this.sendToClient(client, createAckFrame(frame.id, true, 'Unsubscribe no-op'))
       return
     }
 
     const removed = this.subscriptions.removeSubscription(subscriptionId)
 
+    // P5.3: Always return success for idempotent unsubscribe
+    // This prevents errors during cleanup, reconnect, or React StrictMode double unmount
     if (removed) {
       this.sendToClient(client, createAckFrame(frame.id, true, 'Unsubscribed'))
     } else {
-      this.sendToClient(client, createErrorFrame(
-        'SUBSCRIPTION_NOT_FOUND',
-        'Subscription not found',
-        frame.id
-      ))
+      // P5.3: Log as debug, not error - subscription may have been cleaned up already
+      console.debug(`[RuntimeWsGateway] Unsubscribe no-op: ${subscriptionId} (already removed or never existed)`)
+      this.sendToClient(client, createAckFrame(frame.id, true, 'Unsubscribe no-op'))
     }
   }
 

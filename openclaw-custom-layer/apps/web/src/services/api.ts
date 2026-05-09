@@ -1123,3 +1123,185 @@ export async function getQueueStats(): Promise<{ success: boolean; data: unknown
     }
   }
 }
+
+/**
+ * P6.4: Pairing Health Types
+ */
+export type OverallPairingState =
+  | 'unknown'
+  | 'disconnected'
+  | 'connected'
+  | 'paired'
+  | 'degraded'
+  | 'blocked'
+  | 'error'
+
+export interface PairingIssue {
+  type: 'connection' | 'auth' | 'capability'
+  severity: 'warning' | 'error' | 'critical'
+  message: string
+  scope?: string
+  canRepair: boolean
+}
+
+export interface PairingHealthData {
+  overall: OverallPairingState
+  connection: string
+  auth: string
+  capability: string
+  healthy: boolean
+  canExecute: boolean
+  lastCheck?: number
+  lastSuccess?: number
+  issues: PairingIssue[]
+  repairAvailable: boolean
+  repairSessionId?: string
+}
+
+/**
+ * P6.4: Get pairing health
+ */
+export async function getPairingHealth(): Promise<{ success: boolean; data: PairingHealthData | null; error: string | null }> {
+  try {
+    const result = await apiFetch<{ success: boolean; data: PairingHealthData }>('/pairing/health')
+    return { success: true, data: result.data, error: null }
+  } catch (err) {
+    if (err instanceof ApiNonJsonError) {
+      return {
+        success: false,
+        data: null,
+        error: 'API devolvio HTML en lugar de JSON'
+      }
+    }
+    if (isApiConnectionError(err)) {
+      return {
+        success: false,
+        data: null,
+        error: 'No se pudo conectar con API'
+      }
+    }
+    return {
+      success: false,
+      data: null,
+      error: err instanceof Error ? err.message : 'Error desconocido'
+    }
+  }
+}
+
+/**
+ * P6.4: Run pairing health check
+ */
+export async function runPairingCheck(): Promise<{ success: boolean; data: PairingHealthData | null; error: string | null }> {
+  try {
+    const result = await apiFetch<{ success: boolean; data: PairingHealthData }>('/pairing/check', {
+      method: 'POST'
+    })
+    return { success: true, data: result.data, error: null }
+  } catch (err) {
+    return {
+      success: false,
+      data: null,
+      error: err instanceof Error ? err.message : 'Error'
+    }
+  }
+}
+
+/**
+ * P6.4R: OpenClaw Auth Health Types
+ */
+export type OpenClawAuthState =
+  | 'unknown'
+  | 'disconnected'
+  | 'connected'
+  | 'paired'
+  | 'degraded'
+  | 'reauthorization_required'
+  | 'repair_required'
+  | 'expired'
+
+export interface OpenClawAuthIssue {
+  type: 'connection' | 'auth' | 'capability' | 'scope'
+  severity: 'warning' | 'error' | 'critical'
+  message: string
+  scope?: string
+  canRepair: boolean
+}
+
+export interface OpenClawAuthHealthData {
+  overall: OpenClawAuthState
+  connection: string
+  auth: string
+  capability: string
+  healthy: boolean
+  canExecute: boolean
+  lastCheck?: number
+  lastSuccess?: number
+  issues: OpenClawAuthIssue[]
+  repairAvailable: boolean
+  repairSessionId?: string
+}
+
+/**
+ * P6.4R: Get OpenClaw auth health
+ */
+export async function getOpenClawAuthHealth(): Promise<{ success: boolean; data: OpenClawAuthHealthData | null; error: string | null }> {
+  try {
+    const result = await apiFetch<{ success: boolean; data: OpenClawAuthHealthData }>('/openclaw/health')
+    return { success: true, data: result.data, error: null }
+  } catch (err) {
+    if (err instanceof ApiNonJsonError) {
+      return {
+        success: false,
+        data: null,
+        error: 'API returned HTML instead of JSON'
+      }
+    }
+    if (isApiConnectionError(err)) {
+      return {
+        success: false,
+        data: null,
+        error: 'Cannot connect to API'
+      }
+    }
+    return {
+      success: false,
+      data: null,
+      error: err instanceof Error ? err.message : 'Unknown error'
+    }
+  }
+}
+
+/**
+ * P6.4R: Run OpenClaw auth health check
+ */
+export async function runOpenClawAuthCheck(): Promise<{ success: boolean; data: OpenClawAuthHealthData | null; error: string | null }> {
+  try {
+    const result = await apiFetch<{ success: boolean; data: OpenClawAuthHealthData }>('/openclaw/check', {
+      method: 'POST'
+    })
+    return { success: true, data: result.data, error: null }
+  } catch (err) {
+    return {
+      success: false,
+      data: null,
+      error: err instanceof Error ? err.message : 'Error'
+    }
+  }
+}
+
+/**
+ * P6.4R: Check if capability is usable
+ */
+export async function isCapabilityUsable(scopeKey?: string): Promise<{ usable: boolean; reason?: string; repairUrl?: string }> {
+  try {
+    const url = scopeKey ? `/openclaw/capability/${encodeURIComponent(scopeKey)}` : '/openclaw/can-execute'
+    const result = await apiFetch<{ success: boolean; data: { usable?: boolean; canExecute?: boolean; reason?: string; repairUrl?: string } }>(url)
+    return {
+      usable: result.data.usable ?? result.data.canExecute ?? false,
+      reason: result.data.reason,
+      repairUrl: result.data.repairUrl
+    }
+  } catch {
+    return { usable: false, reason: 'Cannot check capability' }
+  }
+}

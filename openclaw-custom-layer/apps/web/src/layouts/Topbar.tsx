@@ -119,9 +119,9 @@ export function Topbar({ isConnected, onNavigate }: TopbarProps) {
       </div>
 
       <div style={rightStyle}>
-        {/* Quick Action */}
+        {/* Quick Action - P6.4: Use query param instead of non-existent route */}
         <button
-          onClick={() => onNavigate('/tasks/new')}
+          onClick={() => onNavigate('/tasks?create=true')}
           style={{
             padding: '8px 16px',
             backgroundColor: '#3b82f6',

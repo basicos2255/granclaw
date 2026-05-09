@@ -9,8 +9,8 @@
 
 import { useState, useEffect } from 'react'
 import { useNavigation } from '../../hooks/useNavigation'
-import { useRuntimeWs, useQueueEvents } from '../../hooks/useRuntimeWs'
-import { getRuntimeState, RuntimeStateData } from '../../services/api'
+import { useRuntimeWs, useQueueEvents, useRuntimeEvents } from '../../hooks/useRuntimeWs'
+import { getRuntimeState, RuntimeStateData, getPairingHealth, PairingHealthData, getOpenClawAuthHealth, OpenClawAuthHealthData } from '../../services/api'
 
 interface RuntimeState {
   queueStats: {
@@ -38,13 +38,30 @@ export function ProductDashboard() {
   const { navigate } = useNavigation()
   const { isConnected } = useRuntimeWs()
   const { lastEvent: queueEvent } = useQueueEvents()
+  // P6.4: Subscribe to pairing state events
+  const { lastEvent: pairingEvent } = useRuntimeEvents('runtime', ['pairing:state-change'])
+  // P6.4R: Subscribe to OpenClaw auth events
+  const { lastEvent: openclawEvent } = useRuntimeEvents('runtime', [
+    'openclaw-connected',
+    'openclaw-disconnected',
+    'openclaw-degraded',
+    'pairing-expired',
+    'reauthorization-required',
+    'repair-required',
+    'pairing-restored',
+    'openclaw-health-change'
+  ])
 
   const [runtimeState, setRuntimeState] = useState<RuntimeState | null>(null)
+  const [pairingHealth, setPairingHealth] = useState<PairingHealthData | null>(null)
+  const [openclawHealth, setOpenclawHealth] = useState<OpenClawAuthHealthData | null>(null)
   const [loading, setLoading] = useState(true)
   const [apiError, setApiError] = useState<string | null>(null)
 
   useEffect(() => {
     loadRuntimeState()
+    loadPairingHealth()
+    loadOpenClawHealth() // P6.4R
     const interval = setInterval(loadRuntimeState, 30000) // Refresh every 30s as backup
     return () => clearInterval(interval)
   }, [])
@@ -55,6 +72,44 @@ export function ProductDashboard() {
       loadRuntimeState()
     }
   }, [queueEvent])
+
+  // P6.4: Update pairing health from WS events
+  useEffect(() => {
+    if (pairingEvent) {
+      loadPairingHealth()
+    }
+  }, [pairingEvent])
+
+  // P6.4R: Update OpenClaw auth health from WS events
+  useEffect(() => {
+    if (openclawEvent) {
+      loadOpenClawHealth()
+    }
+  }, [openclawEvent])
+
+  // P6.4: Load pairing health
+  const loadPairingHealth = async () => {
+    try {
+      const result = await getPairingHealth()
+      if (result.success && result.data) {
+        setPairingHealth(result.data)
+      }
+    } catch (err) {
+      console.error('Error loading pairing health:', err)
+    }
+  }
+
+  // P6.4R: Load OpenClaw auth health
+  const loadOpenClawHealth = async () => {
+    try {
+      const result = await getOpenClawAuthHealth()
+      if (result.success && result.data) {
+        setOpenclawHealth(result.data)
+      }
+    } catch (err) {
+      console.error('Error loading OpenClaw auth health:', err)
+    }
+  }
 
   // P2.2: Use centralized API client
   const loadRuntimeState = async () => {
@@ -264,6 +319,64 @@ export function ProductDashboard() {
             <span style={{ color: '#64748b', fontSize: '14px' }}>fallidas</span>
           </div>
         </div>
+      </div>
+
+      {/* P6.4: OpenClaw/Pairing Health */}
+      <div style={sectionTitleStyle}>
+        <span>🔗</span>
+        <span>OpenClaw Connection</span>
+      </div>
+      <div style={gridStyle}>
+        <div style={statCardStyle}>
+          <span style={statLabelStyle}>Estado de Pairing</span>
+          {pairingHealth ? (
+            <div style={healthBadgeStyle(
+              pairingHealth.overall === 'paired' ? 'ok' :
+              pairingHealth.overall === 'degraded' ? 'warning' :
+              pairingHealth.overall === 'blocked' || pairingHealth.overall === 'error' || pairingHealth.overall === 'disconnected' ? 'critical' :
+              'loading'
+            )}>
+              {pairingHealth.overall === 'paired' && '✓ Conectado y pareado'}
+              {pairingHealth.overall === 'degraded' && '⚠ Degradado (algunos scopes)'}
+              {pairingHealth.overall === 'blocked' && '⚠ Bloqueado - requiere auth'}
+              {pairingHealth.overall === 'connected' && '○ Conectado (sin auth)'}
+              {pairingHealth.overall === 'disconnected' && '✗ Desconectado'}
+              {pairingHealth.overall === 'error' && '✗ Error de conexion'}
+              {pairingHealth.overall === 'unknown' && '? Estado desconocido'}
+            </div>
+          ) : (
+            <div style={healthBadgeStyle('loading')}>Cargando...</div>
+          )}
+        </div>
+
+        <div style={statCardStyle}>
+          <span style={statLabelStyle}>Capacidad</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {pairingHealth?.canExecute ? (
+              <span style={{ color: '#16a34a', fontWeight: '600' }}>✓ Puede ejecutar</span>
+            ) : (
+              <span style={{ color: '#dc2626', fontWeight: '600' }}>✗ No puede ejecutar</span>
+            )}
+          </div>
+        </div>
+
+        {pairingHealth?.issues && pairingHealth.issues.length > 0 && (
+          <div style={{ ...statCardStyle, backgroundColor: '#fef3c7', borderColor: '#fde68a' }}>
+            <span style={{ ...statLabelStyle, color: '#92400e' }}>Issues ({pairingHealth.issues.length})</span>
+            <div style={{ fontSize: '13px', color: '#78350f' }}>
+              {pairingHealth.issues.slice(0, 2).map((issue, i) => (
+                <div key={i} style={{ marginBottom: '4px' }}>
+                  {issue.severity === 'critical' ? '!' : issue.severity === 'error' ? '!' : '⚠'} {issue.message}
+                </div>
+              ))}
+              {pairingHealth.issues.length > 2 && (
+                <div style={{ fontSize: '12px', color: '#a16207' }}>
+                  +{pairingHealth.issues.length - 2} mas...
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Active Tasks */}

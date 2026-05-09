@@ -8241,3 +8241,72 @@ interface TaskArtifact {
 - ✅ Task cards muestran summary
 - ✅ Result renderers funcionan por tipo
 - ✅ Automations muestra advertencia de backend no disponible
+
+## P6.4 — Persistent Pairing, Auth Lifecycle & Route Consistency
+
+**Fecha:** 2026-05-09
+**Objetivo:** Sistema robusto de pairing/auth lifecycle
+
+### Problemas Resueltos
+
+| Problema | Solucion |
+|----------|----------|
+| /tasks/new 404 | Usar ?create=true |
+| No state machine de pairing | Nuevo modulo pairing-state |
+| Inconsistencia capability/pairing | Sync service |
+| Sin health check endpoint | GET/POST /pairing/* |
+| Sin WS events de pairing | pairing:* events |
+| Dashboard sin auth health | OpenClaw Connection section |
+
+### Pairing State Machine
+
+```typescript
+type OverallPairingState =
+  | 'unknown'        // Inicial
+  | 'disconnected'   // OpenClaw no alcanzable
+  | 'connected'      // Alcanzable sin auth
+  | 'paired'         // Conectado + auth + capabilities OK
+  | 'degraded'       // Auth OK pero scopes fallando
+  | 'blocked'        // Issues criticos
+  | 'error'          // Error fatal
+```
+
+### Archivos Nuevos
+
+| Archivo | Descripcion |
+|---------|-------------|
+| `modules/pairing-state/types.ts` | Tipos de state machine |
+| `modules/pairing-state/service.ts` | State machine + persistence |
+| `modules/pairing-state/sync.ts` | Sync con system-state |
+| `modules/pairing-state/routes.ts` | HTTP endpoints |
+
+### Endpoints
+
+| Ruta | Metodo | Descripcion |
+|------|--------|-------------|
+| `/pairing/state` | GET | Estado completo |
+| `/pairing/health` | GET | Health para UI |
+| `/pairing/combined` | GET | Health combinado |
+| `/pairing/check` | POST | Ejecuta health check |
+| `/pairing/reset` | POST | Reset a defaults |
+
+### WS Events
+
+- `pairing:state-change`
+- `pairing:connected/disconnected/paired/degraded/blocked/error`
+
+### Dashboard Health
+
+Nueva seccion "OpenClaw Connection" en ProductDashboard:
+- Estado de pairing con badge
+- Indicador de capacidad de ejecucion
+- Lista de issues activos
+- Actualiza via WS events
+
+### Verificaciones
+
+- ✅ /tasks/new ahora usa ?create=true
+- ✅ Pairing state persiste en data/pairing-state.json
+- ✅ Health check corre en startup
+- ✅ WS events emiten en cambio de estado
+- ✅ Dashboard muestra OpenClaw health

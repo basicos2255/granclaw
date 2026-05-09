@@ -68,5 +68,6 @@ export {
   isEventBridgeInitialized,
   emitToWs,
   emitNotification,
-  emitApprovalRequired
+  emitApprovalRequired,
+  emitPairingStateChange
 } from './event-bridge'

@@ -312,3 +312,42 @@ export function emitApprovalRequired(
     requiredBy: userId
   }, { tenantId, userId, workflowId: approval.workflowId })
 }
+
+/**
+ * P6.4: Emit pairing state change event
+ */
+export function emitPairingStateChange(
+  state: {
+    overall: string
+    connection: string
+    auth: string
+    capability: string
+    healthy: boolean
+    canExecute: boolean
+    issues: Array<{
+      type: string
+      severity: string
+      message: string
+      scope?: string
+    }>
+  }
+): number {
+  // Map overall state to specific event
+  const eventType = `pairing:${state.overall}` as RuntimeEventType
+
+  // Broadcast to runtime channel (no tenant filtering - system-wide event)
+  const sentSpecific = emitToWs('runtime', eventType, {
+    timestamp: new Date().toISOString(),
+    source: 'pairing-state',
+    ...state
+  }, {})
+
+  // Also send generic state-change event
+  const sentGeneric = emitToWs('runtime', 'pairing:state-change', {
+    timestamp: new Date().toISOString(),
+    source: 'pairing-state',
+    ...state
+  }, {})
+
+  return Math.max(sentSpecific, sentGeneric)
+}

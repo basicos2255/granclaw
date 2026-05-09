@@ -58,6 +58,39 @@ import { handleAudit } from './modules/audit'
 import { handleOpenClawStatus, handleOpenClawWsStatus, handleWebhookTest, handleWsRpcStatus, handleToolsStatus, handleAuthStatus, handleCheckAuth } from './modules/openclaw'
 // FIX 123: System State routes
 import { handleGetSystemState, handleGetPendingAction, handleClearPendingAction, handleConsumePendingAction, handleMarkOpenClawReady } from './modules/system-state'
+// P6.4: Pairing State routes
+import {
+  handleGetPairingState,
+  handleGetPairingHealth,
+  handleResetPairingState,
+  handleReloadPairingState,
+  handleRunPairingCheck,
+  handleGetCombinedHealth,
+  runPairingHealthCheck
+} from './modules/pairing-state'
+// P6.4R: OpenClaw Auth routes
+import {
+  handleGetOpenClawHealth,
+  handleGetOpenClawStatus,
+  handleGetOpenClawState,
+  handleOpenClawCheck,
+  handleOpenClawRefresh,
+  handleGetCapabilityUsable,
+  handleCanExecute,
+  handlePreCheck,
+  handleGetScopesNeedingAuth,
+  handleCreateRepair as handleCreateOpenClawRepair,
+  handleGetActiveRepair as handleGetActiveOpenClawRepair,
+  handleGetRepairById as handleGetOpenClawRepairById,
+  handleStartRepairById,
+  handleCompleteRepairById,
+  handleFailRepairById,
+  handleCancelRepairById,
+  handleQuickRepair,
+  handleOpenClawReset,
+  handleOpenClawReload,
+  runOpenClawStartupCheck
+} from './modules/openclaw-auth'
 // FIX 125: OpenClaw Repair routes
 import {
   handleStartRepair,
@@ -224,7 +257,19 @@ const getRoutes: Record<string, RouteHandler> = {
   '/runtime/state': handleGetRuntimeState,
   '/runtime/health': handleGetRuntimeHealth,
   // P5.2: Consistency check
-  '/runtime/consistency': handleGetConsistency
+  '/runtime/consistency': handleGetConsistency,
+  // P6.4: Pairing State routes
+  '/pairing/state': wrapHandler(handleGetPairingState),
+  '/pairing/health': wrapHandler(handleGetPairingHealth),
+  '/pairing/combined': wrapHandler(handleGetCombinedHealth),
+  // P6.4R: OpenClaw Auth routes
+  '/openclaw/health': wrapHandler(handleGetOpenClawHealth),
+  '/openclaw/auth/status': wrapHandler(handleGetOpenClawStatus),
+  '/openclaw/auth/state': wrapHandler(handleGetOpenClawState),
+  '/openclaw/can-execute': wrapHandler(handleCanExecute),
+  '/openclaw/scopes-needing-auth': wrapHandler(handleGetScopesNeedingAuth),
+  '/openclaw/auth/repair/active': wrapHandler(handleGetActiveOpenClawRepair),
+  '/openclaw/quick-repair': wrapHandler(handleQuickRepair)
 }
 
 // POST routes
@@ -266,7 +311,18 @@ const postRoutes: Record<string, RouteHandler> = {
   // PHASE H1: Runtime Queue routes
   '/queue/pause': handlePauseQueue,
   '/queue/resume': handleResumeQueue,
-  '/queue/dead-letter/clear': handleClearDeadLetter
+  '/queue/dead-letter/clear': handleClearDeadLetter,
+  // P6.4: Pairing State routes
+  '/pairing/reset': wrapHandler(handleResetPairingState),
+  '/pairing/reload': wrapHandler(handleReloadPairingState),
+  '/pairing/check': wrapHandler(handleRunPairingCheck),
+  // P6.4R: OpenClaw Auth routes
+  '/openclaw/check': wrapHandler(handleOpenClawCheck),
+  '/openclaw/refresh': wrapHandler(handleOpenClawRefresh),
+  '/openclaw/pre-check': wrapHandler(handlePreCheck),
+  '/openclaw/auth/repair': wrapHandler(handleCreateOpenClawRepair),
+  '/openclaw/reset': wrapHandler(handleOpenClawReset),
+  '/openclaw/reload': wrapHandler(handleOpenClawReload)
 }
 
 // Rutas dinámicas con parámetros
@@ -328,6 +384,15 @@ const getDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/queue\/events\/([^/]+)$/,
     handler: handleGetEventsByCorrelation
+  },
+  // P6.4R: OpenClaw Auth dynamic routes
+  {
+    pattern: /^\/openclaw\/capability\/([^/]+)$/,
+    handler: wrapDynamicHandler(handleGetCapabilityUsable)
+  },
+  {
+    pattern: /^\/openclaw\/auth\/repair\/([^/]+)$/,
+    handler: wrapDynamicHandler(handleGetOpenClawRepairById)
   }
 ]
 
@@ -373,6 +438,19 @@ const postDynamicRoutes: DynamicRoute[] = [
     pattern: /^\/openclaw\/repair\/([^/]+)\/retry$/,
     handler: wrapRepairRetryHandler
   },
+  // P6.4R: OpenClaw Auth repair dynamic routes
+  {
+    pattern: /^\/openclaw\/auth\/repair\/([^/]+)\/start$/,
+    handler: wrapDynamicHandler(handleStartRepairById)
+  },
+  {
+    pattern: /^\/openclaw\/auth\/repair\/([^/]+)\/complete$/,
+    handler: wrapDynamicHandler(handleCompleteRepairById)
+  },
+  {
+    pattern: /^\/openclaw\/auth\/repair\/([^/]+)\/fail$/,
+    handler: wrapDynamicHandler(handleFailRepairById)
+  }
 ]
 
 // FIX 130.1: Wrappers for task memory handlers
@@ -467,6 +545,11 @@ const deleteDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/dag\/executions\/([^/]+)$/,
     handler: handleDeleteDagExecution
+  },
+  // P6.4R: OpenClaw Auth repair cancel
+  {
+    pattern: /^\/openclaw\/auth\/repair\/([^/]+)$/,
+    handler: wrapDynamicHandler(handleCancelRepairById)
   }
 ]
 
@@ -592,6 +675,26 @@ server.listen(PORT, () => {
   initializeWsGateway(server)
   initializeEventBridge()
   console.log('[WebSocket] Gateway initialized on /ws')
+
+  // P6.4: Startup pairing health check (async, non-blocking)
+  runPairingHealthCheck().then((health) => {
+    console.log(`[PairingState] Startup check: ${health.overall} (healthy=${health.healthy}, canExecute=${health.canExecute})`)
+    if (health.issues.length > 0) {
+      console.log(`[PairingState] Issues: ${health.issues.map(i => i.message).join(', ')}`)
+    }
+  }).catch((err) => {
+    console.warn('[PairingState] Startup check failed:', err.message || err)
+  })
+
+  // P6.4R: OpenClaw Auth startup check (async, non-blocking)
+  runOpenClawStartupCheck().then((health) => {
+    console.log(`[OpenClawAuth] Startup check: ${health.overall} (healthy=${health.healthy}, canExecute=${health.canExecute})`)
+    if (health.issues.length > 0) {
+      console.log(`[OpenClawAuth] Issues: ${health.issues.map(i => i.message).join(', ')}`)
+    }
+  }).catch((err) => {
+    console.warn('[OpenClawAuth] Startup check failed:', err.message || err)
+  })
 
   console.log(`GranClaw API running on http://localhost:${PORT}`)
   console.log('Available endpoints:')

@@ -1,17 +1,22 @@
 /**
  * Tasks Page - Task Operating System
  * P2: Product Experience Layer
+ * P6.1: Functional task buttons
  *
  * View and manage all tasks with multiple view modes.
  */
 
 import { useState, useEffect } from 'react'
+import { useNavigation, useSearchParams } from '../../hooks/useNavigation'
 import { api, type GranClawTask, type TaskStatus } from '../../services/api'
 import { useRuntimeWs, useRuntimeEvents } from '../../hooks/useRuntimeWs'
+import { createTask, retryTask, cancelTask, type ActionResult } from '../../services/actions'
 
 type ViewMode = 'list' | 'timeline' | 'grouped'
 
 export function TasksPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const { navigate } = useNavigation()
   const { isConnected } = useRuntimeWs()
   const { lastEvent } = useRuntimeEvents('runtime', ['workflow:created', 'workflow:complete', 'workflow:failed'])
 
@@ -19,6 +24,22 @@ export function TasksPage() {
   const [loading, setLoading] = useState(true)
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [filter, setFilter] = useState<TaskStatus | 'all'>('all')
+
+  // P6.1: Modal and action state
+  const [showCreateModal, setShowCreateModal] = useState(false)
+  const [taskInput, setTaskInput] = useState('')
+  const [taskMode, setTaskMode] = useState<'safe' | 'free'>('safe')
+  const [creating, setCreating] = useState(false)
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [actionFeedback, setActionFeedback] = useState<{ id: string; result: ActionResult } | null>(null)
+
+  // P6.1: Open modal from URL param
+  useEffect(() => {
+    if (searchParams.get('create') === 'true') {
+      setShowCreateModal(true)
+      setSearchParams({}, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
 
   useEffect(() => {
     loadTasks()
@@ -44,6 +65,59 @@ export function TasksPage() {
   }
 
   const filteredTasks = filter === 'all' ? tasks : tasks.filter(t => t.status === filter)
+
+  // P6.1: Create task handler
+  const handleCreateTask = async () => {
+    if (!taskInput.trim()) return
+
+    setCreating(true)
+    const result = await createTask({
+      input: taskInput.trim(),
+      mode: taskMode,
+      priority: 'normal'
+    })
+
+    setCreating(false)
+
+    if (result.success) {
+      setShowCreateModal(false)
+      setTaskInput('')
+      setTaskMode('safe')
+      // Reload tasks after creation
+      loadTasks()
+    } else {
+      setActionFeedback({ id: 'create', result })
+      setTimeout(() => setActionFeedback(null), 3000)
+    }
+  }
+
+  // P6.1: Retry task handler
+  const handleRetryTask = async (taskId: string) => {
+    setActionLoading(taskId)
+    const result = await retryTask(taskId)
+    setActionLoading(null)
+
+    setActionFeedback({ id: taskId, result })
+    setTimeout(() => setActionFeedback(null), 3000)
+
+    if (result.success) {
+      loadTasks()
+    }
+  }
+
+  // P6.1: Cancel task handler
+  const handleCancelTask = async (taskId: string) => {
+    setActionLoading(taskId)
+    const result = await cancelTask(taskId)
+    setActionLoading(null)
+
+    setActionFeedback({ id: taskId, result })
+    setTimeout(() => setActionFeedback(null), 3000)
+
+    if (result.success) {
+      loadTasks()
+    }
+  }
 
   const getStatusColor = (status: TaskStatus) => {
     switch (status) {
@@ -149,16 +223,22 @@ export function TasksPage() {
           <p style={{ color: '#64748b' }}>Task Operating System</p>
         </div>
 
-        <button style={{
-          padding: '10px 20px',
-          backgroundColor: '#3b82f6',
-          color: 'white',
-          border: 'none',
-          borderRadius: '8px',
-          fontSize: '14px',
-          fontWeight: '500',
-          cursor: 'pointer'
-        }}>
+        <button
+          onClick={() => setShowCreateModal(true)}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: '#3b82f6',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            fontSize: '14px',
+            fontWeight: '500',
+            cursor: 'pointer',
+            transition: 'background-color 0.2s'
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2563eb'}
+          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#3b82f6'}
+        >
           + Nueva Tarea
         </button>
       </div>
@@ -258,27 +338,78 @@ export function TasksPage() {
 
                 {/* Actions */}
                 {(task.status === 'error' || task.status === 'blocked') && (
-                  <div style={{ marginTop: '12px', display: 'flex', gap: '8px' }}>
-                    <button style={{
-                      padding: '6px 12px',
-                      fontSize: '12px',
-                      backgroundColor: '#f1f5f9',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      color: '#475569'
-                    }}>
-                      Reintentar
+                  <div style={{ marginTop: '12px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleRetryTask(task.id) }}
+                      disabled={actionLoading === task.id}
+                      style={{
+                        padding: '6px 12px',
+                        fontSize: '12px',
+                        backgroundColor: actionLoading === task.id ? '#e2e8f0' : '#f1f5f9',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: actionLoading === task.id ? 'not-allowed' : 'pointer',
+                        color: '#475569',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                      }}
+                    >
+                      {actionLoading === task.id ? '...' : 'Reintentar'}
                     </button>
-                    <button style={{
-                      padding: '6px 12px',
-                      fontSize: '12px',
-                      backgroundColor: '#f1f5f9',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      color: '#475569'
-                    }}>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); navigate(`/tasks/${task.id}`) }}
+                      style={{
+                        padding: '6px 12px',
+                        fontSize: '12px',
+                        backgroundColor: '#f1f5f9',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        color: '#475569'
+                      }}
+                    >
+                      Ver detalles
+                    </button>
+                    {actionFeedback?.id === task.id && (
+                      <span style={{
+                        fontSize: '12px',
+                        color: actionFeedback.result.success ? '#16a34a' : '#dc2626'
+                      }}>
+                        {actionFeedback.result.message}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {task.status === 'running' && (
+                  <div style={{ marginTop: '12px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleCancelTask(task.id) }}
+                      disabled={actionLoading === task.id}
+                      style={{
+                        padding: '6px 12px',
+                        fontSize: '12px',
+                        backgroundColor: actionLoading === task.id ? '#fecaca' : '#fee2e2',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: actionLoading === task.id ? 'not-allowed' : 'pointer',
+                        color: '#dc2626'
+                      }}
+                    >
+                      {actionLoading === task.id ? '...' : 'Cancelar'}
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); navigate(`/tasks/${task.id}`) }}
+                      style={{
+                        padding: '6px 12px',
+                        fontSize: '12px',
+                        backgroundColor: '#f1f5f9',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        color: '#475569'
+                      }}
+                    >
                       Ver detalles
                     </button>
                   </div>
@@ -286,6 +417,153 @@ export function TasksPage() {
               </div>
             )
           })}
+        </div>
+      )}
+
+      {/* P6.1: Create Task Modal */}
+      {showCreateModal && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            backgroundColor: 'white',
+            borderRadius: '16px',
+            padding: '24px',
+            width: '100%',
+            maxWidth: '500px',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.3)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: '600', color: '#0f172a', margin: 0 }}>
+                Nueva Tarea
+              </h2>
+              <button
+                onClick={() => setShowCreateModal(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  color: '#94a3b8'
+                }}
+              >
+                &times;
+              </button>
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#475569', marginBottom: '6px' }}>
+                Descripcion de la tarea
+              </label>
+              <textarea
+                value={taskInput}
+                onChange={(e) => setTaskInput(e.target.value)}
+                placeholder="Describe lo que quieres que el agente haga..."
+                style={{
+                  width: '100%',
+                  minHeight: '100px',
+                  padding: '12px',
+                  borderRadius: '8px',
+                  border: '1px solid #e2e8f0',
+                  fontSize: '14px',
+                  resize: 'vertical',
+                  boxSizing: 'border-box'
+                }}
+                autoFocus
+              />
+            </div>
+
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#475569', marginBottom: '8px' }}>
+                Modo de ejecucion
+              </label>
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button
+                  onClick={() => setTaskMode('safe')}
+                  style={{
+                    flex: 1,
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: taskMode === 'safe' ? '2px solid #3b82f6' : '1px solid #e2e8f0',
+                    backgroundColor: taskMode === 'safe' ? '#eff6ff' : 'white',
+                    cursor: 'pointer',
+                    textAlign: 'left'
+                  }}
+                >
+                  <div style={{ fontWeight: '600', color: '#0f172a', marginBottom: '4px' }}>Seguro</div>
+                  <div style={{ fontSize: '12px', color: '#64748b' }}>Requiere aprobacion para acciones destructivas</div>
+                </button>
+                <button
+                  onClick={() => setTaskMode('free')}
+                  style={{
+                    flex: 1,
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: taskMode === 'free' ? '2px solid #f59e0b' : '1px solid #e2e8f0',
+                    backgroundColor: taskMode === 'free' ? '#fffbeb' : 'white',
+                    cursor: 'pointer',
+                    textAlign: 'left'
+                  }}
+                >
+                  <div style={{ fontWeight: '600', color: '#0f172a', marginBottom: '4px' }}>Libre</div>
+                  <div style={{ fontSize: '12px', color: '#64748b' }}>Ejecuta sin restricciones</div>
+                </button>
+              </div>
+            </div>
+
+            {actionFeedback?.id === 'create' && !actionFeedback.result.success && (
+              <div style={{
+                padding: '12px',
+                borderRadius: '8px',
+                backgroundColor: '#fef2f2',
+                color: '#dc2626',
+                fontSize: '13px',
+                marginBottom: '16px'
+              }}>
+                {actionFeedback.result.message}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowCreateModal(false)}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: '8px',
+                  border: '1px solid #e2e8f0',
+                  backgroundColor: 'white',
+                  color: '#475569',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: 'pointer'
+                }}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleCreateTask}
+                disabled={!taskInput.trim() || creating}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  backgroundColor: !taskInput.trim() || creating ? '#94a3b8' : '#3b82f6',
+                  color: 'white',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: !taskInput.trim() || creating ? 'not-allowed' : 'pointer'
+                }}
+              >
+                {creating ? 'Creando...' : 'Crear Tarea'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

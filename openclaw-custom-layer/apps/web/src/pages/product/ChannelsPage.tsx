@@ -1,11 +1,14 @@
 /**
  * Channels Page
  * P2/P3: Product Experience Layer + Real Integrations
+ * P6.1: Functional channel buttons
  *
  * Manage connected channels (email, ftp, browser, whatsapp, etc.)
  */
 
 import { useState, useEffect } from 'react'
+import { useSearchParams } from '../../hooks/useNavigation'
+import { testChannel, type ActionResult } from '../../services/actions'
 
 interface Channel {
   id: string
@@ -35,8 +38,14 @@ const mockChannels: Channel[] = [
 ]
 
 export function ChannelsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [channels, setChannels] = useState<Channel[]>([])
   const [loading, setLoading] = useState(true)
+
+  // P6.1: Action states
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [actionFeedback, setActionFeedback] = useState<{ id: string; result: ActionResult } | null>(null)
+  const [showConnectModal, setShowConnectModal] = useState(false)
 
   useEffect(() => {
     setTimeout(() => {
@@ -44,6 +53,40 @@ export function ChannelsPage() {
       setLoading(false)
     }, 500)
   }, [])
+
+  // P6.1: Handle URL param for connect modal
+  useEffect(() => {
+    if (searchParams.get('connect') === 'true') {
+      setShowConnectModal(true)
+      setSearchParams({}, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
+
+  // P6.1: Test channel handler
+  const handleTestChannel = async (channelId: string) => {
+    setActionLoading(channelId)
+    setActionFeedback(null)
+
+    const result = await testChannel(channelId)
+    setActionLoading(null)
+
+    setActionFeedback({ id: channelId, result })
+    setTimeout(() => setActionFeedback(null), 4000)
+  }
+
+  // P6.1: Placeholder for not-yet-implemented actions
+  const handleNotImplemented = (action: string) => {
+    setActionFeedback({
+      id: 'general',
+      result: {
+        success: false,
+        status: 'not_available',
+        message: `${action} no disponible aun`,
+        error: 'Funcion en desarrollo'
+      }
+    })
+    setTimeout(() => setActionFeedback(null), 3000)
+  }
 
   const getTypeIcon = (type: string): string => {
     switch (type) {
@@ -97,16 +140,22 @@ export function ChannelsPage() {
           <h1 style={{ fontSize: '28px', fontWeight: '700', color: '#0f172a', marginBottom: '8px' }}>Canales</h1>
           <p style={{ color: '#64748b' }}>Conexiones a servicios externos</p>
         </div>
-        <button style={{
-          padding: '10px 20px',
-          backgroundColor: '#3b82f6',
-          color: 'white',
-          border: 'none',
-          borderRadius: '8px',
-          fontSize: '14px',
-          fontWeight: '500',
-          cursor: 'pointer'
-        }}>
+        <button
+          onClick={() => setShowConnectModal(true)}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: '#3b82f6',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            fontSize: '14px',
+            fontWeight: '500',
+            cursor: 'pointer',
+            transition: 'background-color 0.2s'
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2563eb'}
+          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#3b82f6'}
+        >
           + Conectar Canal
         </button>
       </div>
@@ -115,6 +164,24 @@ export function ChannelsPage() {
         <div style={{ textAlign: 'center', padding: '60px', color: '#64748b' }}>Cargando canales...</div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '16px' }}>
+          {/* P6.1: General feedback banner */}
+          {actionFeedback?.id === 'general' && (
+            <div style={{
+              gridColumn: '1 / -1',
+              padding: '12px 16px',
+              borderRadius: '8px',
+              backgroundColor: '#fef3c7',
+              color: '#92400e',
+              fontSize: '13px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              <span>⚠️</span>
+              {actionFeedback.result.message}
+            </div>
+          )}
+
           {channels.map(channel => {
             const statusInfo = getStatusColor(channel.status)
             const stabilityInfo = getStabilityBadge(channel.stability)
@@ -208,89 +275,201 @@ export function ChannelsPage() {
                     )}
                   </div>
                 </div>
-                <div style={{ marginTop: '16px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <div style={{ marginTop: '16px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
                   {channel.status === 'connected' && (
                     <>
-                      <button style={{
-                        padding: '6px 12px',
-                        fontSize: '12px',
-                        backgroundColor: '#f1f5f9',
-                        border: 'none',
-                        borderRadius: '6px',
-                        cursor: 'pointer',
-                        color: '#475569'
-                      }}>
-                        Test
-                      </button>
-                      {(channel.type === 'email' || channel.type === 'whatsapp') && (
-                        <button style={{
+                      <button
+                        onClick={() => handleTestChannel(channel.id)}
+                        disabled={actionLoading === channel.id}
+                        style={{
                           padding: '6px 12px',
                           fontSize: '12px',
-                          backgroundColor: '#3b82f6',
-                          color: 'white',
+                          backgroundColor: actionLoading === channel.id ? '#e2e8f0' : '#f1f5f9',
                           border: 'none',
                           borderRadius: '6px',
-                          cursor: 'pointer'
-                        }}>
+                          cursor: actionLoading === channel.id ? 'not-allowed' : 'pointer',
+                          color: '#475569'
+                        }}
+                      >
+                        {actionLoading === channel.id ? '...' : 'Test'}
+                      </button>
+                      {(channel.type === 'email' || channel.type === 'whatsapp') && (
+                        <button
+                          onClick={() => handleNotImplemented('Ver mensajes')}
+                          style={{
+                            padding: '6px 12px',
+                            fontSize: '12px',
+                            backgroundColor: '#94a3b8',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: 'not-allowed',
+                            opacity: 0.7
+                          }}
+                          title="Funcion en desarrollo"
+                        >
                           Ver Mensajes
                         </button>
                       )}
                     </>
                   )}
                   {channel.status === 'disconnected' && (
-                    <button style={{
-                      padding: '6px 12px',
-                      fontSize: '12px',
-                      backgroundColor: '#3b82f6',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer'
-                    }}>
+                    <button
+                      onClick={() => handleNotImplemented('Conectar canal')}
+                      style={{
+                        padding: '6px 12px',
+                        fontSize: '12px',
+                        backgroundColor: '#94a3b8',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'not-allowed',
+                        opacity: 0.7
+                      }}
+                      title="Funcion en desarrollo"
+                    >
                       Conectar
                     </button>
                   )}
                   {channel.status === 'setup_required' && (
-                    <button style={{
-                      padding: '6px 12px',
-                      fontSize: '12px',
-                      backgroundColor: '#f59e0b',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer'
-                    }}>
+                    <button
+                      onClick={() => handleNotImplemented('Configurar canal')}
+                      style={{
+                        padding: '6px 12px',
+                        fontSize: '12px',
+                        backgroundColor: '#d97706',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'not-allowed',
+                        opacity: 0.7
+                      }}
+                      title="Funcion en desarrollo"
+                    >
                       Configurar
                     </button>
                   )}
                   {channel.status === 'auth_expired' && (
-                    <button style={{
-                      padding: '6px 12px',
-                      fontSize: '12px',
-                      backgroundColor: '#f59e0b',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer'
-                    }}>
+                    <button
+                      onClick={() => handleNotImplemented('Reautorizar canal')}
+                      style={{
+                        padding: '6px 12px',
+                        fontSize: '12px',
+                        backgroundColor: '#d97706',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'not-allowed',
+                        opacity: 0.7
+                      }}
+                      title="Funcion en desarrollo"
+                    >
                       Reautorizar
                     </button>
                   )}
-                  <button style={{
-                    padding: '6px 12px',
-                    fontSize: '12px',
-                    backgroundColor: 'transparent',
-                    border: '1px solid #e2e8f0',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    color: '#64748b'
-                  }}>
+                  <button
+                    onClick={() => handleNotImplemented('Configuracion de canal')}
+                    style={{
+                      padding: '6px 12px',
+                      fontSize: '12px',
+                      backgroundColor: 'transparent',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: '6px',
+                      cursor: 'not-allowed',
+                      color: '#94a3b8',
+                      opacity: 0.7
+                    }}
+                    title="Funcion en desarrollo"
+                  >
                     Configurar
                   </button>
+                  {actionFeedback?.id === channel.id && (
+                    <span style={{
+                      fontSize: '11px',
+                      color: actionFeedback.result.success ? '#16a34a' : '#dc2626'
+                    }}>
+                      {actionFeedback.result.message}
+                    </span>
+                  )}
                 </div>
               </div>
             )
           })}
+        </div>
+      )}
+
+      {/* P6.1: Connect Channel Modal - placeholder */}
+      {showConnectModal && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            backgroundColor: 'white',
+            borderRadius: '16px',
+            padding: '24px',
+            width: '100%',
+            maxWidth: '500px',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.3)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: '600', color: '#0f172a', margin: 0 }}>
+                Conectar Canal
+              </h2>
+              <button
+                onClick={() => setShowConnectModal(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  color: '#94a3b8'
+                }}
+              >
+                &times;
+              </button>
+            </div>
+
+            <div style={{
+              padding: '24px',
+              backgroundColor: '#f8fafc',
+              borderRadius: '12px',
+              textAlign: 'center'
+            }}>
+              <div style={{ fontSize: '48px', marginBottom: '16px' }}>🔌</div>
+              <div style={{ fontWeight: '600', color: '#0f172a', marginBottom: '8px' }}>
+                Funcion en desarrollo
+              </div>
+              <div style={{ fontSize: '14px', color: '#64748b' }}>
+                La conexion de nuevos canales estara disponible pronto.
+                <br />
+                Por ahora, los canales se configuran via API.
+              </div>
+            </div>
+
+            <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowConnectModal(false)}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  backgroundColor: '#3b82f6',
+                  color: 'white',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: 'pointer'
+                }}
+              >
+                Entendido
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

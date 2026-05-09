@@ -1,12 +1,14 @@
 /**
  * Approvals Page - Approval Center
  * P2: Product Experience Layer
+ * P6.1: Functional approval buttons
  *
  * Central approval management for OS tools, purchases, etc.
  */
 
 import { useState, useEffect } from 'react'
 import { useApprovalEvents, useRuntimeWs } from '../../hooks/useRuntimeWs'
+import { approveRequest, denyRequest, type ActionResult } from '../../services/actions'
 
 interface ApprovalRequest {
   id: string
@@ -27,6 +29,9 @@ export function ApprovalsPage() {
 
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([])
   const [filter, setFilter] = useState<'pending' | 'all'>('pending')
+  // P6.1: Action states
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [actionFeedback, setActionFeedback] = useState<{ id: string; result: ActionResult } | null>(null)
 
   // Listen for live approval events
   useEffect(() => {
@@ -51,10 +56,27 @@ export function ApprovalsPage() {
     }
   }, [lastEvent])
 
-  const handleApproval = (id: string, action: 'approve' | 'deny') => {
-    setApprovals(prev =>
-      prev.map(a => a.id === id ? { ...a, status: action === 'approve' ? 'approved' : 'denied' } : a)
-    )
+  // P6.1: Call backend for approval actions
+  const handleApproval = async (id: string, action: 'approve' | 'deny') => {
+    setActionLoading(id)
+    setActionFeedback(null)
+
+    const result = action === 'approve'
+      ? await approveRequest(id)
+      : await denyRequest(id)
+
+    setActionLoading(null)
+
+    if (result.success) {
+      // Update local state on success
+      setApprovals(prev =>
+        prev.map(a => a.id === id ? { ...a, status: action === 'approve' ? 'approved' : 'denied' } : a)
+      )
+    } else {
+      // Show error feedback
+      setActionFeedback({ id, result })
+      setTimeout(() => setActionFeedback(null), 4000)
+    }
   }
 
   const filteredApprovals = filter === 'pending'
@@ -180,35 +202,46 @@ export function ApprovalsPage() {
                 </div>
 
                 {approval.status === 'pending' && (
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button
-                      onClick={() => handleApproval(approval.id, 'approve')}
-                      style={{
-                        padding: '8px 16px',
-                        fontSize: '13px',
-                        backgroundColor: '#16a34a',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '6px',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      ✓ Aprobar
-                    </button>
-                    <button
-                      onClick={() => handleApproval(approval.id, 'deny')}
-                      style={{
-                        padding: '8px 16px',
-                        fontSize: '13px',
-                        backgroundColor: '#dc2626',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '6px',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      ✕ Denegar
-                    </button>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        onClick={() => handleApproval(approval.id, 'approve')}
+                        disabled={actionLoading === approval.id}
+                        style={{
+                          padding: '8px 16px',
+                          fontSize: '13px',
+                          backgroundColor: actionLoading === approval.id ? '#86efac' : '#16a34a',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          cursor: actionLoading === approval.id ? 'not-allowed' : 'pointer',
+                          opacity: actionLoading === approval.id ? 0.7 : 1
+                        }}
+                      >
+                        {actionLoading === approval.id ? '...' : '✓ Aprobar'}
+                      </button>
+                      <button
+                        onClick={() => handleApproval(approval.id, 'deny')}
+                        disabled={actionLoading === approval.id}
+                        style={{
+                          padding: '8px 16px',
+                          fontSize: '13px',
+                          backgroundColor: actionLoading === approval.id ? '#fca5a5' : '#dc2626',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          cursor: actionLoading === approval.id ? 'not-allowed' : 'pointer',
+                          opacity: actionLoading === approval.id ? 0.7 : 1
+                        }}
+                      >
+                        {actionLoading === approval.id ? '...' : '✕ Denegar'}
+                      </button>
+                    </div>
+                    {actionFeedback?.id === approval.id && !actionFeedback.result.success && (
+                      <span style={{ fontSize: '12px', color: '#dc2626' }}>
+                        {actionFeedback.result.message}
+                      </span>
+                    )}
                   </div>
                 )}
               </div>

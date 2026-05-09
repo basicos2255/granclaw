@@ -1,12 +1,17 @@
 /**
  * Notifications Page
  * P2: Product Experience Layer
+ * P6.1: Functional notification actions with localStorage persistence
  *
  * Notification center for all system events.
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNotificationEvents, useRuntimeWs } from '../../hooks/useRuntimeWs'
+
+// P6.1: localStorage key for notification state
+const NOTIFICATIONS_KEY = 'granclaw_notifications'
+const READ_IDS_KEY = 'granclaw_read_notification_ids'
 
 interface Notification {
   id: string
@@ -24,6 +29,40 @@ export function NotificationsPage() {
 
   const [notifications, setNotifications] = useState<Notification[]>([])
   const [filter, setFilter] = useState<'all' | 'unread'>('unread')
+  const [readIds, setReadIds] = useState<Set<string>>(new Set())
+
+  // P6.1: Load from localStorage on mount
+  useEffect(() => {
+    try {
+      const savedNotifs = localStorage.getItem(NOTIFICATIONS_KEY)
+      if (savedNotifs) {
+        setNotifications(JSON.parse(savedNotifs))
+      }
+      const savedReadIds = localStorage.getItem(READ_IDS_KEY)
+      if (savedReadIds) {
+        setReadIds(new Set(JSON.parse(savedReadIds)))
+      }
+    } catch (err) {
+      console.error('Error loading notifications from localStorage:', err)
+    }
+  }, [])
+
+  // P6.1: Save to localStorage on change
+  const persistNotifications = useCallback((notifs: Notification[]) => {
+    try {
+      localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify(notifs.slice(0, 100)))
+    } catch (err) {
+      console.error('Error saving notifications:', err)
+    }
+  }, [])
+
+  const persistReadIds = useCallback((ids: Set<string>) => {
+    try {
+      localStorage.setItem(READ_IDS_KEY, JSON.stringify([...ids].slice(-200)))
+    } catch (err) {
+      console.error('Error saving read IDs:', err)
+    }
+  }, [])
 
   // Listen for live notifications
   useEffect(() => {
@@ -38,16 +77,55 @@ export function NotificationsPage() {
         read: false,
         category: 'runtime'
       }
-      setNotifications(prev => [newNotif, ...prev.slice(0, 99)])
+      setNotifications(prev => {
+        const updated = [newNotif, ...prev.filter(n => n.id !== newNotif.id).slice(0, 99)]
+        persistNotifications(updated)
+        return updated
+      })
     }
-  }, [lastEvent])
+  }, [lastEvent, persistNotifications])
+
+  // P6.1: Apply read state from readIds
+  const notificationsWithReadState = notifications.map(n => ({
+    ...n,
+    read: n.read || readIds.has(n.id)
+  }))
 
   const markAllRead = () => {
-    setNotifications(prev => prev.map(n => ({ ...n, read: true })))
+    const allIds = new Set([...readIds, ...notifications.map(n => n.id)])
+    setReadIds(allIds)
+    persistReadIds(allIds)
+    setNotifications(prev => {
+      const updated = prev.map(n => ({ ...n, read: true }))
+      persistNotifications(updated)
+      return updated
+    })
   }
 
   const markRead = (id: string) => {
-    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n))
+    const newReadIds = new Set([...readIds, id])
+    setReadIds(newReadIds)
+    persistReadIds(newReadIds)
+    setNotifications(prev => {
+      const updated = prev.map(n => n.id === id ? { ...n, read: true } : n)
+      persistNotifications(updated)
+      return updated
+    })
+  }
+
+  // P6.1: Dismiss notification
+  const dismissNotification = (id: string) => {
+    setNotifications(prev => {
+      const updated = prev.filter(n => n.id !== id)
+      persistNotifications(updated)
+      return updated
+    })
+  }
+
+  // P6.1: Clear all notifications
+  const clearAll = () => {
+    setNotifications([])
+    persistNotifications([])
   }
 
   const getTypeIcon = (type: string): string => {
@@ -69,10 +147,10 @@ export function NotificationsPage() {
   }
 
   const filteredNotifications = filter === 'unread'
-    ? notifications.filter(n => !n.read)
-    : notifications
+    ? notificationsWithReadState.filter(n => !n.read)
+    : notificationsWithReadState
 
-  const unreadCount = notifications.filter(n => !n.read).length
+  const unreadCount = notificationsWithReadState.filter(n => !n.read).length
 
   return (
     <div>
@@ -107,22 +185,40 @@ export function NotificationsPage() {
           </div>
           <p style={{ color: '#64748b' }}>Centro de notificaciones del sistema</p>
         </div>
-        {unreadCount > 0 && (
-          <button
-            onClick={markAllRead}
-            style={{
-              padding: '8px 16px',
-              backgroundColor: '#f1f5f9',
-              border: 'none',
-              borderRadius: '8px',
-              fontSize: '13px',
-              color: '#475569',
-              cursor: 'pointer'
-            }}
-          >
-            Marcar todas como leídas
-          </button>
-        )}
+        <div style={{ display: 'flex', gap: '8px' }}>
+          {unreadCount > 0 && (
+            <button
+              onClick={markAllRead}
+              style={{
+                padding: '8px 16px',
+                backgroundColor: '#f1f5f9',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '13px',
+                color: '#475569',
+                cursor: 'pointer'
+              }}
+            >
+              Marcar todas leidas
+            </button>
+          )}
+          {notifications.length > 0 && (
+            <button
+              onClick={clearAll}
+              style={{
+                padding: '8px 16px',
+                backgroundColor: '#fee2e2',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '13px',
+                color: '#dc2626',
+                cursor: 'pointer'
+              }}
+            >
+              Limpiar todo
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Filter */}
@@ -208,15 +304,34 @@ export function NotificationsPage() {
                       {new Date(notification.timestamp).toLocaleString('es-ES')}
                     </div>
                   </div>
-                  {!notification.read && (
-                    <div style={{
-                      width: '8px',
-                      height: '8px',
-                      borderRadius: '50%',
-                      backgroundColor: '#3b82f6',
-                      flexShrink: 0
-                    }} />
-                  )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                    {!notification.read && (
+                      <div style={{
+                        width: '8px',
+                        height: '8px',
+                        borderRadius: '50%',
+                        backgroundColor: '#3b82f6'
+                      }} />
+                    )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); dismissNotification(notification.id) }}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        padding: '4px',
+                        cursor: 'pointer',
+                        color: '#94a3b8',
+                        fontSize: '16px',
+                        lineHeight: 1,
+                        borderRadius: '4px'
+                      }}
+                      onMouseEnter={(e) => e.currentTarget.style.color = '#64748b'}
+                      onMouseLeave={(e) => e.currentTarget.style.color = '#94a3b8'}
+                      title="Descartar"
+                    >
+                      &times;
+                    </button>
+                  </div>
                 </div>
               </div>
             )

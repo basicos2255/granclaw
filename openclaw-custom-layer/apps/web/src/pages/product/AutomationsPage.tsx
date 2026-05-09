@@ -1,11 +1,14 @@
 /**
  * Automations Page
  * P2: Product Experience Layer
+ * P6.1: Functional automation buttons
  *
  * Manage recurring and event-driven automations.
  */
 
 import { useState, useEffect } from 'react'
+import { useSearchParams } from '../../hooks/useNavigation'
+import { toggleAutomation as toggleAutomationAction, runAutomationNow, type ActionResult } from '../../services/actions'
 
 interface Automation {
   id: string
@@ -61,8 +64,14 @@ const mockAutomations: Automation[] = [
 ]
 
 export function AutomationsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [automations, setAutomations] = useState<Automation[]>([])
   const [loading, setLoading] = useState(true)
+
+  // P6.1: Action states
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [actionFeedback, setActionFeedback] = useState<{ id: string; result: ActionResult } | null>(null)
+  const [showCreateModal, setShowCreateModal] = useState(false)
 
   useEffect(() => {
     // TODO: Load from API
@@ -72,10 +81,64 @@ export function AutomationsPage() {
     }, 500)
   }, [])
 
-  const toggleAutomation = (id: string) => {
-    setAutomations(prev =>
-      prev.map(a => a.id === id ? { ...a, enabled: !a.enabled } : a)
-    )
+  // P6.1: Handle URL param for create modal
+  useEffect(() => {
+    if (searchParams.get('create') === 'true') {
+      setShowCreateModal(true)
+      setSearchParams({}, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
+
+  // P6.1: Toggle automation handler
+  const toggleAutomation = async (id: string, currentEnabled: boolean) => {
+    setActionLoading(id)
+    setActionFeedback(null)
+
+    const result = await toggleAutomationAction(id, !currentEnabled)
+    setActionLoading(null)
+
+    if (result.success) {
+      // Update local state on success
+      setAutomations(prev =>
+        prev.map(a => a.id === id ? { ...a, enabled: !a.enabled } : a)
+      )
+    } else if (result.status === 'not_available') {
+      // Backend not ready, toggle locally anyway
+      setAutomations(prev =>
+        prev.map(a => a.id === id ? { ...a, enabled: !a.enabled } : a)
+      )
+      setActionFeedback({ id, result: { ...result, message: 'Cambiado localmente (API no disponible)' } })
+      setTimeout(() => setActionFeedback(null), 3000)
+    } else {
+      setActionFeedback({ id, result })
+      setTimeout(() => setActionFeedback(null), 4000)
+    }
+  }
+
+  // P6.1: Run now handler
+  const handleRunNow = async (id: string) => {
+    setActionLoading(`run-${id}`)
+    setActionFeedback(null)
+
+    const result = await runAutomationNow(id)
+    setActionLoading(null)
+
+    setActionFeedback({ id, result })
+    setTimeout(() => setActionFeedback(null), 4000)
+  }
+
+  // P6.1: Not implemented handler
+  const handleNotImplemented = (action: string) => {
+    setActionFeedback({
+      id: 'general',
+      result: {
+        success: false,
+        status: 'not_available',
+        message: `${action} no disponible aun`,
+        error: 'Funcion en desarrollo'
+      }
+    })
+    setTimeout(() => setActionFeedback(null), 3000)
   }
 
   const cardStyle: React.CSSProperties = {
@@ -129,17 +192,23 @@ export function AutomationsPage() {
           <h1 style={titleStyle}>Automatizaciones</h1>
           <p style={{ color: '#64748b' }}>Tareas recurrentes y basadas en eventos</p>
         </div>
-        <button style={{
-          padding: '10px 20px',
-          backgroundColor: '#3b82f6',
-          color: 'white',
-          border: 'none',
-          borderRadius: '8px',
-          fontSize: '14px',
-          fontWeight: '500',
-          cursor: 'pointer'
-        }}>
-          + Nueva Automatización
+        <button
+          onClick={() => setShowCreateModal(true)}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: '#3b82f6',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            fontSize: '14px',
+            fontWeight: '500',
+            cursor: 'pointer',
+            transition: 'background-color 0.2s'
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2563eb'}
+          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#3b82f6'}
+        >
+          + Nueva Automatizacion
         </button>
       </div>
 
@@ -214,36 +283,170 @@ export function AutomationsPage() {
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button
-                    onClick={() => toggleAutomation(automation.id)}
-                    style={{
-                      padding: '8px 16px',
-                      fontSize: '13px',
-                      backgroundColor: automation.enabled ? '#fef3c7' : '#dcfce7',
-                      color: automation.enabled ? '#d97706' : '#16a34a',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    {automation.enabled ? 'Pausar' : 'Activar'}
-                  </button>
-                  <button style={{
-                    padding: '8px 16px',
-                    fontSize: '13px',
-                    backgroundColor: '#f1f5f9',
-                    border: 'none',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    color: '#475569'
-                  }}>
-                    Editar
-                  </button>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      onClick={() => toggleAutomation(automation.id, automation.enabled)}
+                      disabled={actionLoading === automation.id}
+                      style={{
+                        padding: '8px 16px',
+                        fontSize: '13px',
+                        backgroundColor: actionLoading === automation.id
+                          ? '#e2e8f0'
+                          : (automation.enabled ? '#fef3c7' : '#dcfce7'),
+                        color: actionLoading === automation.id
+                          ? '#64748b'
+                          : (automation.enabled ? '#d97706' : '#16a34a'),
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: actionLoading === automation.id ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      {actionLoading === automation.id ? '...' : (automation.enabled ? 'Pausar' : 'Activar')}
+                    </button>
+                    {automation.enabled && (
+                      <button
+                        onClick={() => handleRunNow(automation.id)}
+                        disabled={actionLoading === `run-${automation.id}`}
+                        style={{
+                          padding: '8px 16px',
+                          fontSize: '13px',
+                          backgroundColor: actionLoading === `run-${automation.id}` ? '#93c5fd' : '#3b82f6',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          cursor: actionLoading === `run-${automation.id}` ? 'not-allowed' : 'pointer'
+                        }}
+                      >
+                        {actionLoading === `run-${automation.id}` ? '...' : 'Ejecutar'}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleNotImplemented('Editar automatizacion')}
+                      style={{
+                        padding: '8px 16px',
+                        fontSize: '13px',
+                        backgroundColor: '#f1f5f9',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'not-allowed',
+                        color: '#94a3b8',
+                        opacity: 0.7
+                      }}
+                      title="Funcion en desarrollo"
+                    >
+                      Editar
+                    </button>
+                  </div>
+                  {actionFeedback?.id === automation.id && (
+                    <span style={{
+                      fontSize: '11px',
+                      color: actionFeedback.result.success ? '#16a34a' : '#dc2626'
+                    }}>
+                      {actionFeedback.result.message}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* P6.1: General feedback banner */}
+      {actionFeedback?.id === 'general' && (
+        <div style={{
+          position: 'fixed',
+          bottom: '24px',
+          right: '24px',
+          padding: '12px 20px',
+          borderRadius: '8px',
+          backgroundColor: '#fef3c7',
+          color: '#92400e',
+          fontSize: '13px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          zIndex: 1000
+        }}>
+          <span>⚠️</span>
+          {actionFeedback.result.message}
+        </div>
+      )}
+
+      {/* P6.1: Create Automation Modal - placeholder */}
+      {showCreateModal && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            backgroundColor: 'white',
+            borderRadius: '16px',
+            padding: '24px',
+            width: '100%',
+            maxWidth: '500px',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.3)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: '600', color: '#0f172a', margin: 0 }}>
+                Nueva Automatizacion
+              </h2>
+              <button
+                onClick={() => setShowCreateModal(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  color: '#94a3b8'
+                }}
+              >
+                &times;
+              </button>
+            </div>
+
+            <div style={{
+              padding: '24px',
+              backgroundColor: '#f8fafc',
+              borderRadius: '12px',
+              textAlign: 'center'
+            }}>
+              <div style={{ fontSize: '48px', marginBottom: '16px' }}>🔄</div>
+              <div style={{ fontWeight: '600', color: '#0f172a', marginBottom: '8px' }}>
+                Funcion en desarrollo
+              </div>
+              <div style={{ fontSize: '14px', color: '#64748b' }}>
+                La creacion de automatizaciones via UI estara disponible pronto.
+                <br />
+                Por ahora, las automatizaciones se configuran via API.
+              </div>
+            </div>
+
+            <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowCreateModal(false)}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  backgroundColor: '#3b82f6',
+                  color: 'white',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: 'pointer'
+                }}
+              >
+                Entendido
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

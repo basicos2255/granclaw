@@ -7955,3 +7955,106 @@ export type WsChannel =
 - ✅ No SUBSCRIPTION_NOT_FOUND en consola
 - ✅ Unsubscribe idempotente
 - ✅ Reconnect consistency
+
+## P6.1 — Product Shell Action Wiring & Functional Buttons
+
+**Fecha:** 2026-05-09
+**Objetivo:** Conectar todos los botones del Product Shell al action model canonico.
+
+### Problema
+
+Muchos botones en el Product Shell:
+- No tenian onClick handlers
+- No llamaban a endpoints de backend
+- No creaban jobs persistentes
+- No mostraban feedback (loading/error)
+- No actualizaban UI via WS/REST
+
+### Solucion
+
+1. **Action Model Canonico** (`actions.ts`)
+```typescript
+export interface ActionResult<T = unknown> {
+  success: boolean
+  status: 'queued' | 'executed' | 'failed' | 'requires_approval' | 'not_available'
+  message: string
+  data?: T
+  jobId?: string
+  error?: string
+}
+```
+
+2. **Navigation Hook** (`useNavigation.ts`)
+- useNavigation() para navegacion programatica
+- useSearchParams() para URL params sin react-router-dom
+
+3. **Paginas Actualizadas**
+
+| Pagina | Acciones Implementadas |
+|--------|------------------------|
+| ProductDashboard | Quick Actions (Nueva Tarea, Nueva Automatizacion, Conectar Canal) navegan a paginas respectivas |
+| TasksPage | + Nueva Tarea (modal), Reintentar, Cancelar, Ver detalles |
+| ApprovalsPage | Aprobar, Denegar (llaman backend) |
+| NotificationsPage | Marcar leida, Marcar todas leidas, Descartar, Limpiar todo (localStorage persistence) |
+| ChannelsPage | Test (llama testChannel), Connect modal placeholder |
+| AutomationsPage | Activar/Pausar, Ejecutar ahora, Create modal placeholder |
+
+4. **Botones Sin Backend**
+- Botones de funciones no implementadas muestran:
+  - Estado disabled con opacity
+  - Tooltip "Funcion en desarrollo"
+  - Feedback "No disponible aun" al hacer click
+
+5. **UX Improvements**
+- Loading states en todos los botones de accion
+- Feedback messages (success/error) con timeout
+- Hover effects en botones
+- Modals para creacion de tareas
+
+### Archivos Creados/Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `services/actions.ts` | CREATED - Canonical action model |
+| `hooks/useNavigation.ts` | CREATED - Navigation hooks sin react-router-dom |
+| `pages/product/ProductDashboard.tsx` | Quick Actions funcionales |
+| `pages/product/TasksPage.tsx` | Task CRUD funcional + modal |
+| `pages/product/ApprovalsPage.tsx` | Approve/Deny backend calls |
+| `pages/product/NotificationsPage.tsx` | LocalStorage persistence + actions |
+| `pages/product/ChannelsPage.tsx` | Test channel + placeholder modals |
+| `pages/product/AutomationsPage.tsx` | Toggle/Run now + placeholder modals |
+
+### Acciones Disponibles
+
+```typescript
+// tasks
+createTask(input) -> ActionResult
+retryTask(taskId) -> ActionResult
+cancelTask(taskId) -> ActionResult
+
+// approvals
+approveRequest(approvalId) -> ActionResult
+denyRequest(approvalId) -> ActionResult
+
+// queue
+pauseQueue() -> ActionResult
+resumeQueue() -> ActionResult
+requeueDeadLetter(jobId) -> ActionResult
+clearDeadLetters() -> ActionResult
+
+// channels
+testChannel(channelId) -> ActionResult
+
+// automations
+toggleAutomation(automationId, enabled) -> ActionResult
+runAutomationNow(automationId) -> ActionResult
+```
+
+### Verificaciones
+
+- ✅ npm run check sin errores
+- ✅ npm run build exitoso
+- ✅ Todos los botones tienen onClick o estan disabled
+- ✅ Loading states en acciones async
+- ✅ Error handling con feedback visual
+- ✅ Navegacion funciona sin react-router-dom

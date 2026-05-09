@@ -2,11 +2,13 @@
  * Product Dashboard
  * P2: Product Experience Layer
  * P2.2: API Base URL & Runtime State Fetch Fix
+ * P6.1: Functional Quick Action buttons
  *
  * Main dashboard showing runtime health, tasks, automations, token savings.
  */
 
 import { useState, useEffect } from 'react'
+import { useNavigation } from '../../hooks/useNavigation'
 import { useRuntimeWs, useQueueEvents } from '../../hooks/useRuntimeWs'
 import { getRuntimeState, RuntimeStateData } from '../../services/api'
 
@@ -33,6 +35,7 @@ interface RuntimeState {
 }
 
 export function ProductDashboard() {
+  const { navigate } = useNavigation()
   const { isConnected } = useRuntimeWs()
   const { lastEvent: queueEvent } = useQueueEvents()
 
@@ -312,47 +315,83 @@ export function ProductDashboard() {
         <span>Acciones Rápidas</span>
       </div>
       <div style={{ ...gridStyle, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
-        <button style={{
-          ...cardStyle,
-          cursor: 'pointer',
-          border: '2px dashed #e2e8f0',
-          backgroundColor: '#fafafa',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: '12px',
-          padding: '32px'
-        }}>
+        <button
+          onClick={() => navigate('/tasks?create=true')}
+          style={{
+            ...cardStyle,
+            cursor: 'pointer',
+            border: '2px dashed #e2e8f0',
+            backgroundColor: '#fafafa',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '32px',
+            transition: 'all 0.2s ease'
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = '#f0f9ff'
+            e.currentTarget.style.borderColor = '#3b82f6'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = '#fafafa'
+            e.currentTarget.style.borderColor = '#e2e8f0'
+          }}
+        >
           <span style={{ fontSize: '32px' }}>⚡</span>
           <span style={{ fontWeight: '600', color: '#374151' }}>Nueva Tarea</span>
         </button>
 
-        <button style={{
-          ...cardStyle,
-          cursor: 'pointer',
-          border: '2px dashed #e2e8f0',
-          backgroundColor: '#fafafa',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: '12px',
-          padding: '32px'
-        }}>
+        <button
+          onClick={() => navigate('/automations?create=true')}
+          style={{
+            ...cardStyle,
+            cursor: 'pointer',
+            border: '2px dashed #e2e8f0',
+            backgroundColor: '#fafafa',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '32px',
+            transition: 'all 0.2s ease'
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = '#f0f9ff'
+            e.currentTarget.style.borderColor = '#3b82f6'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = '#fafafa'
+            e.currentTarget.style.borderColor = '#e2e8f0'
+          }}
+        >
           <span style={{ fontSize: '32px' }}>🔄</span>
           <span style={{ fontWeight: '600', color: '#374151' }}>Nueva Automatización</span>
         </button>
 
-        <button style={{
-          ...cardStyle,
-          cursor: 'pointer',
-          border: '2px dashed #e2e8f0',
-          backgroundColor: '#fafafa',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: '12px',
-          padding: '32px'
-        }}>
+        <button
+          onClick={() => navigate('/channels?connect=true')}
+          style={{
+            ...cardStyle,
+            cursor: 'pointer',
+            border: '2px dashed #e2e8f0',
+            backgroundColor: '#fafafa',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '32px',
+            transition: 'all 0.2s ease'
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = '#f0f9ff'
+            e.currentTarget.style.borderColor = '#3b82f6'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = '#fafafa'
+            e.currentTarget.style.borderColor = '#e2e8f0'
+          }}
+        >
           <span style={{ fontSize: '32px' }}>🔌</span>
           <span style={{ fontWeight: '600', color: '#374151' }}>Conectar Canal</span>
         </button>

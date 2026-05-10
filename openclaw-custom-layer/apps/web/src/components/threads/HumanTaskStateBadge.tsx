@@ -1,6 +1,7 @@
 /**
  * Human Task State Badge Component
  * P6.6: Human Interaction Layer, Task Threads & Conversational Control
+ * P6.7: Execution Evidence & Semantic States
  *
  * Displays human-readable task states with appropriate styling.
  */
@@ -28,6 +29,21 @@ const stateConfigs: Record<HumanTaskState, StateConfig> = {
     icon: '🤔',
     pulse: true
   },
+  // P6.7: New semantic states
+  planning: {
+    label: 'Planificando...',
+    bgColor: '#e0e7ff',
+    textColor: '#4f46e5',
+    icon: '📋',
+    pulse: true
+  },
+  reusing_strategy: {
+    label: 'Reutilizando estrategia',
+    bgColor: '#d1fae5',
+    textColor: '#059669',
+    icon: '♻️',
+    pulse: true
+  },
   queued: {
     label: 'En cola',
     bgColor: '#f1f5f9',
@@ -41,6 +57,14 @@ const stateConfigs: Record<HumanTaskState, StateConfig> = {
     icon: '▶️',
     pulse: true
   },
+  // P6.7: New validation state
+  validating: {
+    label: 'Validando resultados',
+    bgColor: '#fef9c3',
+    textColor: '#a16207',
+    icon: '🔍',
+    pulse: true
+  },
   waiting_approval: {
     label: 'Esperando aprobación',
     bgColor: '#fef3c7',
@@ -49,6 +73,14 @@ const stateConfigs: Record<HumanTaskState, StateConfig> = {
     pulse: true
   },
   waiting_user_input: {
+    label: 'Esperando respuesta',
+    bgColor: '#e0e7ff',
+    textColor: '#4338ca',
+    icon: '💬',
+    pulse: true
+  },
+  // P6.7: Alias for waiting_user_input
+  waiting_input: {
     label: 'Esperando respuesta',
     bgColor: '#e0e7ff',
     textColor: '#4338ca',
@@ -78,6 +110,21 @@ const stateConfigs: Record<HumanTaskState, StateConfig> = {
     bgColor: '#ffedd5',
     textColor: '#ea580c',
     icon: '🔧'
+  },
+  // P6.7: New evidence-based states
+  needs_artifacts: {
+    label: 'Faltan artifacts',
+    bgColor: '#fef2f2',
+    textColor: '#b91c1c',
+    icon: '📦',
+    pulse: true
+  },
+  needs_outputs: {
+    label: 'Faltan resultados',
+    bgColor: '#fef2f2',
+    textColor: '#b91c1c',
+    icon: '📄',
+    pulse: true
   },
   cancelled: {
     label: 'Cancelada',
@@ -141,14 +188,42 @@ export function getStateLabel(state: HumanTaskState): string {
 
 /**
  * Check if state indicates task is active
+ * P6.7: Added planning, reusing_strategy, validating
  */
 export function isActiveState(state: HumanTaskState): boolean {
-  return ['thinking', 'queued', 'executing', 'waiting_approval', 'waiting_user_input'].includes(state)
+  return [
+    'thinking',
+    'planning',
+    'reusing_strategy',
+    'queued',
+    'executing',
+    'validating',
+    'waiting_approval',
+    'waiting_user_input',
+    'waiting_input'
+  ].includes(state)
 }
 
 /**
  * Check if state indicates task can receive user input
+ * P6.7: Added needs_artifacts, needs_outputs
  */
 export function canReceiveInput(state: HumanTaskState): boolean {
-  return ['executing', 'waiting_approval', 'waiting_user_input', 'paused', 'needs_repair'].includes(state)
+  return [
+    'executing',
+    'waiting_approval',
+    'waiting_user_input',
+    'waiting_input',
+    'paused',
+    'needs_repair',
+    'needs_artifacts',
+    'needs_outputs'
+  ].includes(state)
+}
+
+/**
+ * P6.7: Check if state indicates task needs evidence
+ */
+export function needsEvidence(state: HumanTaskState): boolean {
+  return ['needs_artifacts', 'needs_outputs'].includes(state)
 }

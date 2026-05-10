@@ -2,6 +2,7 @@
  * Composite Task Executor
  * FEATURE 130.2: Composite Tasks & Intelligent Task Chaining
  * FEATURE 130.3: Validated Workflows & Artifact Verification
+ * P6.7: Execution Evidence & Artifact Validation
  *
  * Executes composite execution plans:
  * - Sequential step execution
@@ -10,6 +11,9 @@
  * - Partial completion
  * - Progress tracking
  * - Artifact validation
+ *
+ * IMPORTANT (P6.7): Task-memory pattern reuse ACCELERATES PLANNING,
+ * but real execution MUST still happen. Pattern found != execution done.
  */
 
 import {
@@ -78,11 +82,14 @@ async function executeStep(
   try {
     switch (step.type) {
       case 'task_memory': {
+        // P6.7: Task memory provides STRATEGY, not execution bypass
+        // We must still execute the steps!
+
         if (!step.taskPatternId) {
           return { success: false, skipped: false, error: 'Missing taskPatternId' }
         }
 
-        // Check task memory for pattern
+        // Check task memory for pattern (strategy lookup)
         const memoryCheck = checkTaskMemory({
           input: step.description,
           tenantId,
@@ -96,17 +103,57 @@ async function executeStep(
             userId
           })
 
-          // Record pattern execution
-          recordPatternExecution(execPlan.patternId, true, execPlan.estimatedDuration)
+          console.log(`[CompositeExecutor] P6.7: Found pattern ${execPlan.patternId}, EXECUTING steps (not bypassing)`)
+
+          // P6.7 FIX: Actually EXECUTE the steps from the pattern
+          // The pattern tells us WHAT to do, but we must DO it
+          const startTime = Date.now()
+          let allStepsSucceeded = true
+          let stepResults: unknown[] = []
+          let lastError: string | undefined
+
+          for (const patternStep of execPlan.steps) {
+            // Execute each step via OpenClaw (the actual execution)
+            const stepResult = await runSimpleAgentTask({
+              message: patternStep.input || patternStep.description || step.description,
+              tenantId,
+              sessionId
+            })
+
+            if (!stepResult.success) {
+              allStepsSucceeded = false
+              lastError = stepResult.error
+              console.log(`[CompositeExecutor] P6.7: Pattern step failed: ${lastError}`)
+              break
+            }
+
+            stepResults.push(stepResult.result)
+          }
+
+          const durationMs = Date.now() - startTime
+
+          // P6.7 FIX: Only record success if execution actually succeeded
+          if (allStepsSucceeded) {
+            recordPatternExecution(execPlan.patternId, true, durationMs)
+            console.log(`[CompositeExecutor] P6.7: Pattern ${execPlan.patternId} executed successfully`)
+          } else {
+            recordPatternExecution(execPlan.patternId, false, durationMs)
+            console.log(`[CompositeExecutor] P6.7: Pattern ${execPlan.patternId} execution FAILED`)
+          }
 
           return {
-            success: true,
+            success: allStepsSucceeded,
             skipped: false,
             result: {
               fromTaskMemory: true,
               patternId: execPlan.patternId,
-              steps: execPlan.steps
-            }
+              steps: execPlan.steps,
+              stepResults,
+              executedSteps: stepResults.length,
+              totalSteps: execPlan.steps.length,
+              durationMs
+            },
+            error: lastError
           }
         }
 

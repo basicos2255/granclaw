@@ -543,17 +543,24 @@ export interface ApproveProposalResponse {
 
 /**
  * P6.6: Human Interaction Layer - Task Threads
+ * P6.7: Added execution evidence states
  */
 export type HumanTaskState =
   | 'thinking'
+  | 'planning'           // P6.7: Building execution plan
+  | 'reusing_strategy'   // P6.7: Found pattern, preparing to execute
   | 'queued'
   | 'executing'
+  | 'validating'         // P6.7: Checking results/evidence
   | 'waiting_approval'
   | 'waiting_user_input'
+  | 'waiting_input'      // P6.7: Alias for waiting_user_input
   | 'paused'
   | 'completed'
   | 'failed'
   | 'needs_repair'
+  | 'needs_artifacts'    // P6.7: Execution done but missing artifacts
+  | 'needs_outputs'      // P6.7: Execution done but missing outputs
   | 'cancelled'
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'runtime'

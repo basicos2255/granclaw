@@ -224,3 +224,231 @@ export interface TaskMemoryDebugInfo {
   tokenSaving: boolean
   reason: string
 }
+
+// ============================================================================
+// P6.7: EXECUTION EVIDENCE MODEL
+// ============================================================================
+
+/**
+ * P6.7: Evidence that a task was actually executed
+ *
+ * This model ensures that tasks cannot be marked as "success" without
+ * proof of real execution. Pattern reuse accelerates PLANNING, not execution.
+ */
+export interface ExecutionEvidence {
+  /** Unique execution ID */
+  executionId: string
+
+  /** Provider that executed the task */
+  provider: 'openclaw' | 'granclaw' | 'local' | 'capability' | 'mock'
+
+  /** Worker/session that ran the execution */
+  workerId?: string
+
+  /** When execution started */
+  startedAt: string
+
+  /** When execution completed */
+  completedAt: string
+
+  /** Number of actions/steps actually executed */
+  actionsExecuted: number
+
+  /** Whether outputs were generated */
+  outputsGenerated: boolean
+
+  /** Number of outputs generated */
+  outputCount: number
+
+  /** Whether artifacts were generated */
+  artifactsGenerated: boolean
+
+  /** Number of artifacts generated */
+  artifactCount: number
+
+  /** Total execution duration in ms */
+  durationMs: number
+
+  /** External reference (e.g., OpenClaw request ID) */
+  externalRef?: string
+
+  /** Error if execution failed */
+  error?: string
+
+  /** Validation status */
+  validationStatus?: 'pending' | 'passed' | 'failed' | 'skipped'
+
+  /** Validation reason */
+  validationReason?: string
+}
+
+/**
+ * P6.7: Action types that REQUIRE artifacts to be considered successful
+ */
+export const ARTIFACT_REQUIRED_ACTIONS: TaskActionType[] = [
+  'download_file',
+  'install_app',
+  'create_file',
+  'copy_file'
+]
+
+/**
+ * P6.7: Action types that REQUIRE outputs to be considered successful
+ */
+export const OUTPUT_REQUIRED_ACTIONS: TaskActionType[] = [
+  'search_web',
+  'search_file',
+  'run_command'
+]
+
+/**
+ * P6.7: Action types that require user confirmation for automation
+ */
+export const CONFIRMATION_REQUIRED_ACTIONS: TaskActionType[] = [
+  'install_app',
+  'uninstall_app',
+  'delete_file',
+  'download_file'
+]
+
+/**
+ * P6.7: Check if action type requires artifacts
+ */
+export function requiresArtifacts(actionType: TaskActionType): boolean {
+  return ARTIFACT_REQUIRED_ACTIONS.includes(actionType)
+}
+
+/**
+ * P6.7: Check if action type requires outputs
+ */
+export function requiresOutputs(actionType: TaskActionType): boolean {
+  return OUTPUT_REQUIRED_ACTIONS.includes(actionType)
+}
+
+/**
+ * P6.7: Check if action type requires user confirmation
+ */
+export function requiresConfirmation(actionType: TaskActionType): boolean {
+  return CONFIRMATION_REQUIRED_ACTIONS.includes(actionType)
+}
+
+/**
+ * P6.7: Semantic execution states (more descriptive than technical states)
+ */
+export type SemanticExecutionState =
+  | 'thinking'           // AI analyzing input
+  | 'planning'           // Building execution plan
+  | 'reusing_strategy'   // Found pattern, preparing to execute
+  | 'queued'             // Waiting in execution queue
+  | 'executing'          // Running steps
+  | 'validating'         // Checking results
+  | 'waiting_approval'   // Needs user confirmation
+  | 'waiting_input'      // Needs additional user input
+  | 'needs_artifacts'    // Execution done but missing artifacts
+  | 'needs_outputs'      // Execution done but missing outputs
+  | 'completed'          // Success with evidence
+  | 'failed'             // Execution failed
+  | 'cancelled'          // User cancelled
+  | 'paused'             // User paused
+
+/**
+ * P6.7: Validate execution evidence for a given action type
+ */
+export interface ValidateEvidenceInput {
+  evidence: ExecutionEvidence
+  actionType: TaskActionType
+  requireArtifacts?: boolean
+  requireOutputs?: boolean
+}
+
+/**
+ * P6.7: Result of evidence validation
+ */
+export interface ValidateEvidenceResult {
+  valid: boolean
+  canMarkSuccess: boolean
+  missingEvidence: string[]
+  warnings: string[]
+  suggestedState: SemanticExecutionState
+}
+
+/**
+ * P6.7: Validate that execution evidence is sufficient for the action type
+ */
+export function validateExecutionEvidence(input: ValidateEvidenceInput): ValidateEvidenceResult {
+  const { evidence, actionType, requireArtifacts, requireOutputs } = input
+  const missingEvidence: string[] = []
+  const warnings: string[] = []
+
+  // Basic execution checks
+  if (!evidence.executionId) {
+    missingEvidence.push('executionId')
+  }
+  if (!evidence.provider) {
+    missingEvidence.push('provider')
+  }
+  if (!evidence.startedAt || !evidence.completedAt) {
+    missingEvidence.push('execution timestamps')
+  }
+  if (evidence.actionsExecuted === 0) {
+    missingEvidence.push('no actions executed')
+  }
+
+  // Mock provider warning
+  if (evidence.provider === 'mock') {
+    warnings.push('Executed via mock provider - no real execution')
+  }
+
+  // Artifact requirements
+  const needsArtifacts = requireArtifacts ?? requiresArtifacts(actionType)
+  if (needsArtifacts && !evidence.artifactsGenerated) {
+    missingEvidence.push('artifacts required but not generated')
+  }
+  if (needsArtifacts && evidence.artifactCount === 0) {
+    missingEvidence.push('artifact count is zero')
+  }
+
+  // Output requirements
+  const needsOutputs = requireOutputs ?? requiresOutputs(actionType)
+  if (needsOutputs && !evidence.outputsGenerated) {
+    missingEvidence.push('outputs required but not generated')
+  }
+  if (needsOutputs && evidence.outputCount === 0) {
+    missingEvidence.push('output count is zero')
+  }
+
+  // Error check
+  if (evidence.error) {
+    missingEvidence.push(`execution error: ${evidence.error}`)
+  }
+
+  // Validation status check
+  if (evidence.validationStatus === 'failed') {
+    missingEvidence.push(`validation failed: ${evidence.validationReason || 'unknown'}`)
+  }
+
+  const valid = missingEvidence.length === 0
+  const canMarkSuccess = valid && warnings.length === 0
+
+  // Determine suggested state
+  let suggestedState: SemanticExecutionState
+  if (valid) {
+    suggestedState = 'completed'
+  } else if (missingEvidence.some(m => m.includes('artifacts'))) {
+    suggestedState = 'needs_artifacts'
+  } else if (missingEvidence.some(m => m.includes('outputs'))) {
+    suggestedState = 'needs_outputs'
+  } else if (missingEvidence.some(m => m.includes('error'))) {
+    suggestedState = 'failed'
+  } else {
+    suggestedState = 'failed'
+  }
+
+  return {
+    valid,
+    canMarkSuccess,
+    missingEvidence,
+    warnings,
+    suggestedState
+  }
+}

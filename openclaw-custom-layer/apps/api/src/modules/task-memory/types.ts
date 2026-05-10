@@ -2,8 +2,13 @@
  * Task Memory Types
  * FEATURE 130: Advanced Tasks (Persistent, Reusable, Optimized Execution)
  * FIX 130.1: Safe Task Memory Matching & Validation
+ * P6.7: Execution Evidence & Artifact Validation
  *
  * Types for task pattern storage and reuse.
+ *
+ * IMPORTANT (P6.7): Task-memory is a PLANNER ACCELERATOR, not an execution cache.
+ * A pattern match means "use this strategy" NOT "execution completed".
+ * Real execution must still happen, and evidence must be collected.
  */
 
 import type { TaskStep } from '../task-planner/types'
@@ -12,7 +17,7 @@ import type { TaskStep } from '../task-planner/types'
  * FIX 130.1: Current pattern schema version
  * Increment when schema changes to invalidate old patterns
  */
-export const CURRENT_TASK_PATTERN_VERSION = 1
+export const CURRENT_TASK_PATTERN_VERSION = 2  // P6.7: Bumped for evidence model
 
 /**
  * FIX 130.1: Action types for intent classification

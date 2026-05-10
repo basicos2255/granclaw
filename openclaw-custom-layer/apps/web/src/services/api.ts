@@ -541,6 +541,110 @@ export interface ApproveProposalResponse {
   message: string
 }
 
+/**
+ * P6.6: Human Interaction Layer - Task Threads
+ */
+export type HumanTaskState =
+  | 'thinking'
+  | 'queued'
+  | 'executing'
+  | 'waiting_approval'
+  | 'waiting_user_input'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'needs_repair'
+  | 'cancelled'
+
+export type MessageRole = 'user' | 'assistant' | 'system' | 'runtime'
+
+export interface ThreadMessage {
+  id: string
+  role: MessageRole
+  content: string
+  timestamp: string
+  taskAction?: string
+  workflowStep?: {
+    stepId: string
+    stepName: string
+    status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  }
+  artifacts?: TaskArtifact[]
+  outputs?: TaskOutput[]
+  pendingApproval?: {
+    id: string
+    action: string
+    description: string
+    risks?: string[]
+    options?: string[]
+  }
+  explanation?: {
+    what: string
+    why: string
+    nextSteps: string[]
+  }
+}
+
+export interface ThreadContext {
+  preferences: Record<string, string | number | boolean>
+  filters: string[]
+  decisions: Array<{
+    key: string
+    value: string
+    reason: string
+    timestamp: string
+  }>
+  entities: Array<{
+    type: string
+    name: string
+    firstMentioned: string
+  }>
+}
+
+export interface HumanReadablePlan {
+  summary: string
+  steps: Array<{
+    order: number
+    description: string
+    requiresApproval: boolean
+    estimatedDuration?: string
+    risks?: string[]
+  }>
+  totalSteps: number
+  estimatedDuration?: string
+  permissions?: string[]
+  warnings?: string[]
+}
+
+export interface PendingApproval {
+  id: string
+  type: string
+  action: string
+  description: string
+  risks: string[]
+  createdAt: string
+  status: 'pending' | 'approved' | 'rejected' | 'expired'
+  resolvedAt?: string
+}
+
+export interface TaskThread {
+  id: string
+  taskId?: string
+  workflowId?: string
+  tenantId: string
+  userId?: string
+  title: string
+  status: HumanTaskState
+  messages: ThreadMessage[]
+  activeContext: ThreadContext
+  currentPlan?: HumanReadablePlan
+  lastUserIntent?: string
+  pendingApprovals: PendingApproval[]
+  createdAt: string
+  updatedAt: string
+  lastActivityAt: string
+}
+
 export const api = {
   // Auth - public endpoints
   login: (email: string, password: string) => postRequest<LoginResponse>('/auth/login', { email, password }),
@@ -816,6 +920,86 @@ export const api = {
       return { success: false, data: null, error: 'Debes iniciar sesion' }
     }
     return requestProtected<{ sessions: RepairSessionData[]; count: number }>('/openclaw/repair/active')
+  },
+
+  // P6.6: Task Threads - protected
+  getThreads: async (tenantId?: string): Promise<ApiResponse<TaskThread[]>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    const query = tenantId ? `?tenantId=${tenantId}` : ''
+    return requestProtected<TaskThread[]>(`/threads${query}`)
+  },
+
+  getActiveThread: async (tenantId?: string): Promise<ApiResponse<TaskThread | null>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    const query = tenantId ? `?tenantId=${tenantId}` : ''
+    return requestProtected<TaskThread | null>(`/threads/active${query}`)
+  },
+
+  getThread: async (threadId: string): Promise<ApiResponse<TaskThread>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<TaskThread>(`/threads/${threadId}`)
+  },
+
+  getThreadByTask: async (taskId: string): Promise<ApiResponse<TaskThread | null>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<TaskThread | null>(`/threads/by-task/${taskId}`)
+  },
+
+  createThread: async (data: { tenantId: string; title: string; taskId?: string; initialMessage?: string }): Promise<ApiResponse<TaskThread>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return postRequestProtected<ApiResponse<TaskThread>>('/threads', data)
+  },
+
+  addThreadMessage: async (threadId: string, content: string): Promise<ApiResponse<{ message: ThreadMessage; detectedAction?: string; shouldContinue?: boolean }>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return postRequestProtected<ApiResponse<{ message: ThreadMessage; detectedAction?: string; shouldContinue?: boolean }>>(`/threads/${threadId}/messages`, { content })
+  },
+
+  pauseThread: async (threadId: string): Promise<ApiResponse<TaskThread>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return postRequestProtected<ApiResponse<TaskThread>>(`/threads/${threadId}/pause`, {})
+  },
+
+  resumeThread: async (threadId: string): Promise<ApiResponse<TaskThread>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return postRequestProtected<ApiResponse<TaskThread>>(`/threads/${threadId}/resume`, {})
+  },
+
+  cancelThread: async (threadId: string, reason?: string): Promise<ApiResponse<TaskThread>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return postRequestProtected<ApiResponse<TaskThread>>(`/threads/${threadId}/cancel`, { reason })
+  },
+
+  getThreadApprovals: async (threadId: string): Promise<ApiResponse<PendingApproval[]>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<PendingApproval[]>(`/threads/${threadId}/approvals`)
+  },
+
+  resolveApproval: async (threadId: string, approvalId: string, approved: boolean): Promise<ApiResponse<PendingApproval>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return postRequestProtected<ApiResponse<PendingApproval>>(`/threads/${threadId}/approvals/${approvalId}/resolve`, { approved })
   }
 }
 

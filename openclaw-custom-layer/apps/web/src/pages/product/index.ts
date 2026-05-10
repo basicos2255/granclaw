@@ -9,6 +9,7 @@
 export { ProductDashboard } from './ProductDashboard'
 export { TasksPage } from './TasksPage'
 export { TaskDetailPage } from './TaskDetailPage'
+export { ConversationalTaskDetail } from './ConversationalTaskDetail'
 export { AutomationsPage } from './AutomationsPage'
 export { ChannelsPage } from './ChannelsPage'
 export { CredentialsPage } from './CredentialsPage'

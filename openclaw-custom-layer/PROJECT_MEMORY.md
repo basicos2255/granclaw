@@ -8401,3 +8401,112 @@ const [isOffline, setIsOffline] = useState(false)
 - ✅ Todos los endpoints registrados en backend
 - ✅ Frontend detecta backend offline correctamente
 - ✅ Error messages muestran comando de startup
+
+## P6.6 — Human Interaction Layer, Task Threads & Conversational Control
+
+**Fecha:** 2026-05-10
+**Objetivo:** Transformar tareas en conversaciones contextuales
+
+### Problema Original
+
+- Interaccion humana pobre
+- Tareas no conversacionales
+- Sin task threads
+- Sin refinamiento progresivo
+- Sin continuidad humana real
+
+### Soluciones Implementadas
+
+| Feature | Estado |
+|---------|--------|
+| Task Thread Model | ✅ |
+| Human Task States | ✅ |
+| Contextual Continuation | ✅ |
+| Thread Memory | ✅ |
+| Task Planning | ✅ |
+| Conversational Task Page | ✅ |
+| Approval Conversations | ✅ |
+
+### Task Thread Model
+
+```typescript
+interface TaskThread {
+  id: string
+  taskId?: string
+  title: string
+  status: HumanTaskState
+  messages: ThreadMessage[]
+  activeContext: ThreadContext
+  currentPlan?: HumanReadablePlan
+  pendingApprovals: PendingApproval[]
+}
+```
+
+### Human Task States
+
+| Estado | Label |
+|--------|-------|
+| thinking | Pensando... |
+| queued | En cola |
+| executing | Ejecutando |
+| waiting_approval | Esperando aprobacion |
+| waiting_user_input | Esperando respuesta |
+| paused | Pausada |
+| completed | Completada |
+| failed | Fallida |
+| needs_repair | Requiere reparacion |
+| cancelled | Cancelada |
+
+### Thread Memory (Contextual)
+
+```typescript
+interface ThreadContext {
+  preferences: Record<string, string | number | boolean>
+  filters: string[]  // ["free_only", "secure"]
+  decisions: Array<{key, value, reason}>
+  entities: Array<{type, name}>
+}
+```
+
+### Archivos Backend
+
+| Archivo | Cambio |
+|---------|--------|
+| `modules/task-threads/types.ts` | CREATED |
+| `modules/task-threads/service.ts` | CREATED |
+| `modules/task-threads/handlers.ts` | CREATED |
+| `modules/task-threads/index.ts` | CREATED |
+| `index.ts` | Thread routes added |
+
+### Archivos Frontend
+
+| Archivo | Cambio |
+|---------|--------|
+| `components/threads/ThreadTimeline.tsx` | CREATED |
+| `components/threads/ThreadChatInput.tsx` | CREATED |
+| `components/threads/HumanTaskStateBadge.tsx` | CREATED |
+| `pages/product/ConversationalTaskDetail.tsx` | CREATED |
+| `services/api.ts` | Thread types + API |
+| `App.tsx` | Route updated |
+
+### API Endpoints
+
+| Endpoint | Metodo |
+|----------|--------|
+| `/threads` | GET/POST |
+| `/threads/active` | GET |
+| `/threads/:id` | GET |
+| `/threads/:id/messages` | POST |
+| `/threads/:id/pause` | POST |
+| `/threads/:id/resume` | POST |
+| `/threads/:id/approvals` | GET/POST |
+
+### Verificaciones
+
+- ✅ npm run check (api) exitoso
+- ✅ npm run check (web) exitoso
+- ✅ npm run build (api) exitoso
+- ✅ npm run build (web) exitoso
+- ✅ Task threads persisten en data/
+- ✅ Conversational UI funcional
+- ✅ Human states con badges

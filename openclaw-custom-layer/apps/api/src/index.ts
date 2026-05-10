@@ -167,6 +167,25 @@ import { initializeWsGateway, initializeEventBridge } from './modules/runtime-ws
 import { handleLogin, handleGetMe, handleRegister, handleLogout } from './modules/auth'
 import { handleListTools, handleGetTool } from './modules/tools'
 import { handleGetAllConfig, handleGetTenantConfig, handleSetTenantConfig, handleDeleteTenantConfig } from './modules/granclaw-hub'
+// P6.6: Task Threads routes
+import {
+  handleListThreads,
+  handleGetActiveThread,
+  handleGetThread,
+  handleGetThreadByTask,
+  handleCreateThread,
+  handleAddMessage as handleAddThreadMessage,
+  handleSetPlan,
+  handleRefinePlan,
+  handleGetApprovals,
+  handleCreateApproval,
+  handleResolveApproval,
+  handlePauseThread,
+  handleResumeThread,
+  handleCancelThread,
+  handleCompleteThread,
+  handleUpdateContext as handleUpdateThreadContext
+} from './modules/task-threads'
 import { notFound } from './shared/response'
 import { requireAuth, isPublicEndpoint } from './shared/auth-context'
 import type { AuthContext } from './modules/auth'
@@ -269,7 +288,10 @@ const getRoutes: Record<string, RouteHandler> = {
   '/openclaw/can-execute': wrapHandler(handleCanExecute),
   '/openclaw/scopes-needing-auth': wrapHandler(handleGetScopesNeedingAuth),
   '/openclaw/auth/repair/active': wrapHandler(handleGetActiveOpenClawRepair),
-  '/openclaw/quick-repair': wrapHandler(handleQuickRepair)
+  '/openclaw/quick-repair': wrapHandler(handleQuickRepair),
+  // P6.6: Task Threads routes
+  '/threads': wrapHandler(handleListThreads),
+  '/threads/active': wrapHandler(handleGetActiveThread)
 }
 
 // POST routes
@@ -322,7 +344,9 @@ const postRoutes: Record<string, RouteHandler> = {
   '/openclaw/pre-check': wrapHandler(handlePreCheck),
   '/openclaw/auth/repair': wrapHandler(handleCreateOpenClawRepair),
   '/openclaw/reset': wrapHandler(handleOpenClawReset),
-  '/openclaw/reload': wrapHandler(handleOpenClawReload)
+  '/openclaw/reload': wrapHandler(handleOpenClawReload),
+  // P6.6: Task Threads routes
+  '/threads': wrapHandler(handleCreateThread)
 }
 
 // Rutas dinámicas con parámetros
@@ -393,6 +417,19 @@ const getDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/openclaw\/auth\/repair\/([^/]+)$/,
     handler: wrapDynamicHandler(handleGetOpenClawRepairById)
+  },
+  // P6.6: Task Threads dynamic routes
+  {
+    pattern: /^\/threads\/by-task\/([^/]+)$/,
+    handler: wrapDynamicHandler(handleGetThreadByTask)
+  },
+  {
+    pattern: /^\/threads\/([^/]+)$/,
+    handler: wrapDynamicHandler(handleGetThread)
+  },
+  {
+    pattern: /^\/threads\/([^/]+)\/approvals$/,
+    handler: wrapDynamicHandler(handleGetApprovals)
   }
 ]
 
@@ -450,6 +487,39 @@ const postDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/openclaw\/auth\/repair\/([^/]+)\/fail$/,
     handler: wrapDynamicHandler(handleFailRepairById)
+  },
+  // P6.6: Task Threads dynamic POST routes
+  {
+    pattern: /^\/threads\/([^/]+)\/messages$/,
+    handler: wrapDynamicHandler(handleAddThreadMessage)
+  },
+  {
+    pattern: /^\/threads\/([^/]+)\/plan$/,
+    handler: wrapDynamicHandler(handleSetPlan)
+  },
+  {
+    pattern: /^\/threads\/([^/]+)\/refine$/,
+    handler: wrapDynamicHandler(handleRefinePlan)
+  },
+  {
+    pattern: /^\/threads\/([^/]+)\/approvals$/,
+    handler: wrapDynamicHandler(handleCreateApproval)
+  },
+  {
+    pattern: /^\/threads\/([^/]+)\/pause$/,
+    handler: wrapDynamicHandler(handlePauseThread)
+  },
+  {
+    pattern: /^\/threads\/([^/]+)\/resume$/,
+    handler: wrapDynamicHandler(handleResumeThread)
+  },
+  {
+    pattern: /^\/threads\/([^/]+)\/cancel$/,
+    handler: wrapDynamicHandler(handleCancelThread)
+  },
+  {
+    pattern: /^\/threads\/([^/]+)\/complete$/,
+    handler: wrapDynamicHandler(handleCompleteThread)
   }
 ]
 

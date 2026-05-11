@@ -8510,3 +8510,94 @@ interface ThreadContext {
 - ✅ Task threads persisten en data/
 - ✅ Conversational UI funcional
 - ✅ Human states con badges
+
+---
+
+## P6.7 — Task Memory Semantics, Execution Guarantees & Artifact Validation
+
+**Fecha:** 2026-05-10
+
+### Problema Corregido
+
+Task-memory actuaba como "execution cache", generando status success SIN ejecución real:
+- Pattern match = success (FALSO)
+- No artifacts generados
+- No outputs generados
+
+### Solución
+
+- Task-memory ahora es **planner accelerator**, no execution cache
+- Success requiere **ExecutionEvidence** real
+- Download tasks requieren **artifacts**
+- Search tasks requieren **outputs**
+- Pattern match = estrategia reutilizada, NO ejecución completada
+
+### Archivos Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `task-memory/types.ts` | ExecutionEvidence, SemanticExecutionState |
+| `task-memory/index.ts` | Exports nuevos |
+| `tasks/types.ts` | HumanTaskStatus, executionEvidence |
+| `tasks/service.ts` | completeTaskWithEvidence() |
+| `composite-tasks/executor.ts` | FIX: task_memory case ejecuta steps |
+
+### Verificaciones
+
+- ✅ npm run check (api)
+- ✅ npm run check (web)
+
+---
+
+## P6.8 — Thread Lifecycle Synchronization, Execution Truth & Zombie Cleanup
+
+**Fecha:** 2026-05-10
+
+### Problema Corregido
+
+- Tasks completaban pero UI mostraba "Pensando..." indefinidamente
+- Se detectaban 2+ threads por task (duplicados)
+- Threads zombie que nunca se cerraban
+- Lifecycles de Task y Thread desconectados
+
+### Solución
+
+1. **Single thread per task** - getOrCreateThreadForTask()
+2. **Thread sync automático** - syncThreadWithTask() llamado en completeTask()
+3. **Detección zombies** - detectZombieThreads(), repairZombieThreads()
+4. **Detección duplicados** - detectDuplicateThreads(), repairDuplicateThreads()
+5. **Execution Truth** - getExecutionTruth() combina task + thread state
+
+### Nuevos Endpoints
+
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| GET | `/tasks/:taskId/truth` | Execution truth |
+| GET | `/threads/by-task/:taskId/all` | Todos los threads |
+| GET | `/threads/zombies` | Detectar zombies |
+| GET | `/threads/duplicates` | Detectar duplicados |
+| POST | `/threads/repair-zombies` | Reparar zombies |
+| POST | `/threads/repair-duplicates` | Reparar duplicados |
+
+### Archivos Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `task-threads/service.ts` | +200 líneas funciones P6.8 |
+| `task-threads/handlers.ts` | +100 líneas handlers P6.8 |
+| `task-threads/types.ts` | HumanTaskState extendido |
+| `tasks/service.ts` | completeTask llama syncThreadWithTask |
+| `api/src/index.ts` | Rutas P6.8 |
+| `web/src/services/api.ts` | APIs y tipos P6.8 |
+
+### Principio Fundamental
+
+> Thread y Task DEBEN estar sincronizados.
+> Task success → Thread completed
+> Task error → Thread failed
+> Task cancelled → Thread cancelled
+
+### Verificaciones
+
+- ✅ npm run check (api)
+- ✅ npm run check (web)

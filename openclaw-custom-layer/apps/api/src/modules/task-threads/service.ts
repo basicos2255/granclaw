@@ -734,6 +734,495 @@ export function failThread(threadId: string, error: string, recoverable: boolean
 }
 
 // =============================================================================
+// P6.8: THREAD LIFECYCLE SYNCHRONIZATION
+// =============================================================================
+
+/**
+ * P6.8: Terminal task statuses
+ */
+const TERMINAL_TASK_STATUSES = ['success', 'error', 'cancelled', 'blocked']
+
+/**
+ * P6.8: Check if task status is terminal
+ */
+export function isTerminalTaskStatus(status: string): boolean {
+  return TERMINAL_TASK_STATUSES.includes(status)
+}
+
+/**
+ * P6.8: Terminal thread statuses
+ */
+const TERMINAL_THREAD_STATUSES = ['completed', 'failed', 'cancelled']
+
+/**
+ * P6.8: Check if thread status is terminal
+ */
+export function isTerminalThreadStatus(status: HumanTaskState): boolean {
+  return TERMINAL_THREAD_STATUSES.includes(status)
+}
+
+/**
+ * P6.8: Active thread statuses (can become zombie if task completes)
+ */
+const ACTIVE_THREAD_STATUSES: HumanTaskState[] = ['thinking', 'planning', 'reusing_strategy', 'queued', 'executing', 'validating']
+
+/**
+ * P6.8: Get ALL threads for a taskId (for duplicate detection)
+ */
+export function getThreadsByTaskId(taskId: string): TaskThread[] {
+  return state.threads.filter(t => t.taskId === taskId)
+}
+
+/**
+ * P6.8: Input for getOrCreateThreadForTask - taskId is REQUIRED
+ */
+interface GetOrCreateThreadInput extends CreateThreadInput {
+  taskId: string  // Required for this operation
+}
+
+/**
+ * P6.8: Get or create thread for task - SINGLE THREAD GUARANTEE
+ *
+ * This is the FIX for duplicate threads. Instead of blindly creating,
+ * this function checks if a thread already exists and returns it.
+ */
+export function getOrCreateThreadForTask(input: GetOrCreateThreadInput): {
+  thread: TaskThread
+  created: boolean
+  existingCount: number
+} {
+  const taskId = input.taskId
+  const existingThreads = getThreadsByTaskId(taskId)
+
+  if (existingThreads.length > 0) {
+    // Return the most recent active thread, or the first one
+    const activeThread = existingThreads.find(t => !isTerminalThreadStatus(t.status))
+    const thread = activeThread || existingThreads[0]
+
+    console.log(`[TaskThreads] P6.8: Returning existing thread ${thread.id} for task ${taskId} (${existingThreads.length} existing)`)
+
+    return {
+      thread,
+      created: false,
+      existingCount: existingThreads.length
+    }
+  }
+
+  // No existing thread, create new one
+  const thread = createThread(input)
+  console.log(`[TaskThreads] P6.8: Created new thread ${thread.id} for task ${taskId}`)
+
+  return {
+    thread,
+    created: true,
+    existingCount: 0
+  }
+}
+
+/**
+ * P6.8: Sync thread status with task status
+ *
+ * This is the FIX for zombie threads. When a task completes,
+ * this function updates the thread to match.
+ */
+export function syncThreadWithTask(taskId: string, taskStatus: string, taskError?: string): TaskThread | null {
+  const thread = getThreadByTaskId(taskId)
+  if (!thread) {
+    console.log(`[TaskThreads] P6.8: No thread found for task ${taskId}, skipping sync`)
+    return null
+  }
+
+  // If thread is already terminal, don't update
+  if (isTerminalThreadStatus(thread.status)) {
+    console.log(`[TaskThreads] P6.8: Thread ${thread.id} already terminal (${thread.status}), skipping sync`)
+    return thread
+  }
+
+  // Map task status to thread status
+  let newThreadStatus: HumanTaskState = thread.status
+
+  if (taskStatus === 'success') {
+    newThreadStatus = 'completed'
+  } else if (taskStatus === 'error') {
+    newThreadStatus = 'failed'
+  } else if (taskStatus === 'cancelled') {
+    newThreadStatus = 'cancelled'
+  } else if (taskStatus === 'blocked') {
+    // Keep current status or set to paused
+    newThreadStatus = 'paused'
+  } else if (taskStatus === 'running') {
+    newThreadStatus = 'executing'
+  } else if (taskStatus === 'unconfirmed') {
+    newThreadStatus = 'waiting_approval'
+  }
+
+  if (newThreadStatus !== thread.status) {
+    const oldStatus = thread.status
+    thread.status = newThreadStatus
+    thread.updatedAt = new Date().toISOString()
+    thread.lastActivityAt = thread.updatedAt
+
+    // Add sync message
+    if (isTerminalThreadStatus(newThreadStatus)) {
+      const message = taskError
+        ? `Tarea finalizada: ${taskError}`
+        : newThreadStatus === 'completed'
+          ? 'Tarea completada exitosamente'
+          : `Tarea finalizada (${newThreadStatus})`
+
+      addMessage({
+        threadId: thread.id,
+        role: 'system',
+        content: message
+      })
+    }
+
+    saveState()
+    console.log(`[TaskThreads] P6.8: Synced thread ${thread.id} from ${oldStatus} to ${newThreadStatus} for task ${taskId}`)
+  }
+
+  return thread
+}
+
+/**
+ * P6.8: Detect zombie threads
+ *
+ * A zombie thread is one that:
+ * - Has an active status (thinking, executing, etc.)
+ * - But its associated task is already terminal (success, error, etc.)
+ */
+export function detectZombieThreads(): Array<{
+  thread: TaskThread
+  taskId: string
+  taskStatus: string | null
+  reason: string
+}> {
+  const zombies: Array<{
+    thread: TaskThread
+    taskId: string
+    taskStatus: string | null
+    reason: string
+  }> = []
+
+  // Import task service dynamically to avoid circular deps
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { getTask } = require('../tasks/service')
+
+  for (const thread of state.threads) {
+    // Skip already terminal threads
+    if (isTerminalThreadStatus(thread.status)) continue
+
+    // Check if thread is in an active state
+    if (!ACTIVE_THREAD_STATUSES.includes(thread.status)) continue
+
+    // Skip threads without taskId (they can't be zombie since they're standalone)
+    const taskId = thread.taskId
+    if (!taskId) continue
+
+    // Get the associated task
+    const task = getTask(taskId)
+
+    if (!task) {
+      // Thread has no associated task - orphan zombie
+      zombies.push({
+        thread,
+        taskId,
+        taskStatus: null,
+        reason: 'orphan_no_task'
+      })
+    } else if (isTerminalTaskStatus(task.status)) {
+      // Task is terminal but thread is still active - lifecycle zombie
+      zombies.push({
+        thread,
+        taskId,
+        taskStatus: task.status,
+        reason: 'task_terminal_thread_active'
+      })
+    }
+  }
+
+  console.log(`[TaskThreads] P6.8: Detected ${zombies.length} zombie threads`)
+  return zombies
+}
+
+/**
+ * P6.8: Repair zombie threads by syncing them with task status
+ */
+export function repairZombieThreads(): {
+  repaired: number
+  failed: number
+  details: Array<{ threadId: string; oldStatus: HumanTaskState; newStatus: HumanTaskState; reason: string }>
+} {
+  const zombies = detectZombieThreads()
+  const details: Array<{ threadId: string; oldStatus: HumanTaskState; newStatus: HumanTaskState; reason: string }> = []
+  let repaired = 0
+  let failed = 0
+
+  for (const zombie of zombies) {
+    const oldStatus = zombie.thread.status
+    let newStatus: HumanTaskState
+
+    if (zombie.reason === 'orphan_no_task') {
+      // Orphan thread - mark as failed
+      newStatus = 'failed'
+    } else if (zombie.taskStatus === 'success') {
+      newStatus = 'completed'
+    } else if (zombie.taskStatus === 'error') {
+      newStatus = 'failed'
+    } else if (zombie.taskStatus === 'cancelled') {
+      newStatus = 'cancelled'
+    } else {
+      newStatus = 'failed'
+    }
+
+    try {
+      zombie.thread.status = newStatus
+      zombie.thread.updatedAt = new Date().toISOString()
+
+      addMessage({
+        threadId: zombie.thread.id,
+        role: 'system',
+        content: `[P6.8] Thread reparado: ${oldStatus} → ${newStatus} (${zombie.reason})`
+      })
+
+      details.push({ threadId: zombie.thread.id, oldStatus, newStatus, reason: zombie.reason })
+      repaired++
+    } catch (err) {
+      failed++
+      console.error(`[TaskThreads] P6.8: Failed to repair thread ${zombie.thread.id}:`, err)
+    }
+  }
+
+  if (repaired > 0) {
+    saveState()
+  }
+
+  console.log(`[TaskThreads] P6.8: Repaired ${repaired} zombie threads, ${failed} failed`)
+  return { repaired, failed, details }
+}
+
+/**
+ * P6.8: Detect duplicate threads (multiple threads for same task)
+ */
+export function detectDuplicateThreads(): Map<string, TaskThread[]> {
+  const byTaskId = new Map<string, TaskThread[]>()
+
+  for (const thread of state.threads) {
+    // Skip threads without taskId
+    const taskId = thread.taskId
+    if (!taskId) continue
+
+    const existing = byTaskId.get(taskId) || []
+    existing.push(thread)
+    byTaskId.set(taskId, existing)
+  }
+
+  // Filter to only those with duplicates
+  const duplicates = new Map<string, TaskThread[]>()
+  for (const [taskId, threads] of byTaskId) {
+    if (threads.length > 1) {
+      duplicates.set(taskId, threads)
+    }
+  }
+
+  console.log(`[TaskThreads] P6.8: Detected ${duplicates.size} tasks with duplicate threads`)
+  return duplicates
+}
+
+/**
+ * P6.8: Merge duplicate threads for a task
+ *
+ * Strategy:
+ * 1. Keep the thread with most messages
+ * 2. Merge messages from other threads
+ * 3. Mark other threads as merged (remove from active list)
+ */
+export function mergeDuplicateThreadsForTask(taskId: string): {
+  kept: TaskThread | null
+  merged: number
+  totalMessages: number
+} {
+  const threads = getThreadsByTaskId(taskId)
+
+  if (threads.length <= 1) {
+    return { kept: threads[0] || null, merged: 0, totalMessages: threads[0]?.messages.length || 0 }
+  }
+
+  // Sort by message count (most messages first), then by creation date (oldest first)
+  threads.sort((a, b) => {
+    const msgDiff = b.messages.length - a.messages.length
+    if (msgDiff !== 0) return msgDiff
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  })
+
+  const kept = threads[0]
+  const toMerge = threads.slice(1)
+
+  // Collect all messages from threads to merge
+  const allMessages: ThreadMessage[] = [...kept.messages]
+
+  for (const thread of toMerge) {
+    // Add messages that aren't duplicates
+    for (const msg of thread.messages) {
+      const isDuplicate = allMessages.some(
+        m => m.content === msg.content && m.timestamp === msg.timestamp
+      )
+      if (!isDuplicate) {
+        allMessages.push(msg)
+      }
+    }
+  }
+
+  // Sort messages by timestamp
+  allMessages.sort((a, b) =>
+    new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  )
+
+  // Update kept thread with merged messages
+  kept.messages = allMessages
+  kept.updatedAt = new Date().toISOString()
+
+  // Add merge note
+  addMessage({
+    threadId: kept.id,
+    role: 'system',
+    content: `[P6.8] Merged ${toMerge.length} duplicate thread(s) into this thread`
+  })
+
+  // Remove merged threads from state
+  for (const thread of toMerge) {
+    const index = state.threads.findIndex(t => t.id === thread.id)
+    if (index !== -1) {
+      state.threads.splice(index, 1)
+    }
+  }
+
+  saveState()
+
+  console.log(`[TaskThreads] P6.8: Merged ${toMerge.length} threads into ${kept.id} for task ${taskId}`)
+
+  return {
+    kept,
+    merged: toMerge.length,
+    totalMessages: allMessages.length
+  }
+}
+
+/**
+ * P6.8: Repair all duplicate threads
+ */
+export function repairDuplicateThreads(): {
+  tasksProcessed: number
+  threadsMerged: number
+  details: Array<{ taskId: string; kept: string; merged: number }>
+} {
+  const duplicates = detectDuplicateThreads()
+  const details: Array<{ taskId: string; kept: string; merged: number }> = []
+  let threadsMerged = 0
+
+  for (const [taskId] of duplicates) {
+    const result = mergeDuplicateThreadsForTask(taskId)
+    if (result.kept && result.merged > 0) {
+      details.push({
+        taskId,
+        kept: result.kept.id,
+        merged: result.merged
+      })
+      threadsMerged += result.merged
+    }
+  }
+
+  console.log(`[TaskThreads] P6.8: Repaired duplicates for ${duplicates.size} tasks, merged ${threadsMerged} threads`)
+
+  return {
+    tasksProcessed: duplicates.size,
+    threadsMerged,
+    details
+  }
+}
+
+/**
+ * P6.8: Get execution truth for a task
+ * Combines task status and thread status into a single truth
+ */
+export function getExecutionTruth(taskId: string): {
+  taskId: string
+  taskExists: boolean
+  taskStatus: string | null
+  threadExists: boolean
+  threadId: string | null
+  threadStatus: HumanTaskState | null
+  threadCount: number
+  isConsistent: boolean
+  truthStatus: 'completed' | 'failed' | 'in_progress' | 'unknown'
+  issues: string[]
+} {
+  // Import task service dynamically to avoid circular deps
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { getTask } = require('../tasks/service')
+
+  const task = getTask(taskId)
+  const threads = getThreadsByTaskId(taskId)
+  const thread = threads[0] || null
+
+  const issues: string[] = []
+
+  // Check for issues
+  if (!task && thread) {
+    issues.push('orphan_thread_no_task')
+  }
+  if (task && !thread) {
+    issues.push('task_without_thread')
+  }
+  if (threads.length > 1) {
+    issues.push(`duplicate_threads_${threads.length}`)
+  }
+
+  // Check consistency
+  let isConsistent = true
+  if (task && thread) {
+    const taskTerminal = isTerminalTaskStatus(task.status)
+    const threadTerminal = isTerminalThreadStatus(thread.status)
+
+    if (taskTerminal !== threadTerminal) {
+      isConsistent = false
+      issues.push('lifecycle_mismatch')
+    }
+
+    // Check specific status mapping
+    if (task.status === 'success' && thread.status !== 'completed') {
+      isConsistent = false
+      issues.push('success_not_completed')
+    }
+    if (task.status === 'error' && thread.status !== 'failed') {
+      isConsistent = false
+      issues.push('error_not_failed')
+    }
+  }
+
+  // Determine truth status
+  let truthStatus: 'completed' | 'failed' | 'in_progress' | 'unknown' = 'unknown'
+  if (task) {
+    if (task.status === 'success') truthStatus = 'completed'
+    else if (task.status === 'error') truthStatus = 'failed'
+    else if (task.status === 'running') truthStatus = 'in_progress'
+  }
+
+  return {
+    taskId,
+    taskExists: !!task,
+    taskStatus: task?.status || null,
+    threadExists: !!thread,
+    threadId: thread?.id || null,
+    threadStatus: thread?.status || null,
+    threadCount: threads.length,
+    isConsistent,
+    truthStatus,
+    issues
+  }
+}
+
+// =============================================================================
 // Initialization
 // =============================================================================
 

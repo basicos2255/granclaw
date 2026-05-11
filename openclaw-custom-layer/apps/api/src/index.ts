@@ -184,7 +184,16 @@ import {
   handleResumeThread,
   handleCancelThread,
   handleCompleteThread,
-  handleUpdateContext as handleUpdateThreadContext
+  handleUpdateContext as handleUpdateThreadContext,
+  // P6.8: Thread Lifecycle Synchronization
+  handleGetOrCreateThread,
+  handleGetAllThreadsByTask,
+  handleSyncThreadWithTask,
+  handleGetExecutionTruth,
+  handleDetectZombies,
+  handleRepairZombies,
+  handleDetectDuplicates,
+  handleRepairDuplicates
 } from './modules/task-threads'
 import { notFound } from './shared/response'
 import { requireAuth, isPublicEndpoint } from './shared/auth-context'
@@ -291,7 +300,10 @@ const getRoutes: Record<string, RouteHandler> = {
   '/openclaw/quick-repair': wrapHandler(handleQuickRepair),
   // P6.6: Task Threads routes
   '/threads': wrapHandler(handleListThreads),
-  '/threads/active': wrapHandler(handleGetActiveThread)
+  '/threads/active': wrapHandler(handleGetActiveThread),
+  // P6.8: Thread Lifecycle Synchronization
+  '/threads/zombies': wrapHandler(handleDetectZombies),
+  '/threads/duplicates': wrapHandler(handleDetectDuplicates)
 }
 
 // POST routes
@@ -346,7 +358,10 @@ const postRoutes: Record<string, RouteHandler> = {
   '/openclaw/reset': wrapHandler(handleOpenClawReset),
   '/openclaw/reload': wrapHandler(handleOpenClawReload),
   // P6.6: Task Threads routes
-  '/threads': wrapHandler(handleCreateThread)
+  '/threads': wrapHandler(handleGetOrCreateThread),  // P6.8: Changed to getOrCreate
+  // P6.8: Thread Lifecycle Synchronization
+  '/threads/repair-zombies': wrapHandler(handleRepairZombies),
+  '/threads/repair-duplicates': wrapHandler(handleRepairDuplicates)
 }
 
 // Rutas dinámicas con parámetros
@@ -422,6 +437,16 @@ const getDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/threads\/by-task\/([^/]+)$/,
     handler: wrapDynamicHandler(handleGetThreadByTask)
+  },
+  // P6.8: Get ALL threads for a task (for duplicate detection)
+  {
+    pattern: /^\/threads\/by-task\/([^/]+)\/all$/,
+    handler: wrapDynamicHandler(handleGetAllThreadsByTask)
+  },
+  // P6.8: Get execution truth (combined task + thread state)
+  {
+    pattern: /^\/tasks\/([^/]+)\/truth$/,
+    handler: wrapDynamicHandler(handleGetExecutionTruth)
   },
   {
     pattern: /^\/threads\/([^/]+)$/,
@@ -520,6 +545,11 @@ const postDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/threads\/([^/]+)\/complete$/,
     handler: wrapDynamicHandler(handleCompleteThread)
+  },
+  // P6.8: Sync thread with task status
+  {
+    pattern: /^\/threads\/by-task\/([^/]+)\/sync$/,
+    handler: wrapDynamicHandler(handleSyncThreadWithTask)
   }
 ]
 

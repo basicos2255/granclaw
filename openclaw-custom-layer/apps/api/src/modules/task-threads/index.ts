@@ -64,7 +64,19 @@ export {
   resumeThread,
   cancelThread,
   completeThread,
-  failThread
+  failThread,
+  // P6.8: Thread Lifecycle Synchronization
+  getOrCreateThreadForTask,
+  getThreadsByTaskId,
+  syncThreadWithTask,
+  isTerminalTaskStatus,
+  isTerminalThreadStatus,
+  detectZombieThreads,
+  repairZombieThreads,
+  detectDuplicateThreads,
+  repairDuplicateThreads,
+  mergeDuplicateThreadsForTask,
+  getExecutionTruth
 } from './service'
 
 // =============================================================================
@@ -91,5 +103,14 @@ export {
   handleResumeThread,
   handleCancelThread,
   handleCompleteThread,
-  handleFailThread
+  handleFailThread,
+  // P6.8: Thread Lifecycle Synchronization Handlers
+  handleGetOrCreateThread,
+  handleGetAllThreadsByTask,
+  handleSyncThreadWithTask,
+  handleGetExecutionTruth,
+  handleDetectZombies,
+  handleRepairZombies,
+  handleDetectDuplicates,
+  handleRepairDuplicates
 } from './handlers'

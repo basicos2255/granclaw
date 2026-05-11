@@ -3,6 +3,7 @@
  * FEATURE 080: Task System v1
  * P6.3: Added structured result capture
  * P6.7: Execution Evidence & Artifact Validation
+ * P6.8: Thread Lifecycle Synchronization
  * Persistencia de tareas en JSON
  */
 
@@ -11,6 +12,8 @@ import type { GranClawTask, CreateTaskInput, UpdateTaskInput, TaskStatus, HumanT
 import type { ExecutionEvidence, TaskActionType } from '../task-memory/types'
 import { validateExecutionEvidence } from '../task-memory/types'
 import { formatTaskResult, saveTaskResult } from '../task-results'
+// P6.8: Import syncThreadWithTask for lifecycle synchronization
+import { syncThreadWithTask } from '../task-threads'
 
 const ENTITY = 'tasks'
 
@@ -96,6 +99,7 @@ export function setTaskStatus(id: string, status: TaskStatus): GranClawTask | nu
 /**
  * Completa una tarea con resultado
  * P6.3: Also generates and saves structured TaskResult
+ * P6.8: Syncs thread status with task status
  */
 export function completeTask(
   id: string,
@@ -122,7 +126,7 @@ export function completeTask(
   saveTaskResult(taskResult)
 
   // Update task with structured fields
-  return updateTask(id, {
+  const updatedTask = updateTask(id, {
     status,
     result,
     source,
@@ -137,6 +141,14 @@ export function completeTask(
     artifacts: taskResult.artifacts,
     provider: taskResult.provider
   })
+
+  // P6.8: Sync thread status with task status
+  if (updatedTask) {
+    syncThreadWithTask(id, status, error)
+    console.log(`[TaskService] P6.8: Synced thread for task ${id} with status ${status}`)
+  }
+
+  return updatedTask
 }
 
 /**
@@ -283,6 +295,10 @@ export function completeTaskWithEvidence(
     console.log(`[TaskService] P6.7: Missing evidence: ${validation.missingEvidence.join(', ')}`)
   }
 
+  // P6.8: Sync thread status with task status
+  syncThreadWithTask(taskId, status, evidence.error)
+  console.log(`[TaskService] P6.8: Synced thread for task ${taskId} with status ${status}`)
+
   return {
     success: validation.canMarkSuccess,
     task: updatedTask,
@@ -296,6 +312,7 @@ export function completeTaskWithEvidence(
 
 /**
  * P6.7: Set task to a semantic state
+ * P6.8: Syncs thread status with task status
  */
 export function setTaskHumanStatus(
   taskId: string,
@@ -325,11 +342,18 @@ export function setTaskHumanStatus(
       status = 'running'
   }
 
-  return updateTask(taskId, {
+  const updatedTask = updateTask(taskId, {
     status,
     humanStatus,
     reason
   })
+
+  // P6.8: Sync thread status with task status
+  if (updatedTask) {
+    syncThreadWithTask(taskId, status)
+  }
+
+  return updatedTask
 }
 
 /**

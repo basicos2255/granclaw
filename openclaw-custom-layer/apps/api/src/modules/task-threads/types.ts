@@ -9,17 +9,24 @@ import type { TaskOutput, TaskArtifact } from '../task-results/types'
 
 /**
  * Human-readable task states (beyond just pending/running/completed)
+ * P6.7: Added planning, reusing_strategy, validating, waiting_input, needs_artifacts, needs_outputs
  */
 export type HumanTaskState =
   | 'thinking'              // AI is analyzing/planning
+  | 'planning'              // P6.7: Building execution plan
+  | 'reusing_strategy'      // P6.7: Pattern found, reusing strategy
   | 'queued'                // Waiting in queue
   | 'executing'             // Running steps
+  | 'validating'            // P6.7: Verifying results
   | 'waiting_approval'      // Needs user approval to continue
   | 'waiting_user_input'    // Needs additional info from user
+  | 'waiting_input'         // P6.7: Alias for waiting_user_input
   | 'paused'                // User paused the task
   | 'completed'             // Successfully completed
   | 'failed'                // Failed with error
   | 'needs_repair'          // Requires repair/troubleshooting
+  | 'needs_artifacts'       // P6.7: Missing artifacts for validation
+  | 'needs_outputs'         // P6.7: Missing outputs for validation
   | 'cancelled'             // User cancelled
 
 /**

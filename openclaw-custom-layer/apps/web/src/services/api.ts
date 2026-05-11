@@ -1007,6 +1007,70 @@ export const api = {
       return { success: false, data: null, error: 'Debes iniciar sesion' }
     }
     return postRequestProtected<ApiResponse<PendingApproval>>(`/threads/${threadId}/approvals/${approvalId}/resolve`, { approved })
+  },
+
+  // ==========================================================================
+  // P6.8: Thread Lifecycle Synchronization APIs
+  // ==========================================================================
+
+  /**
+   * P6.8: Get execution truth - combined task + thread state
+   */
+  getExecutionTruth: async (taskId: string): Promise<ApiResponse<ExecutionTruth>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<ExecutionTruth>(`/tasks/${taskId}/truth`)
+  },
+
+  /**
+   * P6.8: Get ALL threads for a task (for duplicate detection)
+   */
+  getThreadsByTask: async (taskId: string): Promise<ApiResponse<TaskThread[]>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<TaskThread[]>(`/threads/by-task/${taskId}/all`)
+  },
+
+  /**
+   * P6.8: Detect zombie threads
+   */
+  detectZombieThreads: async (): Promise<ApiResponse<ZombieThreadInfo[]>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<ZombieThreadInfo[]>('/threads/zombies')
+  },
+
+  /**
+   * P6.8: Repair zombie threads
+   */
+  repairZombieThreads: async (): Promise<ApiResponse<RepairResult>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return postRequestProtected<ApiResponse<RepairResult>>('/threads/repair-zombies', {})
+  },
+
+  /**
+   * P6.8: Detect duplicate threads
+   */
+  detectDuplicateThreads: async (): Promise<ApiResponse<DuplicateThreadInfo[]>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<DuplicateThreadInfo[]>('/threads/duplicates')
+  },
+
+  /**
+   * P6.8: Repair duplicate threads
+   */
+  repairDuplicateThreads: async (): Promise<ApiResponse<RepairResult>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return postRequestProtected<ApiResponse<RepairResult>>('/threads/repair-duplicates', {})
   }
 }
 
@@ -1017,6 +1081,65 @@ export interface CleanupResult {
   keptCapabilities: number
   keptProposals: number
   message: string
+}
+
+// ==========================================================================
+// P6.8: Thread Lifecycle Synchronization Types
+// ==========================================================================
+
+/**
+ * P6.8: Execution truth - combined task + thread state
+ */
+export interface ExecutionTruth {
+  taskId: string
+  taskExists: boolean
+  taskStatus: string | null
+  threadExists: boolean
+  threadId: string | null
+  threadStatus: HumanTaskState | null
+  threadCount: number
+  isConsistent: boolean
+  truthStatus: 'completed' | 'failed' | 'in_progress' | 'unknown'
+  issues: string[]
+}
+
+/**
+ * P6.8: Zombie thread info
+ */
+export interface ZombieThreadInfo {
+  threadId: string
+  taskId: string
+  threadStatus: HumanTaskState
+  taskStatus: string | null
+  reason: string
+}
+
+/**
+ * P6.8: Duplicate thread info
+ */
+export interface DuplicateThreadInfo {
+  taskId: string
+  count: number
+  threadIds: string[]
+}
+
+/**
+ * P6.8: Repair operation result
+ */
+export interface RepairResult {
+  repaired?: number
+  failed?: number
+  tasksProcessed?: number
+  threadsMerged?: number
+  details: Array<{
+    threadId?: string
+    taskId?: string
+    oldStatus?: HumanTaskState
+    newStatus?: HumanTaskState
+    reason?: string
+    kept?: string
+    merged?: number
+  }>
 }
 
 // FIX 123: System State types

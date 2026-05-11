@@ -26,7 +26,16 @@ import {
   cancelThread,
   completeThread,
   failThread,
-  updateContext
+  updateContext,
+  // P6.8: Thread Lifecycle Synchronization
+  getOrCreateThreadForTask,
+  getThreadsByTaskId,
+  syncThreadWithTask,
+  detectZombieThreads,
+  repairZombieThreads,
+  detectDuplicateThreads,
+  repairDuplicateThreads,
+  getExecutionTruth
 } from './service'
 import type { CreateThreadInput, HumanReadablePlan } from './types'
 
@@ -453,4 +462,150 @@ export async function handleFailThread(req: IncomingMessage, res: ServerResponse
   } catch (err) {
     errorResponse(res, 'Invalid request body')
   }
+}
+
+// =============================================================================
+// P6.8: Thread Lifecycle Synchronization Handlers
+// =============================================================================
+
+/**
+ * POST /threads (P6.8 version) - Uses getOrCreate to prevent duplicates
+ */
+export async function handleGetOrCreateThread(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    const body = await parseBody<CreateThreadInput>(req)
+
+    if (!body.tenantId || !body.title) {
+      return errorResponse(res, 'tenantId and title are required')
+    }
+
+    // P6.8: If no taskId, use regular createThread (for standalone threads)
+    if (!body.taskId) {
+      const thread = createThread(body)
+      return jsonResponse(res, {
+        success: true,
+        data: thread,
+        created: true,
+        existingCount: 0
+      }, 201)
+    }
+
+    // P6.8: Use getOrCreate to guarantee single thread per task
+    const result = getOrCreateThreadForTask({ ...body, taskId: body.taskId })
+
+    jsonResponse(res, {
+      success: true,
+      data: result.thread,
+      created: result.created,
+      existingCount: result.existingCount
+    }, result.created ? 201 : 200)
+  } catch (err) {
+    errorResponse(res, 'Invalid request body')
+  }
+}
+
+/**
+ * GET /threads/by-task/:taskId/all - Get ALL threads for a task (for duplicate detection)
+ */
+export async function handleGetAllThreadsByTask(req: IncomingMessage, res: ServerResponse, taskId: string): Promise<void> {
+  const threads = getThreadsByTaskId(taskId)
+  jsonResponse(res, {
+    success: true,
+    data: threads,
+    count: threads.length,
+    hasDuplicates: threads.length > 1
+  })
+}
+
+/**
+ * POST /threads/by-task/:taskId/sync - Sync thread with task status
+ */
+export async function handleSyncThreadWithTask(req: IncomingMessage, res: ServerResponse, taskId: string): Promise<void> {
+  try {
+    const body = await parseBody<{ taskStatus: string; taskError?: string }>(req)
+
+    if (!body.taskStatus) {
+      return errorResponse(res, 'taskStatus is required')
+    }
+
+    const thread = syncThreadWithTask(taskId, body.taskStatus, body.taskError)
+
+    jsonResponse(res, {
+      success: true,
+      data: thread,
+      synced: !!thread
+    })
+  } catch (err) {
+    errorResponse(res, 'Invalid request body')
+  }
+}
+
+/**
+ * GET /tasks/:taskId/truth - Get execution truth (combined task + thread state)
+ */
+export async function handleGetExecutionTruth(req: IncomingMessage, res: ServerResponse, taskId: string): Promise<void> {
+  const truth = getExecutionTruth(taskId)
+  jsonResponse(res, { success: true, data: truth })
+}
+
+/**
+ * GET /threads/zombies - Detect zombie threads
+ */
+export async function handleDetectZombies(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const zombies = detectZombieThreads()
+  jsonResponse(res, {
+    success: true,
+    data: zombies.map(z => ({
+      threadId: z.thread.id,
+      taskId: z.taskId,
+      threadStatus: z.thread.status,
+      taskStatus: z.taskStatus,
+      reason: z.reason
+    })),
+    count: zombies.length
+  })
+}
+
+/**
+ * POST /threads/repair-zombies - Repair zombie threads
+ */
+export async function handleRepairZombies(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const result = repairZombieThreads()
+  jsonResponse(res, {
+    success: true,
+    data: result
+  })
+}
+
+/**
+ * GET /threads/duplicates - Detect duplicate threads
+ */
+export async function handleDetectDuplicates(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const duplicates = detectDuplicateThreads()
+  const data: Array<{ taskId: string; count: number; threadIds: string[] }> = []
+
+  for (const [taskId, threads] of duplicates) {
+    data.push({
+      taskId,
+      count: threads.length,
+      threadIds: threads.map(t => t.id)
+    })
+  }
+
+  jsonResponse(res, {
+    success: true,
+    data,
+    totalTasksWithDuplicates: duplicates.size
+  })
+}
+
+/**
+ * POST /threads/repair-duplicates - Repair duplicate threads
+ */
+export async function handleRepairDuplicates(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const result = repairDuplicateThreads()
+  jsonResponse(res, {
+    success: true,
+    data: result
+  })
 }

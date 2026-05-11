@@ -8601,3 +8601,105 @@ Task-memory actuaba como "execution cache", generando status success SIN ejecuci
 
 - ✅ npm run check (api)
 - ✅ npm run check (web)
+
+---
+
+## P6.9 — Multistep Task Routing, Streaming Lifecycle & Queue Enforcement
+
+**Fecha:** 2026-05-11
+
+### Problema Corregido
+
+- Tareas multistep (descargar, instalar, buscar) pasaban por `runSimpleAgentTask()` REST síncrono
+- No usaban el sistema de queue/workflow existente
+- UI mostraba "Pensando..." sin progreso real
+
+### Solución
+
+1. **TaskExecutionMode Classifier** - `classifyExecutionMode()` determina si usar queue
+2. **Queue Routing Enforcement** - Tareas multistep se enrutan a `enqueueCompositeTask()`
+3. **Guard en runSimpleAgentTask** - Bloquea ejecución directa de tareas multistep
+4. **Composite Plan Builder** - `buildCompositeExecutionPlan()` genera planes estructurados
+
+### Nuevos Tipos
+
+```typescript
+type TaskExecutionMode =
+  | 'simple_completion'    // Pregunta rápida
+  | 'agent_workflow'       // Multistep con agente
+  | 'queued_workflow'      // Multistep con queue
+  | 'requires_approval'    // Requiere confirmación
+  | 'unsupported'          // No soportado
+```
+
+### Archivos Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `execution-policy/types.ts` | TaskExecutionMode, ExecutionModeResult |
+| `execution-policy/intent-classifier.ts` | classifyExecutionMode() |
+| `orchestrator/routes.ts` | Queue routing enforcement |
+| `orchestrator/service.ts` | Guard en runSimpleAgentTask |
+| `orchestrator/types.ts` | 'guard' en TaskSource |
+| `orchestrator/trace.ts` | 'queue' en stage |
+
+### Verificaciones
+
+- ✅ npm run check (api)
+- ✅ npm run build (api)
+
+---
+
+## P6.9R — Real Multistep Queue Execution, Evidence Enforcement & Lifecycle Completion
+
+**Fecha:** 2026-05-11
+
+### Problema Corregido
+
+- Guard de P6.9 bloqueaba llamadas internas de executors
+- Tareas multistep encoladas fallaban al intentar ejecutar steps
+- Status 'pending' ambiguo (¿queue o aprobación?)
+
+### Solución
+
+1. **executeProviderTask()** - Nueva función sin guard para executors internos
+2. **Status 'queued'** - Distingue tareas en queue de tareas pendientes
+3. **Thread sync 'queued'** - `syncThreadWithTask()` maneja nuevo status
+
+### Patrón de Ejecución
+
+```
+Entry Point (runSimpleAgentTask)
+  └─ Guard: Bloquea multistep → Error
+  └─ Simple: Ejecuta directamente → OK
+
+Internal Executor (executeProviderTask)
+  └─ Sin guard → Ejecuta step → OK
+```
+
+### Archivos Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `orchestrator/service.ts` | executeProviderTask() sin guard |
+| `composite-tasks/executor.ts` | Usa executeProviderTask |
+| `dag-execution/executor.ts` | Usa executeProviderTask |
+| `runtime-queue/execution-integration.ts` | Usa executeProviderTask |
+| `tasks/types.ts` | 'queued' en TaskStatus |
+| `task-threads/service.ts` | Manejo 'queued' en syncThreadWithTask |
+| `orchestrator/routes.ts` | 'pending' → 'queued' para queue |
+
+### Fases Diferidas
+
+| Fase | Descripción | Prioridad |
+|------|-------------|-----------|
+| E-F | Evidence/Artifact enforcement | P2 |
+| G | WS events para progress | P2 |
+| J-K | Download flow/Memory integration | P3 |
+
+### Verificaciones
+
+- ✅ npm run check (api)
+- ✅ npm run build (api)
+- ✅ Guard bloquea multistep en entry points
+- ✅ Executors internos bypasean guard

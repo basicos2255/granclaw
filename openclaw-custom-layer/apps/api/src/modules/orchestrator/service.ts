@@ -366,6 +366,123 @@ export async function runSimpleAgentTask(input: RunTaskInput): Promise<RunTaskRe
 }
 
 /**
+ * P6.9R: Execute provider task WITHOUT the multistep guard.
+ * This is for INTERNAL USE by queue executors, composite executors, and DAG executors.
+ *
+ * IMPORTANT: Do NOT call this from entry points (routes, handlers).
+ * Entry points should use runSimpleAgentTask() which has the guard.
+ *
+ * This function executes a single step/node via OpenClaw without re-classifying intent.
+ */
+export async function executeProviderTask(input: RunTaskInput): Promise<RunTaskResult> {
+  // Validación básica
+  if (!input.message || typeof input.message !== 'string') {
+    return {
+      success: false,
+      result: null,
+      source: 'mock',
+      error: 'Invalid input: message is required'
+    }
+  }
+
+  if (input.message.trim().length === 0) {
+    return {
+      success: false,
+      result: null,
+      source: 'mock',
+      error: 'Invalid input: message cannot be empty'
+    }
+  }
+
+  // NO GUARD HERE - This is intentional for internal executor use
+  // The guard is applied at entry points (runSimpleAgentTask)
+
+  // Validar session si se proporciona
+  if (input.sessionId) {
+    const session = input.tenantId
+      ? getSessionForTenant(input.sessionId, input.tenantId)
+      : getSession(input.sessionId)
+
+    if (!session) {
+      return {
+        success: false,
+        result: null,
+        source: 'mock',
+        error: `Session with id "${input.sessionId}" not found`
+      }
+    }
+
+    addMessage(input.sessionId, { role: 'user', content: input.message })
+  }
+
+  // Obtener configuración de agent/preset
+  const agentConfig = getAgentConfig(input.agentId, input.tenantId)
+  if (agentConfig.error) {
+    return {
+      success: false,
+      result: null,
+      source: 'mock',
+      error: agentConfig.error
+    }
+  }
+
+  // Si el agent tiene tools, intentar ejecutar una
+  if (agentConfig.tools && agentConfig.tools.length > 0) {
+    const toolContext: ToolExecutionContext = {
+      tenantId: input.tenantId,
+      sessionId: input.sessionId
+    }
+
+    const toolResult = await executeToolWithHybridMode(
+      input.message,
+      agentConfig.tools,
+      agentConfig.toolsConfig,
+      toolContext
+    )
+
+    if (toolResult) {
+      const result: RunTaskResult = {
+        success: toolResult.success,
+        result: toolResult.result,
+        source: 'tool',
+        agentId: agentConfig.agentId,
+        presetId: agentConfig.presetId,
+        toolId: toolResult.toolId,
+        error: toolResult.error
+      }
+
+      if (input.sessionId && result.success) {
+        const responseContent = JSON.stringify(toolResult.result)
+        addMessage(input.sessionId, { role: 'assistant', content: responseContent })
+        result.sessionId = input.sessionId
+      }
+
+      return result
+    }
+  }
+
+  const config = getOpenClawConfig()
+
+  let result: RunTaskResult
+
+  if (!config.baseUrl) {
+    result = runMockTask(input, agentConfig.systemPrompt, agentConfig.agentId, agentConfig.presetId)
+  } else {
+    result = await runOpenClawTask(input, agentConfig.systemPrompt, agentConfig.agentId, agentConfig.presetId)
+  }
+
+  if (input.sessionId && result.success) {
+    const responseContent = extractResponseContent(result.result)
+    if (responseContent) {
+      addMessage(input.sessionId, { role: 'assistant', content: responseContent })
+    }
+    result.sessionId = input.sessionId
+  }
+
+  return result
+}
+
+/**
  * Extrae el contenido de respuesta del resultado
  */
 function extractResponseContent(result: unknown): string | null {

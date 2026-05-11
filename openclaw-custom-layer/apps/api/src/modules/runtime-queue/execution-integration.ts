@@ -379,12 +379,14 @@ const compositeTaskHandler: JobHandler = async (job, helpers) => {
 
 /**
  * Handler for simple-task jobs
+ * P6.9R: Uses executeProviderTask (no guard) for internal queue execution
  */
 const simpleTaskHandler: JobHandler = async (job, helpers) => {
   helpers.log('info', 'Starting simple task from queue')
 
   try {
-    const { runSimpleAgentTask } = await import('../orchestrator/service')
+    // P6.9R: Use executeProviderTask - no guard for internal queue execution
+    const { executeProviderTask } = await import('../orchestrator/service')
 
     const payload = job.payload as {
       message: string
@@ -395,7 +397,7 @@ const simpleTaskHandler: JobHandler = async (job, helpers) => {
 
     helpers.reportProgress(10, 'Executing task')
 
-    const result = await runSimpleAgentTask({
+    const result = await executeProviderTask({
       message: payload.message,
       agentId: payload.agentId,
       sessionId: payload.sessionId || `queue-${job.id}`,

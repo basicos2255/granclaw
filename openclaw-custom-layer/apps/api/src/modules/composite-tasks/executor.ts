@@ -34,7 +34,8 @@ import {
   recordPatternExecution
 } from '../orchestrator/task-memory-integration'
 import { dispatchCapabilityExecution, getEnabledCapabilityByKey } from '../capabilities'
-import { runSimpleAgentTask } from '../orchestrator/service'
+// P6.9R: Use executeProviderTask (no guard) for internal step execution
+import { executeProviderTask } from '../orchestrator/service'
 // FEATURE 130.3: Workflow validation
 import {
   validateWorkflowStep,
@@ -113,8 +114,8 @@ async function executeStep(
           let lastError: string | undefined
 
           for (const patternStep of execPlan.steps) {
-            // Execute each step via OpenClaw (the actual execution)
-            const stepResult = await runSimpleAgentTask({
+            // P6.9R: Execute each step via provider (no guard for internal execution)
+            const stepResult = await executeProviderTask({
               message: patternStep.input || patternStep.description || step.description,
               tenantId,
               sessionId
@@ -232,6 +233,7 @@ async function executeStep(
 
 /**
  * Execute step via OpenClaw
+ * P6.9R: Uses executeProviderTask (no guard) for internal step execution
  */
 async function executeOpenClawStep(
   step: CompositeTaskStep,
@@ -239,7 +241,8 @@ async function executeOpenClawStep(
 ): Promise<{ success: boolean; result?: unknown; error?: string; skipped: boolean }> {
   const { tenantId, sessionId } = input
 
-  const result = await runSimpleAgentTask({
+  // P6.9R: Use executeProviderTask - no multistep guard for internal execution
+  const result = await executeProviderTask({
     message: step.description,
     tenantId,
     sessionId

@@ -339,10 +339,10 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
             debugSnapshot.executionConfirmed = false // Will be confirmed when job completes
             logDebug(debugSnapshot)
 
-            // Update task status to indicate it's queued
+            // P6.9R: Update task status to indicate it's queued (not pending)
             completeTask(
               task.id,
-              'pending', // Status is pending until queue processes it
+              'queued', // P6.9R: Explicit queued status, not ambiguous 'pending'
               {
                 queued: true,
                 jobId: queueResult.jobId,
@@ -1578,9 +1578,10 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
             debugSnapshot.executionConfirmed = false
             logDebug(debugSnapshot)
 
+            // P6.9R: Use 'queued' status, not ambiguous 'pending'
             completeTask(
               task.id,
-              'pending',
+              'queued',
               {
                 queued: true,
                 jobId: queueResult.jobId,

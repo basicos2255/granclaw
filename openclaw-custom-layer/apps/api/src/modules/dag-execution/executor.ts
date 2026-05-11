@@ -25,7 +25,8 @@ import { ResourceManager } from './resource-manager'
 import { ArtifactLockManager, acquireNodeLocks, releaseNodeLocks } from './artifact-locks'
 import { validateWorkflowStep } from '../workflow-validation'
 import { dispatchCapabilityExecution, getEnabledCapabilityByKey } from '../capabilities'
-import { runSimpleAgentTask } from '../orchestrator/service'
+// P6.9R: Use executeProviderTask (no guard) for internal node execution
+import { executeProviderTask } from '../orchestrator/service'
 import {
   checkTaskMemory,
   getExecutionPlanFromPattern,
@@ -142,13 +143,15 @@ async function executeNode(
 
 /**
  * Execute via OpenClaw
+ * P6.9R: Uses executeProviderTask (no guard) for internal node execution
  */
 async function executeViaOpenClaw(
   node: WorkflowNode,
   tenantId: string,
   sessionId?: string
 ): Promise<{ success: boolean; result?: unknown; error?: string }> {
-  const result = await runSimpleAgentTask({
+  // P6.9R: Use executeProviderTask - no multistep guard for internal execution
+  const result = await executeProviderTask({
     message: node.description,
     tenantId,
     sessionId

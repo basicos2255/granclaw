@@ -854,6 +854,9 @@ export function syncThreadWithTask(taskId: string, taskStatus: string, taskError
     newThreadStatus = 'executing'
   } else if (taskStatus === 'unconfirmed') {
     newThreadStatus = 'waiting_approval'
+  } else if (taskStatus === 'queued') {
+    // P6.9R: Handle queued status
+    newThreadStatus = 'queued'
   }
 
   if (newThreadStatus !== thread.status) {

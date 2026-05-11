@@ -12,8 +12,9 @@ import type { ExecutionEvidence, SemanticExecutionState } from '../task-memory/t
 /**
  * Estado de una tarea (technical)
  * P6.7: 'success' now requires ExecutionEvidence
+ * P6.9R: Added 'queued' for tasks in queue system
  */
-export type TaskStatus = 'pending' | 'running' | 'success' | 'blocked' | 'error' | 'unconfirmed'
+export type TaskStatus = 'pending' | 'running' | 'success' | 'blocked' | 'error' | 'unconfirmed' | 'queued'
 
 /**
  * P6.7: Human-readable task status for UI

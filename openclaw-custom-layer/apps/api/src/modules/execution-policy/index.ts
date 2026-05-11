@@ -20,10 +20,14 @@ export {
   type TaskExecutionPlan
 } from './execution-router'
 // FIX 121: Intent classifier exports
+// P6.9: Added execution mode classification
 export {
   classifyIntent,
   shouldBlockLocalProposal,
   requiresOpenClaw,
+  classifyExecutionMode,
+  requiresQueueExecution,
+  requiresExecutionEvidence,
   type IntentKind,
   type IntentClassification
 } from './intent-classifier'

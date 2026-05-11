@@ -14,6 +14,38 @@ import type { IntentClassification } from './intent-classifier'
 export type ExecutionProvider = 'auto' | 'openclaw' | 'local'
 
 /**
+ * Task Execution Mode
+ * P6.9: Determines HOW a task should be executed based on intent classification.
+ *
+ * - simple_completion: Quick AI response, no side effects (questions, explanations)
+ * - agent_workflow: Multi-step agent task, real-time streaming
+ * - queued_workflow: Multi-step task requiring queue/workers (download, install, deploy)
+ * - requires_approval: Task needs user confirmation before execution
+ * - unsupported: Task type not supported
+ */
+export type TaskExecutionMode =
+  | 'simple_completion'
+  | 'agent_workflow'
+  | 'queued_workflow'
+  | 'requires_approval'
+  | 'unsupported'
+
+/**
+ * Result of execution mode classification
+ * P6.9: Provides mode + reason for routing decisions
+ */
+export interface ExecutionModeResult {
+  mode: TaskExecutionMode
+  reason: string
+  /** Should use queue system instead of direct execution */
+  useQueue: boolean
+  /** Should stream progress events */
+  streamProgress: boolean
+  /** Requires ExecutionEvidence for completion */
+  requiresEvidence: boolean
+}
+
+/**
  * Execution route decision
  */
 export type ExecutionRoute = 'local' | 'openclaw' | 'proposal'

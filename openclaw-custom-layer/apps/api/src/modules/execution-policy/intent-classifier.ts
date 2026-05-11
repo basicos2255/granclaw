@@ -1,10 +1,13 @@
 /**
  * Intent Classifier
  * FIX 121: Authoritative Hybrid Router & Intent Classification
+ * P6.9: Task Execution Mode Classification
  *
  * Classifies user intent BEFORE capability detection.
  * This prevents false positives like "descarga e instala" being classified as editor.
  */
+
+import type { TaskExecutionMode, ExecutionModeResult } from './types'
 
 export type IntentKind =
   | 'simple_question'
@@ -314,4 +317,121 @@ export function requiresOpenClaw(intent: IntentClassification): boolean {
     intent.kind === 'analysis_task' ||
     intent.needsAgent
   )
+}
+
+/**
+ * Intent kinds that MUST use queued workflow (queue/workers)
+ * P6.9: These cannot be executed synchronously via runSimpleAgentTask
+ */
+const QUEUED_WORKFLOW_INTENTS: IntentKind[] = [
+  'install_download_action',
+  'complex_agent_task'
+]
+
+/**
+ * Intent kinds that use agent workflow (streaming but not queued)
+ */
+const AGENT_WORKFLOW_INTENTS: IntentKind[] = [
+  'analysis_task'
+]
+
+/**
+ * Intent kinds that are simple completions (quick AI response)
+ */
+const SIMPLE_COMPLETION_INTENTS: IntentKind[] = [
+  'simple_question'
+]
+
+/**
+ * Classify execution mode from intent classification.
+ * P6.9: Determines HOW the task should be executed.
+ *
+ * Priority:
+ * 1. queued_workflow - for install/download/deploy, complex multi-step
+ * 2. agent_workflow - for analysis tasks requiring reasoning but not queue
+ * 3. requires_approval - for risky OS actions
+ * 4. simple_completion - for questions and quick responses
+ * 5. simple_completion - for deterministic actions (local execution)
+ */
+export function classifyExecutionMode(intent: IntentClassification): ExecutionModeResult {
+  // 1. QUEUED WORKFLOW: Install/download/deploy, complex multi-step tasks
+  // These MUST go through queue system for progress tracking and evidence
+  if (QUEUED_WORKFLOW_INTENTS.includes(intent.kind) || (intent.isMultiStep && intent.needsAgent)) {
+    return {
+      mode: 'queued_workflow',
+      reason: `Intent '${intent.kind}' requires queue execution with progress tracking`,
+      useQueue: true,
+      streamProgress: true,
+      requiresEvidence: true
+    }
+  }
+
+  // 2. AGENT WORKFLOW: Analysis tasks that need reasoning but not queue
+  // These stream responses but don't require queue workers
+  if (AGENT_WORKFLOW_INTENTS.includes(intent.kind) || (intent.needsAi && intent.needsAgent && !intent.isMultiStep)) {
+    return {
+      mode: 'agent_workflow',
+      reason: `Intent '${intent.kind}' requires agent reasoning with streaming`,
+      useQueue: false,
+      streamProgress: true,
+      requiresEvidence: false
+    }
+  }
+
+  // 3. REQUIRES APPROVAL: OS actions that need confirmation
+  // Non-deterministic OS/file actions in strict mode
+  if ((intent.kind === 'os_action' || intent.kind === 'file_action') && !intent.isDeterministic) {
+    return {
+      mode: 'requires_approval',
+      reason: `Intent '${intent.kind}' requires user approval before execution`,
+      useQueue: false,
+      streamProgress: false,
+      requiresEvidence: false
+    }
+  }
+
+  // 4. SIMPLE COMPLETION: Questions, explanations, quick AI responses
+  // Also deterministic actions that don't need queue
+  if (
+    SIMPLE_COMPLETION_INTENTS.includes(intent.kind) ||
+    intent.kind === 'deterministic_action' ||
+    intent.kind === 'web_action' ||
+    (intent.kind === 'file_action' && intent.isDeterministic) ||
+    intent.kind === 'unknown'
+  ) {
+    return {
+      mode: 'simple_completion',
+      reason: `Intent '${intent.kind}' can be handled with simple completion`,
+      useQueue: false,
+      streamProgress: false,
+      requiresEvidence: false
+    }
+  }
+
+  // 5. DEFAULT: Unknown falls to simple completion with AI
+  return {
+    mode: 'simple_completion',
+    reason: 'Default to simple completion for unclassified intent',
+    useQueue: false,
+    streamProgress: false,
+    requiresEvidence: false
+  }
+}
+
+/**
+ * Check if execution mode requires queue system.
+ * P6.9: Used by orchestrator to decide routing.
+ */
+export function requiresQueueExecution(intent: IntentClassification): boolean {
+  const modeResult = classifyExecutionMode(intent)
+  return modeResult.useQueue
+}
+
+/**
+ * Check if execution mode requires evidence for completion.
+ * P6.9: Used to enforce "no success without evidence" rule.
+ */
+export function requiresExecutionEvidence(intent: IntentClassification): boolean {
+  const modeResult = classifyExecutionMode(intent)
+  return modeResult.requiresEvidence
 }

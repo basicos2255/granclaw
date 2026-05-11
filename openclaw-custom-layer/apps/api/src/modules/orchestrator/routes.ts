@@ -43,13 +43,20 @@ import { getEnabledCapabilityByKey, getCapabilityByKey, normalizeCapabilityKey, 
 // FEATURE 110: OS Tools - keeping imports for whitelist check
 import { isOSToolCapability, getOSToolConfig } from '../os-tools'
 // FEATURE 120 + FIX 121: Hybrid Execution Policy with Intent Classification
+// P6.9: Added execution mode classification
 import {
   getExecutionPolicy,
   decideExecutionRoute,
   classifyIntent,
+  classifyExecutionMode,
   type ExecutionRouteDecision,
-  type IntentClassification
+  type IntentClassification,
+  type ExecutionModeResult
 } from '../execution-policy'
+// P6.9: Queue integration for multistep tasks
+import { enqueueCompositeTask, type EnqueueResult } from '../runtime-queue/execution-integration'
+// P6.9: Composite task planning for proper plan structure
+import { buildCompositeExecutionPlan } from '../composite-tasks/planner'
 // FIX 124: Final Execution Status Resolution
 import { resolveFinalExecutionStatus, type ResolvedExecutionStatus } from '../execution-status'
 // FEATURE 130: Task memory integration for pattern reuse
@@ -198,6 +205,12 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
       console.log(`[Intent Classifier] isMultiStep=${intent.isMultiStep} isDeterministic=${intent.isDeterministic}`)
       console.log(`[Intent Classifier] reason="${intent.reason}" signals=[${intent.signals.join(', ')}]`)
 
+      // P6.9: STEP 1.5 - Classify execution mode (determines HOW to execute)
+      const executionMode: ExecutionModeResult = classifyExecutionMode(intent)
+      console.log(`[Execution Mode] mode=${executionMode.mode} useQueue=${executionMode.useQueue}`)
+      console.log(`[Execution Mode] streamProgress=${executionMode.streamProgress} requiresEvidence=${executionMode.requiresEvidence}`)
+      console.log(`[Execution Mode] reason="${executionMode.reason}"`)
+
       // FIX 121: Get hub config and execution policy
       const hubConfig = hub.getConfig(context.tenant.id)
       const executionPolicy = getExecutionPolicy(context.tenant.id)
@@ -253,6 +266,138 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
       }
 
       // FIX 121: STEP 4 - Execute based on router decision
+
+      // P6.9: STEP 4.0 - Check if task needs queue execution (multistep tasks)
+      // This MUST be checked BEFORE any direct execution to prevent "Pensando..." bug
+      if (executionMode.useQueue && routeDecision.provider === 'openclaw') {
+        console.log(`[GranClaw P6.9] Multistep task requires queue execution: ${executionMode.reason}`)
+
+        trace.addStep({
+          stage: 'orchestrator',
+          status: 'running',
+          label: 'Encolando tarea multistep',
+          detail: `Modo: ${executionMode.mode}, Intent: ${intent.kind}`
+        })
+
+        // P6.9: Build a proper composite execution plan
+        const planResult = buildCompositeExecutionPlan({
+          input: input.message,
+          tenantId: context.tenant.id,
+          userId: context.user.id
+        })
+
+        if (!planResult.plan) {
+          // If planner failed, log and continue to direct execution
+          console.log(`[GranClaw P6.9] Planner failed: ${planResult.reason}, falling back to direct execution`)
+          trace.addStep({
+            stage: 'orchestrator',
+            status: 'error',
+            label: 'Planner falló',
+            detail: planResult.reason || 'No se pudo crear plan'
+          })
+        } else {
+          console.log(`[GranClaw P6.9] Plan created: ${planResult.plan.id} with ${planResult.plan.steps.length} steps`)
+
+          const queueResult: EnqueueResult = enqueueCompositeTask(
+            {
+              planId: planResult.plan.id,
+              plan: planResult.plan,
+              input: input.message,
+              context: {
+                tenantId: context.tenant.id,
+                userId: context.user.id,
+                sessionId: input.sessionId,
+                capabilityKey,
+                intentKind: intent.kind,
+                executionMode: executionMode.mode,
+                requiresEvidence: executionMode.requiresEvidence
+              }
+            },
+            {
+              tenantId: context.tenant.id,
+              userId: context.user.id,
+              correlationId: trace.requestId
+            },
+            {
+              priority: 'normal',
+              tags: [intent.kind, 'multistep', 'p6.9']
+            }
+          )
+
+          if (queueResult.queued && queueResult.jobId) {
+            console.log(`[GranClaw P6.9] Task queued successfully: jobId=${queueResult.jobId}`)
+
+            trace.addStep({
+              stage: 'queue',
+              status: 'success',
+              label: 'Tarea encolada',
+              detail: `JobId: ${queueResult.jobId}, Steps: ${planResult.plan.steps.length}`
+            })
+
+            const debugSnapshot = trace.getDebugSnapshot()
+            debugSnapshot.source = 'queue'
+            debugSnapshot.executionConfirmed = false // Will be confirmed when job completes
+            logDebug(debugSnapshot)
+
+            // Update task status to indicate it's queued
+            completeTask(
+              task.id,
+              'pending', // Status is pending until queue processes it
+              {
+                queued: true,
+                jobId: queueResult.jobId,
+                planId: planResult.plan.id,
+                steps: planResult.plan.steps.length,
+                executionMode: executionMode.mode
+              },
+              'queue',
+              trace.getSteps(),
+              debugSnapshot,
+              trace.getTotalDurationMs()
+            )
+
+            // Return queued response
+            ok(res, {
+              success: true,
+              queued: true,
+              message: `Tarea multistep encolada: ${planResult.plan.steps.length} pasos`,
+              meta: {
+                requestId: trace.requestId,
+                taskId: task.id,
+                jobId: queueResult.jobId,
+                planId: planResult.plan.id,
+                planSteps: planResult.plan.steps.length,
+                executionMode: executionMode.mode,
+                intentKind: intent.kind,
+                isMultiStep: intent.isMultiStep,
+                requiresEvidence: executionMode.requiresEvidence,
+                hubDecision: hubResult.decisionLog,
+                executionTrace: trace.getSteps(),
+                executionDurationMs: trace.getTotalDurationMs(),
+                tenantId: context.tenant.id,
+                adapterStatus,
+                debugSnapshot,
+                routerDecision: {
+                  provider: 'queue',
+                  reason: executionMode.reason,
+                  intentKind: intent.kind
+                }
+              }
+            })
+            return
+          } else {
+            // Queue failed, log and continue to normal flow (fallback)
+            console.log(`[GranClaw P6.9] Queue failed, falling back to direct execution`)
+            trace.addStep({
+              stage: 'queue',
+              status: 'error',
+              label: 'Fallo al encolar',
+              detail: 'Continuando con ejecución directa'
+            })
+          }
+        } // End of planResult.plan check
+      }
+
       // Provider 'openclaw' - delegate to OpenClaw (skips capability handling)
       if (routeDecision.provider === 'openclaw') {
         console.log(`[GranClaw] Delegating to OpenClaw: ${routeDecision.reason}`)
@@ -1316,6 +1461,10 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
       const intent: IntentClassification = classifyIntent(input.message)
       console.log(`[Intent Classifier Stream] kind=${intent.kind} confidence=${intent.confidence} needsAi=${intent.needsAi}`)
 
+      // P6.9: STEP 1.5 - Classify execution mode (determines HOW to execute)
+      const executionMode: ExecutionModeResult = classifyExecutionMode(intent)
+      console.log(`[Execution Mode Stream] mode=${executionMode.mode} useQueue=${executionMode.useQueue}`)
+
       // FIX 121: Get hub config and execution policy
       const hubConfig = hub.getConfig(context.tenant.id)
       const executionPolicy = getExecutionPolicy(context.tenant.id)
@@ -1358,6 +1507,130 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
       })
 
       console.log(`[Execution Router Stream] AUTHORITATIVE provider=${routeDecision.provider} reason="${routeDecision.reason}"`)
+
+      // P6.9: Check if task needs queue execution (multistep tasks) - STREAMING
+      // Same logic as non-streaming to ensure consistent routing
+      if (executionMode.useQueue && routeDecision.provider === 'openclaw') {
+        console.log(`[GranClaw Stream P6.9] Multistep task requires queue execution: ${executionMode.reason}`)
+
+        trace.addStep({
+          stage: 'orchestrator',
+          status: 'running',
+          label: 'Encolando tarea multistep (stream)',
+          detail: `Modo: ${executionMode.mode}, Intent: ${intent.kind}`
+        })
+
+        // P6.9: Build a proper composite execution plan
+        const planResult = buildCompositeExecutionPlan({
+          input: input.message,
+          tenantId: context.tenant.id,
+          userId: context.user.id
+        })
+
+        if (!planResult.plan) {
+          console.log(`[GranClaw Stream P6.9] Planner failed: ${planResult.reason}, falling back to streaming`)
+          trace.addStep({
+            stage: 'orchestrator',
+            status: 'error',
+            label: 'Planner falló (stream)',
+            detail: planResult.reason || 'No se pudo crear plan'
+          })
+        } else {
+          console.log(`[GranClaw Stream P6.9] Plan created: ${planResult.plan.id} with ${planResult.plan.steps.length} steps`)
+
+          const queueResult: EnqueueResult = enqueueCompositeTask(
+            {
+              planId: planResult.plan.id,
+              plan: planResult.plan,
+              input: input.message,
+              context: {
+                tenantId: context.tenant.id,
+                userId: context.user.id,
+                sessionId: input.sessionId,
+                intentKind: intent.kind,
+                executionMode: executionMode.mode,
+                requiresEvidence: executionMode.requiresEvidence
+              }
+            },
+            {
+              tenantId: context.tenant.id,
+              userId: context.user.id,
+              correlationId: trace.requestId
+            },
+            {
+              priority: 'normal',
+              tags: [intent.kind, 'multistep', 'stream', 'p6.9']
+            }
+          )
+
+          if (queueResult.queued && queueResult.jobId) {
+            console.log(`[GranClaw Stream P6.9] Task queued: jobId=${queueResult.jobId}`)
+
+            trace.addStep({
+              stage: 'queue',
+              status: 'success',
+              label: 'Tarea encolada (stream)',
+              detail: `JobId: ${queueResult.jobId}, Steps: ${planResult.plan.steps.length}`
+            })
+
+            const debugSnapshot = trace.getDebugSnapshot()
+            debugSnapshot.source = 'queue'
+            debugSnapshot.executionConfirmed = false
+            logDebug(debugSnapshot)
+
+            completeTask(
+              task.id,
+              'pending',
+              {
+                queued: true,
+                jobId: queueResult.jobId,
+                planId: planResult.plan.id,
+                steps: planResult.plan.steps.length,
+                executionMode: executionMode.mode
+              },
+              'queue',
+              trace.getSteps(),
+              debugSnapshot,
+              trace.getTotalDurationMs()
+            )
+
+            ok(res, {
+              success: true,
+              queued: true,
+              message: `Tarea multistep encolada (stream): ${planResult.plan.steps.length} pasos`,
+              meta: {
+                requestId: trace.requestId,
+                taskId: task.id,
+                jobId: queueResult.jobId,
+                planId: planResult.plan.id,
+                planSteps: planResult.plan.steps.length,
+                executionMode: executionMode.mode,
+                intentKind: intent.kind,
+                isMultiStep: intent.isMultiStep,
+                hubDecision: hubResult.decisionLog,
+                executionTrace: trace.getSteps(),
+                tenantId: context.tenant.id,
+                adapterStatus,
+                debugSnapshot,
+                routerDecision: {
+                  provider: 'queue',
+                  reason: executionMode.reason,
+                  intentKind: intent.kind
+                }
+              }
+            })
+            return
+          } else {
+            console.log(`[GranClaw Stream P6.9] Queue failed, falling back to streaming`)
+            trace.addStep({
+              stage: 'queue',
+              status: 'error',
+              label: 'Fallo al encolar (stream)',
+              detail: 'Continuando con streaming directo'
+            })
+          }
+        } // End of planResult.plan check
+      }
 
       // FIX 121: Provider 'openclaw' - delegate to OpenClaw streaming
       if (routeDecision.provider === 'openclaw') {

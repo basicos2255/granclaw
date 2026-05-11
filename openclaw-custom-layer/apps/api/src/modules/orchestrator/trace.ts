@@ -19,6 +19,7 @@ export interface ExecutionTraceStep {
     | 'composite-plan' | 'composite-step' | 'composite-complete'
     | 'artifact-validation' | 'validation-failed' | 'validation-success'
     | 'dag-build' | 'dag-schedule' | 'dag-node-start' | 'dag-node-complete' | 'dag-node-failed' | 'dag-complete'
+    | 'queue' // P6.9: Queue stage for multistep task routing
   status: 'pending' | 'running' | 'success' | 'blocked' | 'error' | 'skipped' | 'validation_failed' | 'queued'
   label: string
   detail?: string
@@ -54,7 +55,7 @@ export interface DebugSnapshot {
   orchestratorCalled: boolean
   openclawCalled?: boolean
   toolCalled?: boolean
-  source?: 'openclaw' | 'tool' | 'mock' | 'fallback' | 'unknown' | 'granclaw' | 'error' | 'setup-required' | 'task-memory' | 'composite' | 'validation' | 'dag'
+  source?: 'openclaw' | 'tool' | 'mock' | 'fallback' | 'unknown' | 'granclaw' | 'error' | 'setup-required' | 'task-memory' | 'composite' | 'validation' | 'dag' | 'queue' // P6.9: Added queue source
   executionConfirmed: boolean
   tracePresent: boolean
   error?: string

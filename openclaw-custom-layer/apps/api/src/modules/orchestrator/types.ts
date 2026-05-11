@@ -9,7 +9,7 @@ export interface RunTaskInput {
   tenantId?: string
 }
 
-export type TaskSource = 'mock' | 'openclaw' | 'tool'
+export type TaskSource = 'mock' | 'openclaw' | 'tool' | 'guard' // P6.9: Added 'guard' for multistep guard rejections
 
 export interface RunTaskResult {
   success: boolean

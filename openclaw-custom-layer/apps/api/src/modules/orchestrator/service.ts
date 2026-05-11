@@ -5,6 +5,8 @@
  */
 
 import type { RunTaskInput, RunTaskResult, StreamTaskInput, StreamTaskResult } from './types'
+// P6.9: Import intent classifier for multistep guard
+import { classifyIntent, classifyExecutionMode } from '../execution-policy'
 import { getAgentById, getAgentByIdForTenant } from '../agents/service'
 import type { ToolsConfig, ToolMode } from '../agents/types'
 import { getPresetById, getPresetByIdForTenant } from '../presets/service'
@@ -245,6 +247,28 @@ export async function runSimpleAgentTask(input: RunTaskInput): Promise<RunTaskRe
       result: null,
       source: 'mock',
       error: 'Invalid input: message cannot be empty'
+    }
+  }
+
+  // P6.9: Guard against multistep tasks - these MUST use queue system
+  // This is a safety net in case routing enforcement is bypassed
+  const intent = classifyIntent(input.message)
+  const executionMode = classifyExecutionMode(intent)
+
+  if (executionMode.useQueue) {
+    console.log(`[runSimpleAgentTask P6.9] GUARD TRIGGERED: Multistep task blocked`)
+    console.log(`[runSimpleAgentTask P6.9] Intent: ${intent.kind}, Mode: ${executionMode.mode}`)
+    return {
+      success: false,
+      result: {
+        executionMode: executionMode.mode,
+        intentKind: intent.kind,
+        isMultiStep: intent.isMultiStep,
+        requiresEvidence: executionMode.requiresEvidence,
+        reason: executionMode.reason
+      },
+      source: 'guard',
+      error: 'Multistep tasks must use queue/workflow system. This task requires queued execution with progress tracking.'
     }
   }
 

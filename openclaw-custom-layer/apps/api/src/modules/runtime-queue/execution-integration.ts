@@ -6,7 +6,7 @@
  * Long-running operations are enqueued rather than executed directly.
  */
 
-import type { QueuedJob, JobHandler, JobHandlerResult, JobContext } from './types'
+import type { QueuedJob, JobHandler, JobHandlerResult, JobContext, CompositeTaskJobPayload, DAGExecutionJobPayload, SimpleTaskJobPayload } from './types'
 import { getQueue } from './queue'
 import { registerHandler } from './scheduler'
 import { emitQueueEvent, emitSystemEvent } from '../observability'
@@ -205,17 +205,37 @@ export function enqueueDagExecution(
 
 /**
  * Enqueue a composite task execution
+ * P6.10: Now requires taskId in payload for reconciliation
  */
 export function enqueueCompositeTask(
   payload: {
     planId: string
     plan: unknown
     input: string
-    context: unknown
+    taskId: string      // P6.10: Required for reconciliation
+    threadId?: string   // P6.10: Optional thread ID
+    context: {
+      tenantId: string
+      userId?: string
+      sessionId?: string
+      capabilityKey?: string
+      intentKind?: string
+      executionMode?: string
+      requiresEvidence?: boolean
+    }
   },
   context: { tenantId: string; userId?: string; correlationId?: string },
   options: EnqueueExecutionOptions = {}
 ): EnqueueResult {
+  // P6.10: Validate taskId is provided
+  if (!payload.taskId) {
+    console.error('[enqueueCompositeTask P6.10] ERROR: taskId is required but not provided')
+    return {
+      queued: false,
+      message: 'taskId is required for job reconciliation'
+    }
+  }
+
   const queue = getQueue()
   const jobContext = createJobContext(context.tenantId, context.userId, context.correlationId)
 
@@ -235,8 +255,11 @@ export function enqueueCompositeTask(
   emitQueueEvent('job:enqueued', 'Composite task enqueued', {
     jobId: job.id,
     planId: payload.planId,
+    taskId: payload.taskId,  // P6.10: Include taskId in event
     tenantId: context.tenantId
   })
+
+  console.log(`[enqueueCompositeTask P6.10] Job ${job.id} linked to task ${payload.taskId}`)
 
   return {
     queued: true,

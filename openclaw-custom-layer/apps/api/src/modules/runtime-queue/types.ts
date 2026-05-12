@@ -366,3 +366,65 @@ export interface BatchOperationResult {
   /** Total processed */
   total: number
 }
+
+/**
+ * P6.10: Canonical payload for jobs linked to GranClaw tasks
+ * Every job created from a task MUST include taskId
+ */
+export interface TaskLinkedJobPayload {
+  /** Required: The GranClaw task ID this job belongs to */
+  taskId: string
+  /** Optional: Thread ID if conversation thread exists */
+  threadId?: string
+  /** Optional: Workflow/plan ID if part of composite execution */
+  workflowId?: string
+  /** Request ID for tracing */
+  requestId?: string
+  /** Correlation ID for distributed tracing */
+  correlationId?: string
+  /** Tenant ID */
+  tenantId: string
+  /** User ID */
+  userId?: string
+  /** Original user input */
+  input: string
+  /** Execution mode */
+  executionMode?: string
+  /** Additional metadata */
+  metadata?: Record<string, unknown>
+}
+
+/**
+ * P6.10: Composite task job payload
+ */
+export interface CompositeTaskJobPayload extends TaskLinkedJobPayload {
+  planId: string
+  plan: unknown
+  context: {
+    tenantId: string
+    userId?: string
+    sessionId?: string
+    capabilityKey?: string
+    intentKind?: string
+    executionMode?: string
+    requiresEvidence?: boolean
+  }
+}
+
+/**
+ * P6.10: DAG execution job payload
+ */
+export interface DAGExecutionJobPayload extends TaskLinkedJobPayload {
+  graphId: string
+  graph: unknown
+  executionId?: string
+}
+
+/**
+ * P6.10: Simple task job payload
+ */
+export interface SimpleTaskJobPayload extends TaskLinkedJobPayload {
+  message: string
+  agentId?: string
+  sessionId?: string
+}

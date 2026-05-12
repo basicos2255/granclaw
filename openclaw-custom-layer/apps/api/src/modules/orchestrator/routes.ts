@@ -303,6 +303,7 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
               planId: planResult.plan.id,
               plan: planResult.plan,
               input: input.message,
+              taskId: task.id,  // P6.10: Required for job-task reconciliation
               context: {
                 tenantId: context.tenant.id,
                 userId: context.user.id,
@@ -320,7 +321,7 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
             },
             {
               priority: 'normal',
-              tags: [intent.kind, 'multistep', 'p6.9']
+              tags: [intent.kind, 'multistep', 'p6.9', 'p6.10']
             }
           )
 
@@ -1543,6 +1544,7 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
               planId: planResult.plan.id,
               plan: planResult.plan,
               input: input.message,
+              taskId: task.id,  // P6.10: Required for job-task reconciliation
               context: {
                 tenantId: context.tenant.id,
                 userId: context.user.id,
@@ -1559,7 +1561,7 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
             },
             {
               priority: 'normal',
-              tags: [intent.kind, 'multistep', 'stream', 'p6.9']
+              tags: [intent.kind, 'multistep', 'stream', 'p6.9', 'p6.10']
             }
           )
 

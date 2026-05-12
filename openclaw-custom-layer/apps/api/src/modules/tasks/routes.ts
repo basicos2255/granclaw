@@ -3,6 +3,7 @@
  * FEATURE 080: Task System v1
  * FIX 126: Timeout Recovery & Multistep Task Execution
  * P6.3: Added structured result endpoint
+ * P6.10: Task-Job Reconciliation endpoints
  */
 
 import type { IncomingMessage, ServerResponse } from 'http'
@@ -12,6 +13,7 @@ import { listTasks, getTask } from './service'
 import { getTaskResult } from '../task-results'
 import { runSimpleAgentTask } from '../orchestrator/service'
 import type { TaskStepInfo, ExecuteStepsResult } from '../orchestrator/types'
+import { reconcileTaskWithJob, reconcileAllOrphanedTasks } from '../runtime-queue'
 
 /**
  * GET /tasks - Lista tareas del tenant
@@ -242,4 +244,63 @@ async function executeStepsSequentially(
     taskCompleted,
     error: failedStepId ? `Step ${failedStepId} failed` : undefined
   }
+}
+
+/**
+ * P6.10: POST /tasks/:id/reconcile - Manually reconcile task with its queue job
+ */
+export function handleReconcileTask(_req: IncomingMessage, res: ServerResponse, taskId: string, context: AuthContext | null): void {
+  if (!context) {
+    unauthorized(res, 'Authentication required')
+    return
+  }
+
+  // First verify task exists and belongs to tenant
+  const task = getTask(taskId)
+
+  if (!task) {
+    notFound(res, 'Task not found')
+    return
+  }
+
+  if (task.tenantId !== context.tenant.id) {
+    notFound(res, 'Task not found')
+    return
+  }
+
+  // Perform reconciliation
+  reconcileTaskWithJob(taskId).then((result) => {
+    ok(res, {
+      success: result.success,
+      taskId,
+      message: result.message,
+      jobId: result.jobId,
+      previousStatus: result.previousStatus,
+      newStatus: result.newStatus
+    })
+  }).catch((err) => {
+    badRequest(res, err instanceof Error ? err.message : 'Reconciliation failed')
+  })
+}
+
+/**
+ * P6.10: POST /tasks/reconcile-all - Reconcile all orphaned tasks
+ */
+export function handleReconcileAllTasks(_req: IncomingMessage, res: ServerResponse, context: AuthContext | null): void {
+  if (!context) {
+    unauthorized(res, 'Authentication required')
+    return
+  }
+
+  reconcileAllOrphanedTasks(context.tenant.id).then((result) => {
+    ok(res, {
+      success: true,
+      total: result.total,
+      reconciled: result.reconciled,
+      errors: result.errors,
+      details: result.details
+    })
+  }).catch((err) => {
+    badRequest(res, err instanceof Error ? err.message : 'Reconciliation failed')
+  })
 }

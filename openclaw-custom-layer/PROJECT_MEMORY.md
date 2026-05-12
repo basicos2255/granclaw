@@ -8703,3 +8703,82 @@ Internal Executor (executeProviderTask)
 - ✅ npm run build (api)
 - ✅ Guard bloquea multistep en entry points
 - ✅ Executors internos bypasean guard
+
+---
+
+## P6.10 — Task Queue Reconciliation, Live Task Detail UX & Rich Interaction
+
+**Fecha:** 2026-05-12
+
+### Problema Corregido
+
+- Jobs de queue no contenían taskId en el payload
+- No había listeners para eventos job:completed/job:failed
+- Tasks quedaban en estado 'queued' indefinidamente
+- UI mostraba "Pensando..." aunque el job había terminado
+- Threads zombies sin sincronización
+
+### Solución
+
+1. **TaskLinkedJobPayload** - Contrato canónico con taskId requerido
+2. **Reconciliation Listeners** - Actualizan tasks al terminar jobs
+3. **Thread Sync** - Se sincroniza automáticamente en reconciliación
+4. **Endpoints de Reparación** - Para tasks huérfanas
+
+### Nuevos Tipos
+
+```typescript
+interface TaskLinkedJobPayload {
+  taskId: string      // Required
+  threadId?: string
+  workflowId?: string
+  tenantId: string
+  input: string
+}
+```
+
+### Nuevos Endpoints
+
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| POST | `/tasks/:id/reconcile` | Reconcilia task con su job |
+| POST | `/tasks/reconcile-all` | Reconcilia todas las tasks huérfanas |
+
+### Archivos Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `runtime-queue/types.ts` | TaskLinkedJobPayload |
+| `runtime-queue/execution-integration.ts` | taskId requerido |
+| `runtime-queue/task-reconciliation.ts` | NUEVO: Módulo reconciliación |
+| `runtime-queue/index.ts` | Exports e inicialización |
+| `orchestrator/routes.ts` | taskId en payloads |
+| `tasks/routes.ts` | Endpoints reconcile |
+| `index.ts` | Rutas nuevas |
+
+### Flujo Reconciliación
+
+```
+Job completes → emit('job:completed')
+  ↓
+handleJobCompleted() → extractTaskId(job)
+  ↓
+completeTask(taskId, 'success')
+  ↓
+syncThreadWithTask(taskId, 'success')
+  ↓
+UI actualiza ✅
+```
+
+### Fases Diferidas
+
+| Fase | Descripción | Prioridad |
+|------|-------------|-----------|
+| G-L | WS Events, Live UI, Rich UX | P2 |
+
+### Verificaciones
+
+- ✅ npm run check (api)
+- ✅ npm run build (api)
+- ✅ Jobs incluyen taskId
+- ✅ Reconciliation listeners activos

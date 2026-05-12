@@ -47,7 +47,7 @@ import { handleUsers } from './modules/users'
 import { handlePresets, handleCreatePreset } from './modules/presets'
 import { handleAgents, handleCreateAgent } from './modules/agents'
 import { handleListSessions, handleGetSession, handleCreateSession, handleAddMessage } from './modules/sessions'
-import { handleTasks, handleGetTaskById, handleGetTaskResult, handleExecuteSteps } from './modules/tasks'
+import { handleTasks, handleGetTaskById, handleGetTaskResult, handleExecuteSteps, handleReconcileTask, handleReconcileAllTasks } from './modules/tasks'
 import { handleGetToolProposals, handleGetToolProposalById, handleApproveToolProposal, handleRejectToolProposal, handleArchiveToolProposal } from './modules/tool-proposals'
 import { handleGetCapabilities, handleGetCapabilityById, handleEnableCapability, handleDisableCapability, handleDeleteCapability } from './modules/capabilities'
 // FIX 113: OS Tools routes
@@ -361,7 +361,9 @@ const postRoutes: Record<string, RouteHandler> = {
   '/threads': wrapHandler(handleGetOrCreateThread),  // P6.8: Changed to getOrCreate
   // P6.8: Thread Lifecycle Synchronization
   '/threads/repair-zombies': wrapHandler(handleRepairZombies),
-  '/threads/repair-duplicates': wrapHandler(handleRepairDuplicates)
+  '/threads/repair-duplicates': wrapHandler(handleRepairDuplicates),
+  // P6.10: Task-Job Reconciliation
+  '/tasks/reconcile-all': handleReconcileAllTasks
 }
 
 // Rutas dinámicas con parámetros
@@ -550,6 +552,11 @@ const postDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/threads\/by-task\/([^/]+)\/sync$/,
     handler: wrapDynamicHandler(handleSyncThreadWithTask)
+  },
+  // P6.10: Task-Job Reconciliation
+  {
+    pattern: /^\/tasks\/([^/]+)\/reconcile$/,
+    handler: handleReconcileTask
   }
 ]
 

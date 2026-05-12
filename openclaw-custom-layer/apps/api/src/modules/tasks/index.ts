@@ -7,4 +7,4 @@
 
 export * from './types'
 export * from './service'
-export { handleGetTasks, handleGetTasks as handleTasks, handleGetTaskById, handleGetTaskResult, handleExecuteSteps } from './routes'
+export { handleGetTasks, handleGetTasks as handleTasks, handleGetTaskById, handleGetTaskResult, handleExecuteSteps, handleReconcileTask, handleReconcileAllTasks } from './routes'

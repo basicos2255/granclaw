@@ -140,11 +140,20 @@ export type {
   ExecutionCriteria
 } from './execution-integration'
 
+// P6.10: Task-Job Reconciliation
+export {
+  initializeTaskReconciliation,
+  isReconciliationInitialized,
+  reconcileTaskWithJob,
+  reconcileAllOrphanedTasks
+} from './task-reconciliation'
+
 // Convenience initialization
 import { RuntimeQueue, getQueue } from './queue'
 import { initializePersistence, startPeriodicPersistence, stopPeriodicPersistence } from './persistence'
 import { startScheduler, stopScheduler } from './scheduler'
 import { initializeExecutionHandlers } from './execution-integration'
+import { initializeTaskReconciliation } from './task-reconciliation'
 
 /**
  * Initialize and start the runtime queue system
@@ -175,6 +184,9 @@ export function initializeRuntimeQueue(config?: {
   if (config?.initExecutionHandlers !== false) {
     initializeExecutionHandlers()
   }
+
+  // P6.10: Initialize task-job reconciliation
+  initializeTaskReconciliation()
 
   console.log('[RuntimeQueue] Initialized:', result)
 

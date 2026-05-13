@@ -73,6 +73,14 @@ export interface GranClawTask {
   patternId?: string
   /** Whether evidence was validated */
   evidenceValidated?: boolean
+
+  // P6.12: Retry and thread tracking
+  /** Associated thread ID */
+  threadId?: string
+  /** Number of retry attempts */
+  retryCount?: number
+  /** Last retry job ID in queue */
+  lastRetryJobId?: string
 }
 
 /**
@@ -112,4 +120,9 @@ export interface UpdateTaskInput {
   usedPattern?: boolean
   patternId?: string
   evidenceValidated?: boolean
+
+  // P6.12: Retry and thread tracking
+  threadId?: string
+  retryCount?: number
+  lastRetryJobId?: string
 }

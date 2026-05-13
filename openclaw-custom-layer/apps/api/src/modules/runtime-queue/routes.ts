@@ -20,7 +20,7 @@ import {
   analyzeDeadLetter
 } from './dead-letter'
 import { checkQueueHealth } from './startup-recovery'
-import { eventBus } from '../observability'
+import { eventBus, emitQueueEvent } from '../observability'
 import type { JobFilter } from './types'
 
 /**
@@ -494,4 +494,124 @@ export function handleQueueHealth(
     console.error('[QueueRoutes] Error checking health:', err)
     serverError(res, 'Error al verificar salud')
   }
+}
+
+/**
+ * P6.12: POST /queue/jobs/:id/retry
+ * Retry a queue job
+ *
+ * If jobId looks like a taskId (starts with "task-"), suggests using /tasks/:id/retry instead.
+ */
+export function handleRetryJob(
+  req: IncomingMessage,
+  res: ServerResponse,
+  jobId: string,
+  context: AuthContext | null
+): void {
+  if (!context) {
+    badRequest(res, 'Authentication required')
+    return
+  }
+
+  // P6.12: Check if jobId is actually a taskId
+  if (jobId.startsWith('task-')) {
+    // Return helpful error with suggested endpoint
+    ok(res, {
+      success: false,
+      error: 'El ID proporcionado es un taskId, no un jobId',
+      suggestion: {
+        message: 'Use /tasks/:id/retry para reintentar tareas',
+        endpoint: `/tasks/${jobId}/retry`,
+        method: 'POST'
+      },
+      taskId: jobId
+    })
+    return
+  }
+
+  let body = ''
+
+  req.on('data', (chunk) => {
+    body += chunk.toString()
+  })
+
+  req.on('end', () => {
+    try {
+      const options = body ? JSON.parse(body) : {}
+      const queue = getQueue()
+
+      // Find original job
+      const originalJob = queue.get(jobId)
+
+      if (!originalJob) {
+        // Check dead letter
+        const deadLetterJob = getDeadLetterJob(jobId)
+        if (deadLetterJob) {
+          // Suggest using requeue endpoint
+          ok(res, {
+            success: false,
+            error: 'El trabajo está en dead-letter',
+            suggestion: {
+              message: 'Use /queue/dead-letter/:id/requeue para reencolar',
+              endpoint: `/queue/dead-letter/${jobId}/requeue`,
+              method: 'POST'
+            }
+          })
+          return
+        }
+
+        notFound(res, 'Trabajo no encontrado')
+        return
+      }
+
+      // Check if job can be retried
+      if (originalJob.status === 'pending' || originalJob.status === 'running') {
+        badRequest(res, `El trabajo no puede reintentarse (estado: ${originalJob.status})`)
+        return
+      }
+
+      // Clone payload safely
+      const payload = JSON.parse(JSON.stringify(originalJob.payload))
+
+      // Create retry job
+      const retryJob = queue.enqueue(
+        originalJob.type,
+        {
+          ...payload,
+          retryOfJobId: originalJob.id
+        },
+        originalJob.context,
+        {
+          priority: options.priority || originalJob.priority,
+          tags: [...(originalJob.tags || []), 'retry', `retry-of-${originalJob.id}`]
+        }
+      )
+
+      // Emit event
+      emitQueueEvent('job:retried', 'Queue job retried', {
+        originalJobId: originalJob.id,
+        retryJobId: retryJob.id,
+        type: originalJob.type,
+        tenantId: originalJob.context.tenantId
+      })
+
+      ok(res, {
+        success: true,
+        message: 'Trabajo reencolado',
+        retryJobId: retryJob.id,
+        originalJobId: originalJob.id,
+        type: originalJob.type,
+        status: 'queued',
+        // P6.12: Include taskId if available
+        taskId: payload.taskId
+      })
+    } catch (err) {
+      console.error('[QueueRoutes] Error retrying job:', err)
+      serverError(res, 'Error al reintentar trabajo')
+    }
+  })
+
+  req.on('error', () => {
+    badRequest(res, 'Error reading request body')
+  })
 }

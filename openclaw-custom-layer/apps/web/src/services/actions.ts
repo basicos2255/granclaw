@@ -86,21 +86,34 @@ export async function createTask(input: CreateTaskInput): Promise<ActionResult<{
 }
 
 /**
- * Retry a failed task
+ * P6.12: Retry a failed task
+ * Uses /tasks/:id/retry (not /queue/jobs/:id/retry)
  */
-export async function retryTask(taskId: string): Promise<ActionResult> {
+export async function retryTask(taskId: string, options?: { mode?: string }): Promise<ActionResult> {
   try {
-    const response = await apiFetch<{ success: boolean; jobId?: string; error?: string }>(
-      `/queue/jobs/${taskId}/retry`,
-      { method: 'POST' }
+    const response = await apiFetch<{
+      success: boolean
+      jobId?: string
+      taskId?: string
+      retryMode?: string
+      status?: string
+      error?: string
+    }>(
+      `/tasks/${taskId}/retry`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: options ? JSON.stringify(options) : undefined
+      }
     )
 
     if (response.success) {
       return {
         success: true,
-        status: 'queued',
+        status: response.status === 'queued' ? 'queued' : 'executed',
         message: 'Reintento encolado',
-        jobId: response.jobId
+        jobId: response.jobId,
+        taskId: response.taskId
       }
     }
 
@@ -116,12 +129,13 @@ export async function retryTask(taskId: string): Promise<ActionResult> {
 }
 
 /**
- * Cancel a running task
+ * P6.12: Cancel a running task
+ * Uses /tasks/:id/cancel (not /queue/jobs/:id/cancel)
  */
 export async function cancelTask(taskId: string): Promise<ActionResult> {
   try {
-    const response = await apiFetch<{ success: boolean; error?: string }>(
-      `/queue/jobs/${taskId}/cancel`,
+    const response = await apiFetch<{ success: boolean; error?: string; status?: string }>(
+      `/tasks/${taskId}/cancel`,
       { method: 'POST' }
     )
 
@@ -129,7 +143,8 @@ export async function cancelTask(taskId: string): Promise<ActionResult> {
       return {
         success: true,
         status: 'executed',
-        message: 'Tarea cancelada'
+        message: 'Tarea cancelada',
+        taskId
       }
     }
 
@@ -141,6 +156,85 @@ export async function cancelTask(taskId: string): Promise<ActionResult> {
     }
   } catch (err) {
     return handleActionError(err, 'cancelar tarea')
+  }
+}
+
+/**
+ * P6.12: Repair task/thread/job inconsistencies
+ */
+export async function repairTask(taskId: string): Promise<ActionResult> {
+  try {
+    const response = await apiFetch<{
+      success: boolean
+      report?: { issues: string[]; repairs: string[] }
+      error?: string
+    }>(
+      `/tasks/${taskId}/repair`,
+      { method: 'POST' }
+    )
+
+    if (response.success) {
+      return {
+        success: true,
+        status: 'executed',
+        message: `Reparación completada: ${response.report?.repairs.length || 0} arreglos`,
+        data: response.report,
+        taskId
+      }
+    }
+
+    return {
+      success: false,
+      status: 'failed',
+      message: response.error || 'Error al reparar',
+      error: response.error
+    }
+  } catch (err) {
+    return handleActionError(err, 'reparar tarea')
+  }
+}
+
+/**
+ * P6.12: Get execution truth for a task
+ */
+export async function getTaskTruth(taskId: string): Promise<ActionResult<{
+  task: { id: string; status: string; source?: string; error?: string }
+  thread: { id: string; status: string; messageCount: number } | null
+  job: { id: string; status: string; type: string } | null
+  result: { status: string; hasArtifacts: boolean; hasOutputs: boolean } | null
+}>> {
+  try {
+    const response = await apiFetch<{
+      success: boolean
+      truth?: {
+        task: { id: string; status: string; source?: string; error?: string }
+        thread: { id: string; status: string; messageCount: number } | null
+        job: { id: string; status: string; type: string } | null
+        result: { status: string; hasArtifacts: boolean; hasOutputs: boolean } | null
+      }
+      error?: string
+    }>(
+      `/tasks/${taskId}/truth`
+    )
+
+    if (response.success && response.truth) {
+      return {
+        success: true,
+        status: 'executed',
+        message: 'Truth obtenido',
+        data: response.truth,
+        taskId
+      }
+    }
+
+    return {
+      success: false,
+      status: 'failed',
+      message: response.error || 'Error al obtener truth',
+      error: response.error
+    }
+  } catch (err) {
+    return handleActionError(err, 'obtener truth')
   }
 }
 

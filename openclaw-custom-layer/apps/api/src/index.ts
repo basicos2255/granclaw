@@ -47,7 +47,8 @@ import { handleUsers } from './modules/users'
 import { handlePresets, handleCreatePreset } from './modules/presets'
 import { handleAgents, handleCreateAgent } from './modules/agents'
 import { handleListSessions, handleGetSession, handleCreateSession, handleAddMessage } from './modules/sessions'
-import { handleTasks, handleGetTaskById, handleGetTaskResult, handleExecuteSteps, handleReconcileTask, handleReconcileAllTasks } from './modules/tasks'
+// P6.12: Added handleRetryTask, handleCancelTask, handleRepairTask, handleGetTaskTruth
+import { handleTasks, handleGetTaskById, handleGetTaskResult, handleExecuteSteps, handleReconcileTask, handleReconcileAllTasks, handleRetryTask, handleCancelTask, handleRepairTask, handleGetTaskTruth } from './modules/tasks'
 import { handleGetToolProposals, handleGetToolProposalById, handleApproveToolProposal, handleRejectToolProposal, handleArchiveToolProposal } from './modules/tool-proposals'
 import { handleGetCapabilities, handleGetCapabilityById, handleEnableCapability, handleDisableCapability, handleDeleteCapability } from './modules/capabilities'
 // FIX 113: OS Tools routes
@@ -138,11 +139,13 @@ import {
   handleClearDagExecutions
 } from './modules/dag-execution/routes'
 // PHASE H1: Runtime Queue routes
+// P6.12: Added handleRetryJob
 import {
   handleGetQueueStats,
   handleListJobs,
   handleGetJob,
   handleCancelJob,
+  handleRetryJob,
   handlePauseQueue,
   handleResumeQueue,
   handleListDeadLetter,
@@ -386,6 +389,11 @@ const getDynamicRoutes: DynamicRoute[] = [
     pattern: /^\/tasks\/([^/]+)\/result$/,
     handler: handleGetTaskResult
   },
+  // P6.12: Task execution truth
+  {
+    pattern: /^\/tasks\/([^/]+)\/truth$/,
+    handler: handleGetTaskTruth
+  },
   {
     pattern: /^\/tools\/([^/]+)$/,
     handler: wrapDynamicHandler(handleGetTool)
@@ -557,6 +565,19 @@ const postDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/tasks\/([^/]+)\/reconcile$/,
     handler: handleReconcileTask
+  },
+  // P6.12: Task retry, cancel, repair
+  {
+    pattern: /^\/tasks\/([^/]+)\/retry$/,
+    handler: handleRetryTask
+  },
+  {
+    pattern: /^\/tasks\/([^/]+)\/cancel$/,
+    handler: handleCancelTask
+  },
+  {
+    pattern: /^\/tasks\/([^/]+)\/repair$/,
+    handler: handleRepairTask
   }
 ]
 
@@ -605,10 +626,15 @@ const postDynamicRoutesDag: DynamicRoute[] = [
 ]
 
 // PHASE H1: Runtime Queue dynamic routes
+// P6.12: Added retry route
 const postDynamicRoutesQueue: DynamicRoute[] = [
   {
     pattern: /^\/queue\/jobs\/([^/]+)\/cancel$/,
     handler: handleCancelJob
+  },
+  {
+    pattern: /^\/queue\/jobs\/([^/]+)\/retry$/,
+    handler: handleRetryJob
   },
   {
     pattern: /^\/queue\/dead-letter\/([^/]+)\/requeue$/,

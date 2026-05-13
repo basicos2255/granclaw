@@ -8978,3 +8978,118 @@ Package.json actualizado para mayor robustez:
 - `docs/reports/claude/P6_11R_guard_closure_audit.md`
 - `docs/reports/claude/P6_11R_self_audit.md`
 - `docs/reports/claude/P6_11R_full_guard_closure_report.md`
+
+---
+
+## P6.12 — Queue Operations, Retry Semantics & Runtime Recovery Controls
+
+**Fecha**: 2026-05-13
+**Estado**: COMPLETADO
+
+### Problema
+
+La UI intentaba reintentar tareas via:
+```
+POST /queue/jobs/${taskId}/retry → 404 Not Found
+```
+
+El endpoint no existía, y además mezcla conceptos task vs job.
+
+### Solución: Arquitectura de Dos Capas
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     TASK LAYER (Primary)                     │
+│  POST /tasks/:id/retry   - Retry con semánticas inteligentes│
+│  POST /tasks/:id/cancel  - Cancela task y jobs asociados    │
+│  POST /tasks/:id/repair  - Reconcilia estado de task        │
+│  GET  /tasks/:id/truth   - Obtiene estado autoritativo      │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   QUEUE LAYER (Secondary)                    │
+│  POST /queue/jobs/:id/retry   - Retry crudo de job          │
+│  POST /queue/jobs/:id/cancel  - Cancel crudo de job         │
+│  POST /queue/dead-letter/:id/requeue - Reencolar job muerto │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Semánticas de Retry
+
+La función `determineRetryMode()` selecciona estrategia óptima:
+
+| Condición | Modo | Comportamiento |
+|-----------|------|----------------|
+| Tiene planId válido | retry_same_plan | Reencola plan existente |
+| Requiere queue | retry_replan | Crea nuevo plan |
+| Tiene paso fallido | retry_from_failed_step | Resume desde fallo |
+| Seguro para simple | retry_as_simple | Ejecución directa |
+| Default | retry_replan | Replanificación completa |
+
+### Nuevos Handlers
+
+```typescript
+// tasks/routes.ts
+handleRetryTask(req, res, taskId, context)   // POST /tasks/:id/retry
+handleCancelTask(_req, res, taskId, context) // POST /tasks/:id/cancel
+handleRepairTask(_req, res, taskId, context) // POST /tasks/:id/repair
+handleGetTaskTruth(_req, res, taskId, context) // GET /tasks/:id/truth
+
+// runtime-queue/routes.ts
+handleRetryJob(req, res, jobId, context)     // POST /queue/jobs/:id/retry
+```
+
+### Tipos Extendidos (tasks/types.ts)
+
+```typescript
+// GranClawTask
+threadId?: string      // Thread de conversación asociado
+retryCount?: number    // Número de reintentos
+lastRetryJobId?: string // Job ID del último reintento
+```
+
+### Frontend Actualizado (actions.ts)
+
+```typescript
+export async function retryTask(taskId, options?)  // /tasks/:id/retry
+export async function cancelTask(taskId)           // /tasks/:id/cancel
+export async function repairTask(taskId)           // /tasks/:id/repair
+export async function getTaskTruth(taskId)         // /tasks/:id/truth
+```
+
+### Eventos WebSocket
+
+| Evento | Cuándo |
+|--------|--------|
+| task:retry:started | Retry encolado |
+| task:retry:completed | Retry simple completado |
+| task:cancel:started | Cancel iniciado |
+| task:cancel:completed | Cancel terminado |
+| job:retried | Job de queue reintentado |
+
+### Archivos Modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| tasks/routes.ts | +400 líneas: 4 handlers nuevos |
+| tasks/types.ts | +6 líneas: propiedades retry |
+| tasks/index.ts | +4 exports |
+| runtime-queue/routes.ts | +80 líneas: handleRetryJob |
+| index.ts | +20 líneas: registro de rutas |
+| actions.ts (web) | +120 líneas: 4 funciones |
+
+### Verificaciones
+
+- ✅ npm run check (api)
+- ✅ npm run build (api)
+- ✅ npm run check (web)
+- ✅ POST /tasks/:id/retry responde correctamente
+- ✅ POST /queue/jobs/:id/retry sugiere usar /tasks si es task-prefixed
+- ✅ WebSocket events emitidos
+
+### Reportes Generados
+
+- `docs/reports/claude/P6_12_queue_operations_audit.md`
+- `docs/reports/claude/P6_12_self_audit.md`
+- `docs/reports/claude/P6_12_queue_operations_retry_report.md`

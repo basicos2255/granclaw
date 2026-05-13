@@ -8782,3 +8782,199 @@ UI actualiza ✅
 - ✅ npm run build (api)
 - ✅ Jobs incluyen taskId
 - ✅ Reconciliation listeners activos
+
+---
+
+## P6.11 — Guard-to-Queue Enforcement, Planner Fallback Fix & Multistep Recovery
+
+**Fecha:** 2026-05-12
+
+### Problema Corregido
+
+- Cuando planner fallaba, código caía a `runSimpleAgentTask()` sin return
+- Cuando queue fallaba, código caía a `runSimpleAgentTask()` sin return
+- Guard de P6.9 bloqueaba correctamente, pero mensaje de error era técnico
+- UI mostraba: "Multistep tasks must use queue/workflow system..."
+
+### Solución
+
+1. **Planner Failure Return** - Retorna inmediatamente con error amigable
+2. **Queue Failure Return** - Retorna inmediatamente con error amigable
+3. **Fallback Protection** - Previene que multistep llegue al fallback
+4. **Guard como última línea** - Ya solo para casos no anticipados
+
+### Cambios en orchestrator/routes.ts
+
+```typescript
+// ANTES (líneas 289-297):
+if (!planResult.plan) {
+  console.log(`...falling back to direct execution`)
+  // ❌ NO RETURN - caía a runSimpleAgentTask
+}
+
+// DESPUÉS (P6.11):
+if (!planResult.plan) {
+  completeTask(task.id, 'error', { plannerFailed: true }, 'validation', ...)
+  ok(res, { success: false, error: 'No se pudo planificar...', plannerFailed: true })
+  return  // ✅ RETURN AGREGADO
+}
+```
+
+### Mensajes de Error Mejorados
+
+| Escenario | Antes | Después |
+|-----------|-------|---------|
+| Planner fails | "Multistep tasks must use queue..." | "No se pudo planificar la tarea: {reason}" |
+| Queue fails | "Multistep tasks must use queue..." | "No se pudo encolar la tarea multistep" |
+| Routing error | "Multistep tasks must use queue..." | "No se pudo procesar la tarea multistep" |
+
+### Archivos Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `orchestrator/routes.ts` | +85 líneas: P6.11 returns y protección |
+
+### Verificaciones
+
+- ✅ npm run check (api)
+- ✅ npm run build (api)
+- ✅ Planner failure retorna
+- ✅ Queue failure retorna
+- ✅ Fallback protegido
+- ✅ Guard no alcanzado normalmente
+
+---
+
+## P6.11R — Full Guard Closure, Streaming Route Parity & Dev Script Executability
+
+**Fecha:** 2026-05-13
+
+### Problema Identificado
+
+P6.11 corrigió la ruta normal, pero la auditoría encontró huecos restantes:
+
+1. **Ruta streaming** - Todavía tenía fallback peligroso cuando planner/queue fallaban
+2. **tasks/routes.ts** - `runSimpleAgentTask()` usado en step execution sin validar tipo de step
+3. **scripts/granclaw-dev.sh** - Sin bit ejecutable en git (modo 100644)
+4. **Sin helper centralizado** - Guards duplicados en múltiples lugares
+
+### Solución Implementada
+
+#### A. Streaming Route Parity
+
+Corregido `orchestrator/routes.ts` streaming path:
+
+```typescript
+// ANTES (línea 1673):
+if (!planResult.plan) {
+  console.log(`...falling back to streaming`)  // ❌ Continuaba a streaming
+}
+
+// DESPUÉS (P6.11R):
+if (!planResult.plan) {
+  completeTask(task.id, 'error', { plannerFailed: true }, 'validation', ...)
+  ok(res, { success: false, error: 'No se pudo planificar...', plannerFailed: true })
+  return  // ✅ RETURN AGREGADO
+}
+```
+
+Misma corrección para queue failure (línea 1768).
+
+Agregado guard final (línea 1873-1912):
+```typescript
+if (executionMode.useQueue) {
+  console.log(`[GranClaw Stream P6.11R] CRITICAL: Multistep task reached streaming fallback - blocking`)
+  // Return error, NOT fallback to streaming
+  return
+}
+```
+
+#### B. Helper Centralizado mustUseQueue()
+
+Nuevo helper en `execution-policy/intent-classifier.ts`:
+
+```typescript
+export function mustUseQueue(
+  intent: IntentClassification,
+  executionMode: ExecutionModeResult
+): boolean {
+  // 1. executionMode explicitly requires queue
+  if (executionMode.useQueue) return true
+  // 2. Intent is classified as multi-step
+  if (intent.isMultiStep) return true
+  // 3. Execution mode is queued_workflow
+  if (executionMode.mode === 'queued_workflow') return true
+  return false
+}
+```
+
+#### C. Step Execution Validation
+
+Nuevo helper `isStepSafeForSimpleExecution()`:
+
+```typescript
+export function isStepSafeForSimpleExecution(stepDescription: string): boolean {
+  // Blocks: download, install, execute, deploy, browser, file write
+  // Allows: analyze, explain, search, list, compare
+}
+```
+
+Usado en `tasks/routes.ts:208`:
+```typescript
+if (!isStepSafeForSimpleExecution(step.description) && !isStepSafeForSimpleExecution(step.input)) {
+  stepResults[step.id] = {
+    status: 'failed',
+    error: 'Step requires queue execution (download/install/browser/deploy not allowed via simple task)'
+  }
+  continue
+}
+```
+
+#### D. Dev Script Executability
+
+```bash
+git update-index --chmod=+x scripts/granclaw-dev.sh
+```
+
+Modo cambiado: 100644 → 100755
+
+Package.json actualizado para mayor robustez:
+```json
+"dev": "sh ./scripts/granclaw-dev.sh start"
+```
+
+### Archivos Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `orchestrator/routes.ts` | +130 líneas: P6.11R streaming guards |
+| `execution-policy/intent-classifier.ts` | +80 líneas: mustUseQueue() + isStepSafeForSimpleExecution() |
+| `execution-policy/index.ts` | +2 exports: mustUseQueue, isStepSafeForSimpleExecution |
+| `tasks/routes.ts` | +15 líneas: step validation + import |
+| `package.json` | Scripts usan `sh ./scripts/...` |
+| `scripts/granclaw-dev.sh` | Mode 100755 (git index) |
+
+### runSimpleAgentTask Callers (Post P6.11R)
+
+| Location | Protected By | Status |
+|----------|-------------|--------|
+| tasks/routes.ts:219 | isStepSafeForSimpleExecution() | SAFE |
+| orchestrator/routes.ts:703 | useQueue check at line 272 | SAFE |
+| orchestrator/routes.ts:1276 | Guard at line 1216-1261 | SAFE |
+
+### Verificaciones
+
+- ✅ npm run check (api)
+- ✅ npm run build (api)
+- ✅ npm run check (web)
+- ✅ Script mode 100755
+- ✅ Streaming planner failure returns
+- ✅ Streaming queue failure returns
+- ✅ Streaming fallback guard blocks multistep
+- ✅ Step execution validates type
+
+### Reportes Generados
+
+- `docs/reports/claude/P6_11R_guard_closure_audit.md`
+- `docs/reports/claude/P6_11R_self_audit.md`
+- `docs/reports/claude/P6_11R_full_guard_closure_report.md`

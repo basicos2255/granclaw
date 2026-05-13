@@ -21,6 +21,7 @@ export {
 } from './execution-router'
 // FIX 121: Intent classifier exports
 // P6.9: Added execution mode classification
+// P6.11R: Added mustUseQueue and isStepSafeForSimpleExecution guards
 export {
   classifyIntent,
   shouldBlockLocalProposal,
@@ -28,6 +29,8 @@ export {
   classifyExecutionMode,
   requiresQueueExecution,
   requiresExecutionEvidence,
+  mustUseQueue,
+  isStepSafeForSimpleExecution,
   type IntentKind,
   type IntentClassification
 } from './intent-classifier'

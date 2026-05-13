@@ -12,11 +12,11 @@
     "dev:web": "npm run dev --workspace=@granclaw/web -- --host 0.0.0.0",
     "start:api": "npm run start --workspace=@granclaw/api",
     "start:web": "npm run preview --workspace=@granclaw/web -- --host 0.0.0.0",
-    "dev": "./scripts/granclaw-dev.sh start",
-    "dev:stop": "./scripts/granclaw-dev.sh stop",
-    "dev:restart": "./scripts/granclaw-dev.sh restart",
-    "dev:status": "./scripts/granclaw-dev.sh status",
-    "dev:logs": "./scripts/granclaw-dev.sh logs"
+    "dev": "sh ./scripts/granclaw-dev.sh start",
+    "dev:stop": "sh ./scripts/granclaw-dev.sh stop",
+    "dev:restart": "sh ./scripts/granclaw-dev.sh restart",
+    "dev:status": "sh ./scripts/granclaw-dev.sh status",
+    "dev:logs": "sh ./scripts/granclaw-dev.sh logs"
   },
   "engines": {
     "node": ">=18.0.0"

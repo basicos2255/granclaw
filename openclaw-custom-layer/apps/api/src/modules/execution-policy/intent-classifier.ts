@@ -435,3 +435,92 @@ export function requiresExecutionEvidence(intent: IntentClassification): boolean
   const modeResult = classifyExecutionMode(intent)
   return modeResult.requiresEvidence
 }
+
+/**
+ * P6.11R: Centralized guard to check if task MUST use queue execution.
+ * This is the AUTHORITATIVE check used across all routes (normal, streaming, retry, tasks).
+ *
+ * When this returns true:
+ * - NO runSimpleAgentTask
+ * - NO postChatCompletion directo
+ * - NO streaming simple fallback
+ * - MUST use queue/workflow execution
+ *
+ * @param intent - The classified intent
+ * @param executionMode - The execution mode result
+ * @returns true if task MUST use queue, false otherwise
+ */
+export function mustUseQueue(
+  intent: IntentClassification,
+  executionMode: ExecutionModeResult
+): boolean {
+  // P6.11R: Three conditions that require queue execution:
+  // 1. executionMode explicitly requires queue
+  if (executionMode.useQueue) {
+    return true
+  }
+
+  // 2. Intent is classified as multi-step
+  if (intent.isMultiStep) {
+    return true
+  }
+
+  // 3. Execution mode is queued_workflow
+  if (executionMode.mode === 'queued_workflow') {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * P6.11R: Check if a step type is safe for simple execution.
+ * Only reasoning and simple_completion steps can use runSimpleAgentTask.
+ *
+ * @param stepDescription - The step description to analyze
+ * @returns true if step can safely use runSimpleAgentTask
+ */
+export function isStepSafeForSimpleExecution(stepDescription: string): boolean {
+  const lowerDesc = stepDescription.toLowerCase()
+
+  // DANGEROUS step types - must NOT use runSimpleAgentTask
+  const dangerousPatterns = [
+    /\b(descarga|download|baja)\b/i,
+    /\b(instala|install|setup)\b/i,
+    /\b(ejecuta|run|execute)\b/i,
+    /\b(deploy|desplega)\b/i,
+    /\b(browser|navegador|chrome|firefox)\b/i,
+    /\b(abre|open)\s+(url|sitio|web|página)/i,
+    /\b(archivo|file)\s+(crea|create|escribe|write|guarda|save)/i,
+    /\bnpm\s+(install|run)/i,
+    /\bpip\s+install/i,
+    /\bgit\s+(clone|push|pull)/i
+  ]
+
+  for (const pattern of dangerousPatterns) {
+    if (pattern.test(lowerDesc)) {
+      return false
+    }
+  }
+
+  // Safe step types
+  const safePatterns = [
+    /\b(analiza|analyze|analysis)\b/i,
+    /\b(explica|explain)\b/i,
+    /\b(busca|search|encuentra|find)\b/i,
+    /\b(lista|list|enumera)\b/i,
+    /\b(compara|compare)\b/i,
+    /\b(describe|describe)\b/i,
+    /\b(resume|summarize|resumen)\b/i
+  ]
+
+  // If matches a safe pattern, it's safe
+  for (const pattern of safePatterns) {
+    if (pattern.test(lowerDesc)) {
+      return true
+    }
+  }
+
+  // Default: conservative - assume unsafe for unrecognized patterns
+  return false
+}

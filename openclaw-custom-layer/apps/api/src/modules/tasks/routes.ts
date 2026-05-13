@@ -4,6 +4,7 @@
  * FIX 126: Timeout Recovery & Multistep Task Execution
  * P6.3: Added structured result endpoint
  * P6.10: Task-Job Reconciliation endpoints
+ * P6.11R: Added step type validation before runSimpleAgentTask
  */
 
 import type { IncomingMessage, ServerResponse } from 'http'
@@ -14,6 +15,7 @@ import { getTaskResult } from '../task-results'
 import { runSimpleAgentTask } from '../orchestrator/service'
 import type { TaskStepInfo, ExecuteStepsResult } from '../orchestrator/types'
 import { reconcileTaskWithJob, reconcileAllOrphanedTasks } from '../runtime-queue'
+import { isStepSafeForSimpleExecution } from '../execution-policy'
 
 /**
  * GET /tasks - Lista tareas del tenant
@@ -197,6 +199,22 @@ async function executeStepsSequentially(
 
     try {
       console.log(`[ExecuteSteps] Executing step ${step.order}: ${step.description}`)
+
+      // P6.11R: Validate step type before using runSimpleAgentTask
+      // Only reasoning/analysis steps can use simple execution
+      // Download/install/browser/deploy steps MUST NOT use runSimpleAgentTask
+      if (!isStepSafeForSimpleExecution(step.description) && !isStepSafeForSimpleExecution(step.input)) {
+        console.log(`[ExecuteSteps P6.11R] Step ${step.order} is NOT safe for simple execution: ${step.description}`)
+        stepResults[step.id] = {
+          status: 'failed',
+          error: 'Step requires queue execution (download/install/browser/deploy not allowed via simple task)'
+        }
+        failedStepId = step.id
+        console.log(`[ExecuteSteps P6.11R] Step ${step.order} blocked - requires queue/workflow execution`)
+        continue
+      }
+
+      console.log(`[ExecuteSteps P6.11R] Step ${step.order} is safe for simple execution`)
 
       const taskResult = await runSimpleAgentTask({
         message: step.input,

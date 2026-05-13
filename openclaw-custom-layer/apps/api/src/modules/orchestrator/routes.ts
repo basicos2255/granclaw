@@ -287,15 +287,62 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         })
 
         if (!planResult.plan) {
-          // If planner failed, log and continue to direct execution
-          console.log(`[GranClaw P6.9] Planner failed: ${planResult.reason}, falling back to direct execution`)
+          // P6.11: Planner failed - DO NOT fall through to direct execution
+          // When useQueue=true, we MUST NOT use runSimpleAgentTask
+          console.log(`[GranClaw P6.11] Planner failed: ${planResult.reason} - returning error (no fallback)`)
           trace.addStep({
             stage: 'orchestrator',
             status: 'error',
             label: 'Planner falló',
             detail: planResult.reason || 'No se pudo crear plan'
           })
-        } else {
+
+          const debugSnapshot = trace.getDebugSnapshot()
+          debugSnapshot.source = 'validation'  // P6.11: Use 'validation' for planner failures
+          debugSnapshot.executionConfirmed = false
+          debugSnapshot.error = 'Planner failed'
+          logDebug(debugSnapshot)
+
+          completeTask(
+            task.id,
+            'error',
+            { plannerFailed: true, reason: planResult.reason },
+            'validation',  // P6.11: Use 'validation' for planner failures
+            trace.getSteps(),
+            debugSnapshot,
+            trace.getTotalDurationMs(),
+            `No se pudo crear plan de ejecución: ${planResult.reason || 'Error desconocido'}`
+          )
+
+          // P6.11: Return proper error response - NOT fallback to direct execution
+          ok(res, {
+            success: false,
+            error: `No se pudo planificar la tarea: ${planResult.reason || 'Error desconocido'}`,
+            plannerFailed: true,
+            meta: {
+              requestId: trace.requestId,
+              taskId: task.id,
+              executionMode: executionMode.mode,
+              intentKind: intent.kind,
+              isMultiStep: intent.isMultiStep,
+              hubDecision: hubResult.decisionLog,
+              executionTrace: trace.getSteps(),
+              executionDurationMs: trace.getTotalDurationMs(),
+              tenantId: context.tenant.id,
+              adapterStatus,
+              debugSnapshot,
+              routerDecision: {
+                provider: 'planner-failed',
+                reason: planResult.reason || 'No se pudo crear plan',
+                intentKind: intent.kind
+              }
+            }
+          })
+          return
+        }
+
+        // Planner succeeded - continue with queueing
+        {
           console.log(`[GranClaw P6.9] Plan created: ${planResult.plan.id} with ${planResult.plan.steps.length} steps`)
 
           const queueResult: EnqueueResult = enqueueCompositeTask(
@@ -387,16 +434,61 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
             })
             return
           } else {
-            // Queue failed, log and continue to normal flow (fallback)
-            console.log(`[GranClaw P6.9] Queue failed, falling back to direct execution`)
+            // P6.11: Queue failed - DO NOT fall through to direct execution
+            // When useQueue=true, we MUST NOT use runSimpleAgentTask
+            console.log(`[GranClaw P6.11] Queue failed - returning error (no fallback to direct execution)`)
             trace.addStep({
               stage: 'queue',
               status: 'error',
               label: 'Fallo al encolar',
-              detail: 'Continuando con ejecución directa'
+              detail: 'No se pudo encolar la tarea multistep'
             })
+
+            const debugSnapshot = trace.getDebugSnapshot()
+            debugSnapshot.source = 'queue'
+            debugSnapshot.executionConfirmed = false
+            debugSnapshot.error = 'Queue failed'
+            logDebug(debugSnapshot)
+
+            completeTask(
+              task.id,
+              'error',
+              { queueFailed: true, planId: planResult.plan.id },
+              'queue',
+              trace.getSteps(),
+              debugSnapshot,
+              trace.getTotalDurationMs(),
+              'No se pudo encolar la tarea para ejecución'
+            )
+
+            // P6.11: Return proper error response - NOT fallback to direct execution
+            ok(res, {
+              success: false,
+              error: 'No se pudo encolar la tarea multistep para ejecución',
+              queueFailed: true,
+              meta: {
+                requestId: trace.requestId,
+                taskId: task.id,
+                planId: planResult.plan.id,
+                executionMode: executionMode.mode,
+                intentKind: intent.kind,
+                isMultiStep: intent.isMultiStep,
+                hubDecision: hubResult.decisionLog,
+                executionTrace: trace.getSteps(),
+                executionDurationMs: trace.getTotalDurationMs(),
+                tenantId: context.tenant.id,
+                adapterStatus,
+                debugSnapshot,
+                routerDecision: {
+                  provider: 'queue-failed',
+                  reason: 'No se pudo encolar',
+                  intentKind: intent.kind
+                }
+              }
+            })
+            return
           }
-        } // End of planResult.plan check
+        } // End of planner succeeded block
       }
 
       // Provider 'openclaw' - delegate to OpenClaw (skips capability handling)
@@ -1119,6 +1211,55 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         return
       }
 
+      // P6.11: CRITICAL - Check if multistep task reached fallback (should never happen)
+      // If useQueue=true, we MUST NOT fall through to runSimpleAgentTask
+      if (executionMode.useQueue) {
+        console.log(`[GranClaw P6.11] CRITICAL: Multistep task reached fallback - blocking`)
+        trace.addStep({
+          stage: 'orchestrator',
+          status: 'error',
+          label: 'Ruta inválida para multistep',
+          detail: `Tarea multistep no debería llegar aquí: provider=${routeDecision.provider}`
+        })
+
+        const debugSnapshot = trace.getDebugSnapshot()
+        debugSnapshot.source = 'error'
+        debugSnapshot.executionConfirmed = false
+        debugSnapshot.error = 'Multistep task routing failure'
+        logDebug(debugSnapshot)
+
+        completeTask(
+          task.id,
+          'error',
+          { routingError: true, provider: routeDecision.provider },
+          'error',
+          trace.getSteps(),
+          debugSnapshot,
+          trace.getTotalDurationMs(),
+          'Tarea multistep no pudo ser enrutada correctamente'
+        )
+
+        ok(res, {
+          success: false,
+          error: 'No se pudo procesar la tarea multistep. Por favor, intente de nuevo.',
+          routingError: true,
+          meta: {
+            requestId: trace.requestId,
+            taskId: task.id,
+            executionMode: executionMode.mode,
+            intentKind: intent.kind,
+            provider: routeDecision.provider,
+            hubDecision: hubResult.decisionLog,
+            executionTrace: trace.getSteps(),
+            executionDurationMs: trace.getTotalDurationMs(),
+            tenantId: context.tenant.id,
+            adapterStatus,
+            debugSnapshot
+          }
+        })
+        return
+      }
+
       trace.addStep({
         stage: 'orchestrator',
         status: 'success',
@@ -1529,14 +1670,62 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
         })
 
         if (!planResult.plan) {
-          console.log(`[GranClaw Stream P6.9] Planner failed: ${planResult.reason}, falling back to streaming`)
+          // P6.11R: Planner failed - DO NOT fall through to streaming
+          // When useQueue=true, we MUST NOT use streaming simple execution
+          console.log(`[GranClaw Stream P6.11R] Planner failed: ${planResult.reason} - returning error (no fallback)`)
           trace.addStep({
             stage: 'orchestrator',
             status: 'error',
             label: 'Planner falló (stream)',
             detail: planResult.reason || 'No se pudo crear plan'
           })
-        } else {
+
+          const debugSnapshot = trace.getDebugSnapshot()
+          debugSnapshot.source = 'validation'  // P6.11R: Use 'validation' for planner failures
+          debugSnapshot.executionConfirmed = false
+          debugSnapshot.error = 'Planner failed'
+          logDebug(debugSnapshot)
+
+          completeTask(
+            task.id,
+            'error',
+            { plannerFailed: true, reason: planResult.reason },
+            'validation',  // P6.11R: Use 'validation' for planner failures
+            trace.getSteps(),
+            debugSnapshot,
+            trace.getTotalDurationMs(),
+            `No se pudo crear plan de ejecución: ${planResult.reason || 'Error desconocido'}`
+          )
+
+          // P6.11R: Return proper error response - NOT fallback to streaming
+          ok(res, {
+            success: false,
+            error: `No se pudo planificar la tarea: ${planResult.reason || 'Error desconocido'}`,
+            plannerFailed: true,
+            meta: {
+              requestId: trace.requestId,
+              taskId: task.id,
+              executionMode: executionMode.mode,
+              intentKind: intent.kind,
+              isMultiStep: intent.isMultiStep,
+              hubDecision: hubResult.decisionLog,
+              executionTrace: trace.getSteps(),
+              executionDurationMs: trace.getTotalDurationMs(),
+              tenantId: context.tenant.id,
+              adapterStatus,
+              debugSnapshot,
+              routerDecision: {
+                provider: 'planner-failed',
+                reason: planResult.reason || 'No se pudo crear plan',
+                intentKind: intent.kind
+              }
+            }
+          })
+          return
+        }
+
+        // Planner succeeded - continue with queueing
+        {
           console.log(`[GranClaw Stream P6.9] Plan created: ${planResult.plan.id} with ${planResult.plan.steps.length} steps`)
 
           const queueResult: EnqueueResult = enqueueCompositeTask(
@@ -1624,15 +1813,110 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
             })
             return
           } else {
-            console.log(`[GranClaw Stream P6.9] Queue failed, falling back to streaming`)
+            // P6.11R: Queue failed - DO NOT fall through to streaming
+            // When useQueue=true, we MUST NOT use streaming simple execution
+            console.log(`[GranClaw Stream P6.11R] Queue failed - returning error (no fallback to streaming)`)
             trace.addStep({
               stage: 'queue',
               status: 'error',
               label: 'Fallo al encolar (stream)',
-              detail: 'Continuando con streaming directo'
+              detail: 'No se pudo encolar la tarea multistep'
             })
+
+            const debugSnapshot = trace.getDebugSnapshot()
+            debugSnapshot.source = 'queue'
+            debugSnapshot.executionConfirmed = false
+            debugSnapshot.error = 'Queue failed'
+            logDebug(debugSnapshot)
+
+            completeTask(
+              task.id,
+              'error',
+              { queueFailed: true, planId: planResult.plan.id },
+              'queue',
+              trace.getSteps(),
+              debugSnapshot,
+              trace.getTotalDurationMs(),
+              'No se pudo encolar la tarea para ejecución'
+            )
+
+            // P6.11R: Return proper error response - NOT fallback to streaming
+            ok(res, {
+              success: false,
+              error: 'No se pudo encolar la tarea multistep para ejecución',
+              queueFailed: true,
+              meta: {
+                requestId: trace.requestId,
+                taskId: task.id,
+                executionMode: executionMode.mode,
+                intentKind: intent.kind,
+                isMultiStep: intent.isMultiStep,
+                planId: planResult.plan.id,
+                hubDecision: hubResult.decisionLog,
+                executionTrace: trace.getSteps(),
+                executionDurationMs: trace.getTotalDurationMs(),
+                tenantId: context.tenant.id,
+                adapterStatus,
+                debugSnapshot,
+                routerDecision: {
+                  provider: 'queue-failed',
+                  reason: 'No se pudo encolar',
+                  intentKind: intent.kind
+                }
+              }
+            })
+            return
           }
-        } // End of planResult.plan check
+        } // End of planner success block
+      }
+
+      // P6.11R: CRITICAL - Check if multistep task reached streaming fallback (should never happen)
+      // If useQueue=true, we MUST NOT fall through to runStreamingTask
+      if (executionMode.useQueue) {
+        console.log(`[GranClaw Stream P6.11R] CRITICAL: Multistep task reached streaming fallback - blocking`)
+        trace.addStep({
+          stage: 'orchestrator',
+          status: 'error',
+          label: 'Ruta inválida para multistep (stream)',
+          detail: `Tarea multistep no debería llegar aquí: provider=${routeDecision.provider}`
+        })
+
+        const debugSnapshot = trace.getDebugSnapshot()
+        debugSnapshot.source = 'error'
+        debugSnapshot.executionConfirmed = false
+        debugSnapshot.error = 'Multistep task routing failure (stream)'
+        logDebug(debugSnapshot)
+
+        completeTask(
+          task.id,
+          'error',
+          { routingError: true, provider: routeDecision.provider },
+          'error',
+          trace.getSteps(),
+          debugSnapshot,
+          trace.getTotalDurationMs(),
+          'Tarea multistep no pudo ser enrutada correctamente'
+        )
+
+        ok(res, {
+          success: false,
+          error: 'No se pudo procesar la tarea multistep. Por favor, intente de nuevo.',
+          routingError: true,
+          meta: {
+            requestId: trace.requestId,
+            taskId: task.id,
+            executionMode: executionMode.mode,
+            intentKind: intent.kind,
+            provider: routeDecision.provider,
+            hubDecision: hubResult.decisionLog,
+            executionTrace: trace.getSteps(),
+            executionDurationMs: trace.getTotalDurationMs(),
+            tenantId: context.tenant.id,
+            adapterStatus,
+            debugSnapshot
+          }
+        })
+        return
       }
 
       // FIX 121: Provider 'openclaw' - delegate to OpenClaw streaming

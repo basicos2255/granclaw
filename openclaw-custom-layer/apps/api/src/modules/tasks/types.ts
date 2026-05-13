@@ -3,11 +3,104 @@
  * FEATURE 080: Task System v1
  * P6.3: Added structured result support
  * P6.7: Execution Evidence & Semantic States
+ * P6.13: Validation Explainability & Failure Reasons
  */
 
 import type { DebugSnapshot } from '../orchestrator/trace'
 import type { TaskOutput, TaskArtifact } from '../task-results/types'
 import type { ExecutionEvidence, SemanticExecutionState } from '../task-memory/types'
+
+/**
+ * P6.13: Canonical validation failure reasons
+ * Used to explain WHY a task failed validation
+ */
+export type ValidationFailureReason =
+  | 'missing_required_artifact'
+  | 'missing_required_output'
+  | 'missing_execution_evidence'
+  | 'provider_unavailable'
+  | 'capability_not_configured'
+  | 'capability_not_implemented'
+  | 'permission_required'
+  | 'approval_required'
+  | 'auth_required'
+  | 'pairing_required'
+  | 'unsupported_action'
+  | 'unsafe_action_blocked'
+  | 'download_failed'
+  | 'browser_failed'
+  | 'planner_failed'
+  | 'queue_failed'
+  | 'execution_timeout'
+  | 'no_actions_executed'
+  | 'mock_provider_used'
+  | 'unknown'
+
+/**
+ * P6.13: Recovery action types
+ * Tells UI what actions are available for user
+ */
+export type RecoveryActionType =
+  | 'retry'
+  | 'retry_with_browser'
+  | 'retry_with_replan'
+  | 'configure_capability'
+  | 'test_capability'
+  | 'approve_action'
+  | 'provide_source'
+  | 'provide_input'
+  | 'repair_connection'
+  | 'contact_support'
+  | 'view_details'
+  | 'cancel'
+
+/**
+ * P6.13: Recovery action for UI
+ */
+export interface RecoveryAction {
+  type: RecoveryActionType
+  label: string
+  description?: string
+  /** API endpoint to call (if applicable) */
+  endpoint?: string
+  /** Navigation path (if applicable) */
+  navigateTo?: string
+  /** Whether this is the primary suggested action */
+  primary?: boolean
+}
+
+/**
+ * P6.13: Human-readable task failure explanation
+ * Used to explain validation failures to users
+ */
+export interface TaskFailureExplanation {
+  /** Canonical failure code */
+  code: ValidationFailureReason
+  /** Human-readable title (short) */
+  title: string
+  /** Human-readable explanation (user-friendly) */
+  humanMessage: string
+  /** Technical message (for debugging) */
+  technicalMessage?: string
+  /** Which step failed (if multi-step) */
+  failedStep?: string
+  /** Which capability was involved */
+  capability?: string
+  /** Which provider was used/expected */
+  provider?: string
+  /** What artifact was required but missing */
+  requiredArtifact?: string
+  /** What output was required but missing */
+  requiredOutput?: string
+  /** Available recovery actions */
+  recoveryActions: RecoveryAction[]
+  /** Can user retry this task */
+  canRetry: boolean
+  /** Can user repair the capability */
+  canRepair: boolean
+  /** Can user request replanning */
+  canReplan: boolean
+}
 
 /**
  * Estado de una tarea (technical)
@@ -81,6 +174,10 @@ export interface GranClawTask {
   retryCount?: number
   /** Last retry job ID in queue */
   lastRetryJobId?: string
+
+  // P6.13: Failure explanation for validation errors
+  /** Human-readable failure explanation */
+  failureExplanation?: TaskFailureExplanation
 }
 
 /**
@@ -125,4 +222,7 @@ export interface UpdateTaskInput {
   threadId?: string
   retryCount?: number
   lastRetryJobId?: string
+
+  // P6.13: Failure explanation
+  failureExplanation?: TaskFailureExplanation
 }

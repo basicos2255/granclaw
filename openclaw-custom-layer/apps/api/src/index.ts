@@ -50,7 +50,8 @@ import { handleListSessions, handleGetSession, handleCreateSession, handleAddMes
 // P6.12: Added handleRetryTask, handleCancelTask, handleRepairTask, handleGetTaskTruth
 import { handleTasks, handleGetTaskById, handleGetTaskResult, handleExecuteSteps, handleReconcileTask, handleReconcileAllTasks, handleRetryTask, handleCancelTask, handleRepairTask, handleGetTaskTruth } from './modules/tasks'
 import { handleGetToolProposals, handleGetToolProposalById, handleApproveToolProposal, handleRejectToolProposal, handleArchiveToolProposal } from './modules/tool-proposals'
-import { handleGetCapabilities, handleGetCapabilityById, handleEnableCapability, handleDisableCapability, handleDeleteCapability } from './modules/capabilities'
+// P6.13: Added capability readiness handlers
+import { handleGetCapabilities, handleGetCapabilityById, handleEnableCapability, handleDisableCapability, handleDeleteCapability, handleGetAllCapabilitiesReadiness, handleGetCapabilityReadiness, handleTestCapability } from './modules/capabilities'
 // FIX 113: OS Tools routes
 import { handleGetOSTools, handleGetPendingConfirmations, handleConfirmOSTool, handleCleanupOSTools } from './modules/os-tools'
 // FEATURE 120: Execution Policy routes
@@ -248,6 +249,8 @@ const getRoutes: Record<string, RouteHandler> = {
   '/tasks': handleTasks,
   '/tool-proposals': handleGetToolProposals,
   '/capabilities': handleGetCapabilities,
+  // P6.13: Capability readiness
+  '/capabilities/readiness': handleGetAllCapabilitiesReadiness,
   '/audit': handleAudit,
   '/tools': wrapHandler(handleListTools),
   '/openclaw/status': wrapHandler(handleOpenClawStatus),
@@ -492,6 +495,15 @@ const postDynamicRoutes: DynamicRoute[] = [
   {
     pattern: /^\/capabilities\/([^/]+)\/disable$/,
     handler: handleDisableCapability
+  },
+  // P6.13: Capability readiness and test
+  {
+    pattern: /^\/capabilities\/([^/]+)\/readiness$/,
+    handler: handleGetCapabilityReadiness
+  },
+  {
+    pattern: /^\/capabilities\/([^/]+)\/test$/,
+    handler: handleTestCapability
   },
   {
     pattern: /^\/granclaw-hub\/config\/([^/]+)$/,

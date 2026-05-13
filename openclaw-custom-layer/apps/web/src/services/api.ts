@@ -460,6 +460,37 @@ export interface TaskArtifact {
   metadata?: Record<string, unknown>
 }
 
+/**
+ * P6.13: Recovery action for UI
+ */
+export interface RecoveryAction {
+  type: string
+  label: string
+  description?: string
+  endpoint?: string
+  navigateTo?: string
+  primary?: boolean
+}
+
+/**
+ * P6.13: Human-readable task failure explanation
+ */
+export interface TaskFailureExplanation {
+  code: string
+  title: string
+  humanMessage: string
+  technicalMessage?: string
+  failedStep?: string
+  capability?: string
+  provider?: string
+  requiredArtifact?: string
+  requiredOutput?: string
+  recoveryActions: RecoveryAction[]
+  canRetry: boolean
+  canRepair: boolean
+  canReplan: boolean
+}
+
 export interface GranClawTask {
   id: string
   status: TaskStatus
@@ -482,6 +513,9 @@ export interface GranClawTask {
   outputs?: TaskOutput[]
   artifacts?: TaskArtifact[]
   provider?: string
+
+  // P6.13: Failure explanation
+  failureExplanation?: TaskFailureExplanation
 }
 
 /**

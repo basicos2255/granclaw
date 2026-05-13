@@ -4,6 +4,7 @@
  * FIX 104: Capability Key Normalization
  * FIX 105: Canonical Capability Groups & Cleanup
  * FIX 111: Capability Dispatcher
+ * P6.13: Capability Readiness
  */
 
 export * from './types'
@@ -21,5 +22,9 @@ export {
   handleGetCapabilityById,
   handleEnableCapability,
   handleDisableCapability,
-  handleDeleteCapability
+  handleDeleteCapability,
+  // P6.13: Capability readiness handlers
+  handleGetAllCapabilitiesReadiness,
+  handleGetCapabilityReadiness,
+  handleTestCapability
 } from './routes'

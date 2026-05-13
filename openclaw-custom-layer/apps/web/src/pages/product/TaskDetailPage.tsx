@@ -301,8 +301,135 @@ export function TaskDetailPage({ taskId }: TaskDetailPageProps) {
         </div>
       )}
 
-      {/* Error */}
-      {task.error && (
+      {/* P6.13: Failure Explanation */}
+      {task.failureExplanation && (
+        <div style={{
+          ...cardStyle,
+          backgroundColor: '#fef2f2',
+          borderColor: '#fecaca',
+          borderLeftWidth: '4px',
+          borderLeftColor: '#dc2626'
+        }}>
+          {/* What happened */}
+          <div style={{ marginBottom: '16px' }}>
+            <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '4px' }}>
+              Que paso
+            </div>
+            <div style={{ fontSize: '16px', fontWeight: '600', color: '#991b1b' }}>
+              {task.failureExplanation.title}
+            </div>
+          </div>
+
+          {/* Human message */}
+          <div style={{ marginBottom: '16px' }}>
+            <div style={{ fontSize: '14px', color: '#7f1d1d', lineHeight: '1.5' }}>
+              {task.failureExplanation.humanMessage}
+            </div>
+          </div>
+
+          {/* What was missing */}
+          {(task.failureExplanation.capability || task.failureExplanation.requiredArtifact || task.failureExplanation.requiredOutput) && (
+            <div style={{ marginBottom: '16px' }}>
+              <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px' }}>
+                Que falto
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {task.failureExplanation.capability && (
+                  <span style={{
+                    padding: '4px 10px',
+                    backgroundColor: '#fee2e2',
+                    color: '#991b1b',
+                    borderRadius: '4px',
+                    fontSize: '12px'
+                  }}>
+                    Capacidad: {task.failureExplanation.capability}
+                  </span>
+                )}
+                {task.failureExplanation.requiredArtifact && (
+                  <span style={{
+                    padding: '4px 10px',
+                    backgroundColor: '#fee2e2',
+                    color: '#991b1b',
+                    borderRadius: '4px',
+                    fontSize: '12px'
+                  }}>
+                    Artifact: {task.failureExplanation.requiredArtifact}
+                  </span>
+                )}
+                {task.failureExplanation.requiredOutput && (
+                  <span style={{
+                    padding: '4px 10px',
+                    backgroundColor: '#fee2e2',
+                    color: '#991b1b',
+                    borderRadius: '4px',
+                    fontSize: '12px'
+                  }}>
+                    Output: {task.failureExplanation.requiredOutput}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Recovery Actions */}
+          {task.failureExplanation.recoveryActions.length > 0 && (
+            <div>
+              <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px' }}>
+                Que puedes hacer
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {task.failureExplanation.recoveryActions.map((action, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => {
+                      if (action.navigateTo) {
+                        navigate(action.navigateTo.replace('{id}', taskId))
+                      } else if (action.type === 'retry') {
+                        handleRetry()
+                      }
+                    }}
+                    style={{
+                      padding: '8px 14px',
+                      backgroundColor: action.primary ? '#3b82f6' : '#f1f5f9',
+                      color: action.primary ? 'white' : '#475569',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '13px',
+                      cursor: 'pointer',
+                      fontWeight: action.primary ? '500' : '400'
+                    }}
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Technical details (collapsed) */}
+          {task.failureExplanation.technicalMessage && (
+            <details style={{ marginTop: '16px' }}>
+              <summary style={{ fontSize: '12px', color: '#94a3b8', cursor: 'pointer' }}>
+                Detalles tecnicos
+              </summary>
+              <div style={{
+                marginTop: '8px',
+                padding: '8px',
+                backgroundColor: '#fef2f2',
+                borderRadius: '4px',
+                fontSize: '11px',
+                fontFamily: 'monospace',
+                color: '#7f1d1d'
+              }}>
+                {task.failureExplanation.technicalMessage}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+
+      {/* Legacy Error (fallback if no failureExplanation) */}
+      {!task.failureExplanation && task.error && (
         <div style={{
           ...cardStyle,
           backgroundColor: '#fef2f2',

@@ -9093,3 +9093,130 @@ export async function getTaskTruth(taskId)         // /tasks/:id/truth
 - `docs/reports/claude/P6_12_queue_operations_audit.md`
 - `docs/reports/claude/P6_12_self_audit.md`
 - `docs/reports/claude/P6_12_queue_operations_retry_report.md`
+
+---
+
+## P6.13 — Validation Explainability, Capability Readiness & Real Download Diagnostics
+
+**Fecha**: 2026-05-13
+**Estado**: COMPLETADO
+
+### Problema
+
+Las tareas fallidas mostraban:
+```
+Estado: Error
+Fuente: via validation
+```
+
+Sin explicación de qué falló, qué capacidad estaba involucrada, o qué hacer.
+
+### Solución: Failure Explanation Model
+
+```typescript
+interface TaskFailureExplanation {
+  code: ValidationFailureReason  // 'missing_required_artifact', etc.
+  title: string                  // "No se completó la descarga"
+  humanMessage: string           // Explicación detallada
+  technicalMessage?: string      // Para debugging
+  capability?: string            // 'download', 'browser', etc.
+  requiredArtifact?: string      // "Archivo descargado"
+  recoveryActions: RecoveryAction[]
+  canRetry: boolean
+  canRepair: boolean
+  canReplan: boolean
+}
+```
+
+### Validation Failure Reasons
+
+```typescript
+type ValidationFailureReason =
+  | 'missing_required_artifact'
+  | 'missing_required_output'
+  | 'missing_execution_evidence'
+  | 'capability_not_configured'
+  | 'capability_not_implemented'
+  | 'download_failed'
+  | 'browser_failed'
+  | 'no_actions_executed'
+  | 'mock_provider_used'
+  | 'unknown'
+```
+
+### Capability Readiness Endpoints
+
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| GET | /capabilities/readiness | Estado de todas las capacidades |
+| GET | /capabilities/:cap/readiness | Estado de una capacidad específica |
+| POST | /capabilities/:cap/test | Probar una capacidad |
+
+### Capability Implementation Status
+
+```typescript
+browser: { implemented: false }     // Requiere Playwright
+download: { implemented: false }    // Requiere browser
+filesystem: { implemented: true }   // Node.js nativo
+web_search: { implemented: true }   // Via OpenClaw
+install_app: { implemented: false } // Peligroso, no implementado
+```
+
+### Tasks Page UX (Antes/Después)
+
+**Antes:**
+```
+[Error] via validation
+```
+
+**Después:**
+```
+No se completó la descarga
+La tarea requería descargar un archivo, pero no se generó...
+Capacidad: download
+```
+
+### Task Detail UX
+
+Nueva sección con:
+- "Qué pasó" - título del error
+- "Qué faltó" - capacidad, artifact, output
+- "Qué puedes hacer" - botones de acción
+- "Detalles técnicos" - información colapsable
+
+### Recovery Actions por Failure
+
+| Código | Acciones |
+|--------|----------|
+| missing_required_artifact | Configurar descarga, Reintentar, Proporcionar URL |
+| capability_not_implemented | Ver detalles, Cancelar |
+| download_failed | Reintentar con navegador, Cambiar URL |
+| no_actions_executed | Dar más detalles, Verificar capacidades |
+
+### Archivos Modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| tasks/types.ts | +80 líneas: tipos de failure |
+| tasks/service.ts | +280 líneas: buildFailureExplanation() |
+| capabilities/types.ts | +45 líneas: CapabilityReadiness |
+| capabilities/service.ts | +150 líneas: readiness functions |
+| capabilities/routes.ts | +90 líneas: endpoints |
+| web/api.ts | +30 líneas: tipos frontend |
+| TasksPage.tsx | +30 líneas: display de error |
+| TaskDetailPage.tsx | +100 líneas: sección explicación |
+
+### Verificaciones
+
+- ✅ npm run check (api)
+- ✅ npm run check (web)
+- ✅ npm run build (api)
+- ✅ "via validation" reemplazado por explicación humana
+- ✅ Capability readiness endpoints funcionando
+- ✅ Recovery actions en UI
+
+### Reportes Generados
+
+- `docs/reports/claude/P6_13_validation_explainability_audit.md`
+- `docs/reports/claude/P6_13_self_audit.md`
+- `docs/reports/claude/P6_13_validation_capability_report.md`

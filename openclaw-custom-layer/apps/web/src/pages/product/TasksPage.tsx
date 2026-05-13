@@ -356,11 +356,49 @@ export function TasksPage() {
                         {String(task.outputs[0].value).length > 150 && '...'}
                       </div>
                     )}
-                    {task.error && (
+                    {/* P6.13: Show failure explanation if available, otherwise fallback to error */}
+                    {task.failureExplanation ? (
+                      <div style={{
+                        fontSize: '13px',
+                        marginTop: '8px',
+                        padding: '10px',
+                        backgroundColor: '#fef2f2',
+                        borderRadius: '6px',
+                        borderLeft: '3px solid #dc2626'
+                      }}>
+                        <div style={{ fontWeight: '600', color: '#991b1b', marginBottom: '4px' }}>
+                          {task.failureExplanation.title}
+                        </div>
+                        <div style={{ color: '#7f1d1d' }}>
+                          {task.failureExplanation.humanMessage}
+                        </div>
+                        {task.failureExplanation.capability && (
+                          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>
+                            Capacidad: {task.failureExplanation.capability}
+                          </div>
+                        )}
+                      </div>
+                    ) : task.error ? (
                       <div style={{ fontSize: '13px', color: '#dc2626', marginTop: '8px' }}>
                         Error: {task.error}
                       </div>
-                    )}
+                    ) : (task.status === 'error' && task.source === 'validation') ? (
+                      <div style={{
+                        fontSize: '13px',
+                        marginTop: '8px',
+                        padding: '10px',
+                        backgroundColor: '#fef2f2',
+                        borderRadius: '6px',
+                        borderLeft: '3px solid #dc2626'
+                      }}>
+                        <div style={{ fontWeight: '600', color: '#991b1b', marginBottom: '4px' }}>
+                          Error de validación
+                        </div>
+                        <div style={{ color: '#7f1d1d' }}>
+                          {task.reason || 'La tarea no pudo completarse. Revisa los detalles para más información.'}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                   <div style={{ textAlign: 'right', flexShrink: 0 }}>
                     <div style={{ fontSize: '12px', color: '#94a3b8' }}>

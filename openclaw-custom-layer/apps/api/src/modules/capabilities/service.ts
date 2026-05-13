@@ -2,11 +2,12 @@
  * Capabilities Service
  * FEATURE 091: Approved Capabilities v1
  * FIX 104: Capability Key Normalization & Deduplication
+ * P6.13: Capability Readiness
  */
 
 import { read, write, getById } from '../../storage/file-db'
 import { normalizeCapabilityKey } from './capability-normalizer'
-import type { ApprovedCapability, CreateCapabilityInput } from './types'
+import type { ApprovedCapability, CreateCapabilityInput, CapabilityReadiness } from './types'
 import type { ToolProposal } from '../tool-proposals/types'
 
 const ENTITY = 'capabilities'
@@ -299,4 +300,181 @@ export function deduplicateCapabilities(tenantId?: string): { deleted: number; k
   }
 
   return { deleted: deletedCount, kept: keptCount }
+}
+
+// ============================================================================
+// P6.13: CAPABILITY READINESS
+// ============================================================================
+
+/**
+ * P6.13: System capability implementation status
+ * Maps which capabilities are actually implemented vs stubs
+ */
+const CAPABILITY_IMPLEMENTATION_STATUS: Record<string, {
+  implemented: boolean
+  provider?: string
+  requiresApproval: boolean
+  limitations?: string[]
+  missingSetup?: string[]
+}> = {
+  browser: {
+    implemented: false, // Stub - requires Playwright
+    provider: 'playwright',
+    requiresApproval: true,
+    limitations: ['Requires Playwright installation', 'Only works on server with display'],
+    missingSetup: ['Playwright not installed', 'Browser automation not configured']
+  },
+  download: {
+    implemented: false, // Stub - requires browser or HTTP client
+    provider: 'browser',
+    requiresApproval: true,
+    limitations: ['Requires browser capability', 'File storage not configured'],
+    missingSetup: ['Download directory not configured', 'Browser capability required']
+  },
+  filesystem: {
+    implemented: true,
+    provider: 'node',
+    requiresApproval: true,
+    limitations: ['Sandboxed to allowed paths']
+  },
+  install_app: {
+    implemented: false, // Very dangerous - not implemented
+    provider: 'os',
+    requiresApproval: true,
+    limitations: ['Requires explicit approval', 'Windows only'],
+    missingSetup: ['OS tools capability not enabled', 'Requires admin approval']
+  },
+  web_search: {
+    implemented: true,
+    provider: 'openclaw',
+    requiresApproval: false,
+    limitations: ['Depends on OpenClaw availability']
+  },
+  ftp: {
+    implemented: false, // Stub
+    provider: 'ftp-client',
+    requiresApproval: true,
+    limitations: ['Requires FTP client configuration'],
+    missingSetup: ['FTP credentials not configured']
+  },
+  email: {
+    implemented: false, // Stub
+    provider: 'smtp',
+    requiresApproval: true,
+    limitations: ['Requires email provider configuration'],
+    missingSetup: ['SMTP settings not configured', 'Email account not connected']
+  },
+  whatsapp: {
+    implemented: false, // Stub
+    provider: 'whatsapp-business',
+    requiresApproval: true,
+    limitations: ['Requires WhatsApp Business API'],
+    missingSetup: ['WhatsApp Business API not configured']
+  },
+  calendar: {
+    implemented: false, // Stub
+    provider: 'google-calendar',
+    requiresApproval: true,
+    limitations: ['Requires calendar provider OAuth'],
+    missingSetup: ['Calendar provider not connected']
+  },
+  screenshot: {
+    implemented: false, // Requires browser
+    provider: 'browser',
+    requiresApproval: false,
+    limitations: ['Requires browser capability'],
+    missingSetup: ['Browser capability required']
+  },
+  clipboard: {
+    implemented: false, // Requires OS access
+    provider: 'os',
+    requiresApproval: true,
+    limitations: ['Requires OS tools capability'],
+    missingSetup: ['OS tools capability not enabled']
+  }
+}
+
+/**
+ * P6.13: Get readiness status for a specific capability
+ */
+export function getCapabilityReadiness(
+  tenantId: string,
+  capabilityType: string
+): CapabilityReadiness {
+  const normalizedType = capabilityType.toLowerCase()
+  const implStatus = CAPABILITY_IMPLEMENTATION_STATUS[normalizedType]
+
+  // Check if capability is approved/configured for tenant
+  const approvedCapability = getEnabledCapabilityByKey(tenantId, normalizedType)
+  const configured = approvedCapability !== null
+
+  // Default for unknown capabilities
+  if (!implStatus) {
+    return {
+      capability: normalizedType,
+      available: false,
+      configured,
+      implemented: false,
+      requiresApproval: true,
+      missingSetup: ['Esta capacidad no está reconocida por GranClaw'],
+      health: 'unknown',
+      statusMessage: `La capacidad "${normalizedType}" no es reconocida por GranClaw.`
+    }
+  }
+
+  const { implemented, provider, requiresApproval, limitations, missingSetup } = implStatus
+
+  // Determine availability and health
+  const available = implemented && configured
+  let health: 'healthy' | 'degraded' | 'unavailable' | 'unknown' = 'unknown'
+  let statusMessage: string
+
+  if (!implemented) {
+    health = 'unavailable'
+    statusMessage = `La capacidad "${normalizedType}" aún no está implementada en GranClaw. ${missingSetup?.[0] || ''}`
+  } else if (!configured) {
+    health = 'degraded'
+    statusMessage = `La capacidad "${normalizedType}" está implementada pero no está configurada para tu cuenta.`
+  } else {
+    health = 'healthy'
+    statusMessage = `La capacidad "${normalizedType}" está disponible y configurada.`
+  }
+
+  return {
+    capability: normalizedType,
+    available,
+    configured,
+    implemented,
+    provider,
+    requiresApproval,
+    missingSetup: !configured ? missingSetup : undefined,
+    limitations,
+    health,
+    statusMessage
+  }
+}
+
+/**
+ * P6.13: Get readiness status for all system capabilities
+ */
+export function getAllCapabilitiesReadiness(tenantId: string): CapabilityReadiness[] {
+  const capabilities = Object.keys(CAPABILITY_IMPLEMENTATION_STATUS)
+  return capabilities.map(cap => getCapabilityReadiness(tenantId, cap))
+}
+
+/**
+ * P6.13: Check if capabilities required for a task are ready
+ */
+export function checkTaskCapabilities(
+  tenantId: string,
+  requiredCapabilities: string[]
+): { allReady: boolean; results: CapabilityReadiness[]; blocking: CapabilityReadiness[] } {
+  const results = requiredCapabilities.map(cap => getCapabilityReadiness(tenantId, cap))
+  const blocking = results.filter(r => !r.available)
+
+  return {
+    allReady: blocking.length === 0,
+    results,
+    blocking
+  }
 }

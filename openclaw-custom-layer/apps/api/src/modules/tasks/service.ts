@@ -8,7 +8,7 @@
  */
 
 import { read, write, getById, update as dbUpdate } from '../../storage/file-db'
-import type { GranClawTask, CreateTaskInput, UpdateTaskInput, TaskStatus, HumanTaskStatus } from './types'
+import type { GranClawTask, CreateTaskInput, UpdateTaskInput, TaskStatus, HumanTaskStatus, TaskFailureExplanation, ValidationFailureReason, RecoveryAction } from './types'
 import type { ExecutionEvidence, TaskActionType } from '../task-memory/types'
 import { validateExecutionEvidence } from '../task-memory/types'
 import { formatTaskResult, saveTaskResult } from '../task-results'
@@ -16,6 +16,282 @@ import { formatTaskResult, saveTaskResult } from '../task-results'
 import { syncThreadWithTask } from '../task-threads'
 
 const ENTITY = 'tasks'
+
+/**
+ * P6.13: Build human-readable failure explanation from validation result
+ */
+export function buildFailureExplanation(
+  missingEvidence: string[],
+  warnings: string[],
+  actionType?: TaskActionType,
+  provider?: string,
+  taskInput?: string
+): TaskFailureExplanation {
+  // Determine primary failure reason
+  const code = determineFailureCode(missingEvidence, warnings)
+
+  // Build human message and recovery actions
+  const { title, humanMessage, technicalMessage, recoveryActions } = getFailureDetails(
+    code,
+    missingEvidence,
+    warnings,
+    actionType,
+    taskInput
+  )
+
+  // Determine capabilities
+  const capability = determineCapabilityFromInput(taskInput)
+  const requiredArtifact = missingEvidence.find(m => m.includes('artifact'))
+    ? determineRequiredArtifact(actionType, taskInput)
+    : undefined
+  const requiredOutput = missingEvidence.find(m => m.includes('output'))
+    ? 'Resultado de ejecución'
+    : undefined
+
+  return {
+    code,
+    title,
+    humanMessage,
+    technicalMessage: technicalMessage || missingEvidence.join('; '),
+    capability,
+    provider,
+    requiredArtifact,
+    requiredOutput,
+    recoveryActions,
+    canRetry: code !== 'capability_not_implemented' && code !== 'unsafe_action_blocked',
+    canRepair: code === 'capability_not_configured' || code === 'auth_required' || code === 'pairing_required',
+    canReplan: code !== 'unsafe_action_blocked'
+  }
+}
+
+/**
+ * P6.13: Map missing evidence strings to canonical failure code
+ */
+function determineFailureCode(missingEvidence: string[], warnings: string[]): ValidationFailureReason {
+  const evidenceStr = missingEvidence.join(' ').toLowerCase()
+  const warningStr = warnings.join(' ').toLowerCase()
+
+  // Check for specific patterns
+  if (evidenceStr.includes('artifacts required') || evidenceStr.includes('artifact count is zero')) {
+    return 'missing_required_artifact'
+  }
+  if (evidenceStr.includes('outputs required') || evidenceStr.includes('output count is zero')) {
+    return 'missing_required_output'
+  }
+  if (evidenceStr.includes('no actions executed')) {
+    return 'no_actions_executed'
+  }
+  if (evidenceStr.includes('executionid') || evidenceStr.includes('timestamps')) {
+    return 'missing_execution_evidence'
+  }
+  if (evidenceStr.includes('provider')) {
+    return 'provider_unavailable'
+  }
+  if (evidenceStr.includes('execution error')) {
+    // Try to determine more specific error
+    if (evidenceStr.includes('timeout')) return 'execution_timeout'
+    if (evidenceStr.includes('download')) return 'download_failed'
+    if (evidenceStr.includes('browser')) return 'browser_failed'
+    return 'unknown'
+  }
+  if (evidenceStr.includes('validation failed')) {
+    return 'unknown'
+  }
+  if (warningStr.includes('mock provider')) {
+    return 'mock_provider_used'
+  }
+
+  return 'unknown'
+}
+
+/**
+ * P6.13: Get human-readable failure details for a failure code
+ */
+function getFailureDetails(
+  code: ValidationFailureReason,
+  missingEvidence: string[],
+  warnings: string[],
+  actionType?: TaskActionType,
+  taskInput?: string
+): {
+  title: string
+  humanMessage: string
+  technicalMessage?: string
+  recoveryActions: RecoveryAction[]
+} {
+  const isDownloadRelated = taskInput?.toLowerCase().match(/descarg|download|baja/i)
+  const isInstallRelated = taskInput?.toLowerCase().match(/instal|setup/i)
+  const isBrowserRelated = taskInput?.toLowerCase().match(/naveg|browser|web/i)
+
+  switch (code) {
+    case 'missing_required_artifact':
+      if (isDownloadRelated) {
+        return {
+          title: 'No se completó la descarga',
+          humanMessage: 'La tarea requería descargar un archivo, pero no se generó ningún archivo descargado. Esto puede ocurrir si el navegador o la capacidad de descarga no están configurados.',
+          recoveryActions: [
+            { type: 'configure_capability', label: 'Configurar descarga', navigateTo: '/capabilities?filter=download', primary: true },
+            { type: 'retry_with_browser', label: 'Reintentar con navegador', endpoint: '/tasks/{id}/retry?mode=browser' },
+            { type: 'provide_source', label: 'Proporcionar URL', description: 'Indica una URL específica para descargar' },
+            { type: 'view_details', label: 'Ver detalles', navigateTo: '/tasks/{id}' }
+          ]
+        }
+      }
+      return {
+        title: 'Falta archivo requerido',
+        humanMessage: 'La tarea debía generar un archivo (artifact) pero no se creó ninguno. Verifica que la capacidad necesaria esté configurada.',
+        recoveryActions: [
+          { type: 'configure_capability', label: 'Configurar capacidad', navigateTo: '/capabilities', primary: true },
+          { type: 'retry', label: 'Reintentar', endpoint: '/tasks/{id}/retry' },
+          { type: 'view_details', label: 'Ver detalles', navigateTo: '/tasks/{id}' }
+        ]
+      }
+
+    case 'missing_required_output':
+      return {
+        title: 'Sin resultado esperado',
+        humanMessage: 'La tarea se ejecutó pero no produjo el resultado esperado. Es posible que el proveedor no haya devuelto datos.',
+        recoveryActions: [
+          { type: 'retry', label: 'Reintentar', endpoint: '/tasks/{id}/retry', primary: true },
+          { type: 'retry_with_replan', label: 'Replanificar', endpoint: '/tasks/{id}/retry?mode=replan' },
+          { type: 'view_details', label: 'Ver detalles', navigateTo: '/tasks/{id}' }
+        ]
+      }
+
+    case 'no_actions_executed':
+      return {
+        title: 'No se ejecutaron acciones',
+        humanMessage: 'La tarea no pudo ejecutar ninguna acción. Es posible que falte configuración o que la solicitud no se haya entendido correctamente.',
+        recoveryActions: [
+          { type: 'provide_input', label: 'Dar más detalles', description: 'Reformula la solicitud con más información', primary: true },
+          { type: 'configure_capability', label: 'Verificar capacidades', navigateTo: '/capabilities' },
+          { type: 'view_details', label: 'Ver detalles', navigateTo: '/tasks/{id}' }
+        ]
+      }
+
+    case 'capability_not_configured':
+      return {
+        title: 'Capacidad no configurada',
+        humanMessage: 'La capacidad necesaria para esta tarea no está configurada. Configúrala primero.',
+        recoveryActions: [
+          { type: 'configure_capability', label: 'Configurar ahora', navigateTo: '/capabilities', primary: true },
+          { type: 'test_capability', label: 'Probar capacidad', endpoint: '/capabilities/{capability}/test' },
+          { type: 'view_details', label: 'Ver detalles', navigateTo: '/tasks/{id}' }
+        ]
+      }
+
+    case 'capability_not_implemented':
+      return {
+        title: 'Capacidad no disponible',
+        humanMessage: 'Esta capacidad aún no está implementada en GranClaw. Estamos trabajando en ello.',
+        recoveryActions: [
+          { type: 'view_details', label: 'Ver detalles', navigateTo: '/tasks/{id}' },
+          { type: 'cancel', label: 'Cancelar tarea', endpoint: '/tasks/{id}/cancel' }
+        ]
+      }
+
+    case 'download_failed':
+      return {
+        title: 'Descarga fallida',
+        humanMessage: 'No se pudo completar la descarga. Verifica que la URL sea accesible y que el navegador esté configurado.',
+        recoveryActions: [
+          { type: 'retry_with_browser', label: 'Reintentar con navegador', endpoint: '/tasks/{id}/retry?mode=browser', primary: true },
+          { type: 'provide_source', label: 'Cambiar URL', description: 'Proporciona una URL alternativa' },
+          { type: 'configure_capability', label: 'Configurar descarga', navigateTo: '/capabilities?filter=download' }
+        ]
+      }
+
+    case 'browser_failed':
+      return {
+        title: 'Navegador no disponible',
+        humanMessage: 'No se pudo acceder al navegador automatizado. Verifica que esté configurado correctamente.',
+        recoveryActions: [
+          { type: 'configure_capability', label: 'Configurar navegador', navigateTo: '/capabilities?filter=browser', primary: true },
+          { type: 'test_capability', label: 'Probar navegador', endpoint: '/capabilities/browser/test' },
+          { type: 'retry', label: 'Reintentar', endpoint: '/tasks/{id}/retry' }
+        ]
+      }
+
+    case 'mock_provider_used':
+      return {
+        title: 'Ejecutado en simulación',
+        humanMessage: 'La tarea se ejecutó usando un proveedor simulado (mock). El resultado no es real. Configura un proveedor real para obtener resultados reales.',
+        recoveryActions: [
+          { type: 'configure_capability', label: 'Configurar proveedor real', navigateTo: '/capabilities', primary: true },
+          { type: 'view_details', label: 'Ver detalles', navigateTo: '/tasks/{id}' }
+        ]
+      }
+
+    case 'unsafe_action_blocked':
+      return {
+        title: 'Acción bloqueada por seguridad',
+        humanMessage: 'Esta acción fue bloqueada por razones de seguridad. GranClaw no ejecuta acciones potencialmente peligrosas sin aprobación explícita.',
+        recoveryActions: [
+          { type: 'approve_action', label: 'Revisar y aprobar', navigateTo: '/tasks/{id}/approve', primary: true },
+          { type: 'view_details', label: 'Ver detalles', navigateTo: '/tasks/{id}' },
+          { type: 'cancel', label: 'Cancelar', endpoint: '/tasks/{id}/cancel' }
+        ]
+      }
+
+    case 'execution_timeout':
+      return {
+        title: 'Tiempo de ejecución agotado',
+        humanMessage: 'La tarea tardó demasiado en completarse y fue cancelada. Intenta con una solicitud más simple o divide la tarea.',
+        recoveryActions: [
+          { type: 'retry', label: 'Reintentar', endpoint: '/tasks/{id}/retry', primary: true },
+          { type: 'view_details', label: 'Ver detalles', navigateTo: '/tasks/{id}' }
+        ]
+      }
+
+    default:
+      return {
+        title: 'Error de validación',
+        humanMessage: 'La tarea no pudo completarse correctamente. Revisa los detalles para más información.',
+        technicalMessage: missingEvidence.length > 0 ? missingEvidence.join('; ') : warnings.join('; '),
+        recoveryActions: [
+          { type: 'retry', label: 'Reintentar', endpoint: '/tasks/{id}/retry', primary: true },
+          { type: 'view_details', label: 'Ver detalles', navigateTo: '/tasks/{id}' }
+        ]
+      }
+  }
+}
+
+/**
+ * P6.13: Determine capability from task input
+ */
+function determineCapabilityFromInput(taskInput?: string): string | undefined {
+  if (!taskInput) return undefined
+  const input = taskInput.toLowerCase()
+
+  if (input.match(/descarg|download|baja/i)) return 'download'
+  if (input.match(/instal|setup/i)) return 'install'
+  if (input.match(/naveg|browser|web.*abr/i)) return 'browser'
+  if (input.match(/busca|search|encuentra/i)) return 'search'
+  if (input.match(/email|correo|mail/i)) return 'email'
+  if (input.match(/whatsapp/i)) return 'whatsapp'
+  if (input.match(/ftp/i)) return 'ftp'
+  if (input.match(/calendar|agenda|cita/i)) return 'calendar'
+
+  return undefined
+}
+
+/**
+ * P6.13: Determine what artifact was required
+ */
+function determineRequiredArtifact(actionType?: TaskActionType, taskInput?: string): string {
+  if (actionType === 'download_file') return 'Archivo descargado'
+  if (actionType === 'navigate_url') return 'Captura de página web'
+  if (actionType === 'create_file') return 'Archivo creado'
+
+  if (taskInput) {
+    const input = taskInput.toLowerCase()
+    if (input.match(/descarg|download/i)) return 'Archivo descargado'
+    if (input.match(/captur|screenshot/i)) return 'Captura de pantalla'
+    if (input.match(/crear.*archivo|create.*file/i)) return 'Archivo creado'
+  }
+
+  return 'Archivo o resultado'
+}
 
 /**
  * Genera ID único para tarea
@@ -100,6 +376,7 @@ export function setTaskStatus(id: string, status: TaskStatus): GranClawTask | nu
  * Completa una tarea con resultado
  * P6.3: Also generates and saves structured TaskResult
  * P6.8: Syncs thread status with task status
+ * P6.13: Builds failure explanation for error cases
  */
 export function completeTask(
   id: string,
@@ -125,6 +402,27 @@ export function completeTask(
   // Save structured result
   saveTaskResult(taskResult)
 
+  // P6.13: Build failure explanation for error/blocked status
+  let failureExplanation: TaskFailureExplanation | undefined
+  if (status === 'error' || status === 'blocked') {
+    const existingTask = getTask(id)
+    // Determine failure reason from source and error
+    const missingEvidence: string[] = []
+    if (error) missingEvidence.push(`execution error: ${error}`)
+    if (source === 'validation' || source === 'planner-failed') {
+      missingEvidence.push('planner or validation failed')
+    }
+    if (reason) missingEvidence.push(reason)
+
+    failureExplanation = buildFailureExplanation(
+      missingEvidence,
+      [],
+      undefined,
+      source,
+      existingTask?.input
+    )
+  }
+
   // Update task with structured fields
   const updatedTask = updateTask(id, {
     status,
@@ -139,7 +437,9 @@ export function completeTask(
     summary: taskResult.summary,
     outputs: taskResult.outputs,
     artifacts: taskResult.artifacts,
-    provider: taskResult.provider
+    provider: taskResult.provider,
+    // P6.13: Include failure explanation
+    failureExplanation
   })
 
   // P6.8: Sync thread status with task status
@@ -241,6 +541,18 @@ export function completeTaskWithEvidence(
     humanStatus = 'failed'
   }
 
+  // P6.13: Build failure explanation if validation failed
+  const existingTask = getTask(taskId)
+  const failureExplanation = !validation.canMarkSuccess
+    ? buildFailureExplanation(
+        validation.missingEvidence,
+        validation.warnings,
+        actionType,
+        source,
+        existingTask?.input
+      )
+    : undefined
+
   // Generate structured result
   const taskResult = formatTaskResult({
     taskId,
@@ -274,7 +586,9 @@ export function completeTaskWithEvidence(
     executionEvidence: evidence,
     usedPattern,
     patternId,
-    evidenceValidated: true
+    evidenceValidated: true,
+    // P6.13: Include failure explanation
+    failureExplanation
   })
 
   if (!updatedTask) {

@@ -19,6 +19,7 @@ export type {
   QueueEventPayload,
   ApprovalEventPayload,
   NotificationEventPayload,
+  TaskEventPayload,  // P6.16
   WsGatewayConfig,
   WsGatewayStats
 } from './types'
@@ -69,5 +70,7 @@ export {
   emitToWs,
   emitNotification,
   emitApprovalRequired,
-  emitPairingStateChange
+  emitPairingStateChange,
+  emitTaskEvent,        // P6.16
+  emitTaskStepEvent     // P6.16
 } from './event-bridge'

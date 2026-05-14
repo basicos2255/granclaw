@@ -93,6 +93,63 @@ const SINGLE_ACTION_VERBS: Record<string, { actionType: TaskActionType; capabili
 }
 
 /**
+ * P6.16: Capability validation requirements
+ * Maps capabilities to their semantic validation settings.
+ *
+ * CRITICAL: Provider text response alone does NOT mean success.
+ * We must validate that the actual action was performed.
+ */
+const CAPABILITY_VALIDATION: Record<string, {
+  validationRequired: boolean
+  validationType: 'file_downloaded' | 'app_installed' | 'app_opened' | 'process_running' | 'url_reachable' | 'file_exists' | 'directory_exists' | 'custom' | undefined
+  validationCritical: boolean
+  requiresConfirmation: boolean
+}> = {
+  'download': {
+    validationRequired: true,
+    validationType: 'file_downloaded',
+    validationCritical: true,  // Download MUST succeed
+    requiresConfirmation: true
+  },
+  'filesystem': {
+    validationRequired: true,
+    validationType: 'file_exists',
+    validationCritical: false,
+    requiresConfirmation: false
+  },
+  'browser': {
+    validationRequired: true,
+    validationType: 'url_reachable',
+    validationCritical: false,
+    requiresConfirmation: false
+  },
+  'web_search': {
+    validationRequired: false,  // Search results are returned inline
+    validationType: undefined,
+    validationCritical: false,
+    requiresConfirmation: false
+  },
+  'command_execution': {
+    validationRequired: true,
+    validationType: 'process_running',
+    validationCritical: false,
+    requiresConfirmation: true  // Commands need confirmation
+  }
+}
+
+/**
+ * P6.16: Get validation settings for a capability
+ */
+function getCapabilityValidation(capability: string): typeof CAPABILITY_VALIDATION[string] {
+  return CAPABILITY_VALIDATION[capability] || {
+    validationRequired: false,
+    validationType: undefined,
+    validationCritical: false,
+    requiresConfirmation: false
+  }
+}
+
+/**
  * Generate unique plan ID
  */
 function generatePlanId(): string {
@@ -379,7 +436,11 @@ export function buildCompositeExecutionPlan(
     const singleAction = detectSingleAction(userInput)
 
     if (singleAction) {
-      console.log(`[CompositePlanner P6.14] Detected single capability action: ${singleAction.verb} -> ${singleAction.capability}`)
+      console.log(`[CompositePlanner P6.16] Detected single capability action: ${singleAction.verb} -> ${singleAction.capability}`)
+
+      // P6.16: Get semantic validation settings for this capability
+      const validation = getCapabilityValidation(singleAction.capability)
+      console.log(`[CompositePlanner P6.16] Validation for ${singleAction.capability}: required=${validation.validationRequired}, type=${validation.validationType}, critical=${validation.validationCritical}`)
 
       // Create a single-step plan for the capability action
       const singleStep: CompositeTaskStep = {
@@ -391,13 +452,13 @@ export function buildCompositeExecutionPlan(
         description: userInput,
         capabilityKey: singleAction.capability,
         requiresAi: true,
-        requiresConfirmation: singleAction.capability === 'download',  // Downloads need confirmation
+        requiresConfirmation: validation.requiresConfirmation,
         dependsOnPrevious: false,
         estimatedDurationMs: estimateStepDuration(singleAction.actionType),
-        // P6.14: Validation for capability actions
-        validationRequired: singleAction.capability === 'download',
-        validationType: singleAction.capability === 'download' ? 'file_downloaded' : undefined,
-        validationCritical: false
+        // P6.16: Semantic validation for capability actions
+        validationRequired: validation.validationRequired,
+        validationType: validation.validationType,
+        validationCritical: validation.validationCritical
       }
 
       const plan: CompositeExecutionPlan = {

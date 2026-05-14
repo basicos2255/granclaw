@@ -1,14 +1,23 @@
 /**
  * Task-Job Reconciliation
  * P6.10: Task Queue Reconciliation, Live Task Detail UX & Rich Interaction
+ * P6.16: Execution Truth Authority - Validation is the FINAL authority
  *
  * Listens to queue events and reconciles job completion/failure with
  * the original GranClaw task and thread.
+ *
+ * P6.16 KEY CHANGE: A task is ONLY successful if:
+ * 1. executionStatus === 'completed'
+ * 2. validationFailedSteps is empty
+ * 3. No failedStep
+ *
+ * Provider text response alone does NOT mean success for capability tasks.
  */
 
 import type { QueuedJob, TaskLinkedJobPayload, QueueEvent } from './types'
 import { getQueue } from './queue'
 import type { TaskStatus } from '../tasks/types'
+import { emitTaskEvent } from '../runtime-ws'  // P6.16
 
 // Track initialization state
 let initialized = false
@@ -57,26 +66,101 @@ async function handleJobCancelled(event: QueueEvent): Promise<void> {
 }
 
 /**
+ * P6.16: CompositeExecutionResult type for proper validation
+ */
+interface CompositeExecutionResultFields {
+  success?: boolean
+  executionStatus?: 'completed' | 'partial' | 'failed' | 'blocked' | 'validation_failed'
+  validationFailedSteps?: string[]
+  validatedSteps?: string[]
+  completedSteps?: string[]
+  failedStep?: { stepId: string; error: string; recoverable: boolean }
+  result?: unknown
+  error?: unknown
+}
+
+/**
+ * P6.16: Determine task success based on validation authority
+ * Validation is the FINAL authority - not just job.result.success
+ *
+ * A task is ONLY successful if:
+ * 1. executionStatus === 'completed'
+ * 2. validationFailedSteps is empty OR undefined
+ * 3. success !== false
+ */
+function determineTaskSuccess(jobResult: CompositeExecutionResultFields | undefined): {
+  isSuccess: boolean
+  reason: string
+} {
+  // No result = error
+  if (!jobResult) {
+    return { isSuccess: false, reason: 'No job result' }
+  }
+
+  // P6.16: Check executionStatus FIRST (validation authority)
+  if (jobResult.executionStatus) {
+    if (jobResult.executionStatus === 'validation_failed') {
+      return { isSuccess: false, reason: `Validation failed (status: ${jobResult.executionStatus})` }
+    }
+    if (jobResult.executionStatus === 'failed') {
+      return { isSuccess: false, reason: `Execution failed (status: ${jobResult.executionStatus})` }
+    }
+    if (jobResult.executionStatus === 'blocked') {
+      return { isSuccess: false, reason: `Execution blocked (status: ${jobResult.executionStatus})` }
+    }
+    if (jobResult.executionStatus === 'partial') {
+      return { isSuccess: false, reason: `Partial execution (status: ${jobResult.executionStatus})` }
+    }
+    // Only 'completed' means success
+    if (jobResult.executionStatus !== 'completed') {
+      return { isSuccess: false, reason: `Unknown status: ${jobResult.executionStatus}` }
+    }
+  }
+
+  // P6.16: Check validationFailedSteps (secondary check)
+  if (jobResult.validationFailedSteps && jobResult.validationFailedSteps.length > 0) {
+    return {
+      isSuccess: false,
+      reason: `Validation failed for steps: ${jobResult.validationFailedSteps.join(', ')}`
+    }
+  }
+
+  // P6.16: Check explicit success field
+  if (jobResult.success === false) {
+    return { isSuccess: false, reason: 'Job explicitly marked as failed' }
+  }
+
+  // P6.16: Check failedStep
+  if (jobResult.failedStep) {
+    return { isSuccess: false, reason: `Step failed: ${jobResult.failedStep.stepId}` }
+  }
+
+  // All checks passed - this is a genuine success
+  return { isSuccess: true, reason: 'All validations passed' }
+}
+
+/**
  * Internal: Handle job completed
+ * P6.16: Updated to use validation authority
  */
 async function onJobCompleted(jobId: string, jobType: string, meta: Record<string, unknown>): Promise<void> {
-  console.log(`[TaskReconciliation P6.10] Job completed: ${jobId} (${jobType})`)
+  console.log(`[TaskReconciliation P6.16] Job completed: ${jobId} (${jobType})`)
 
   const queue = getQueue()
   const job = queue.get(jobId)
 
   if (!job) {
-    console.warn(`[TaskReconciliation P6.10] Job ${jobId} not found for reconciliation`)
+    console.warn(`[TaskReconciliation P6.16] Job ${jobId} not found for reconciliation`)
     return
   }
 
   const taskId = extractTaskId(job)
   if (!taskId) {
-    console.log(`[TaskReconciliation P6.10] Job ${jobId} has no taskId, skipping reconciliation`)
+    console.log(`[TaskReconciliation P6.16] Job ${jobId} has no taskId, skipping reconciliation`)
     return
   }
 
-  console.log(`[TaskReconciliation P6.10] Reconciling job ${jobId} with task ${taskId}`)
+  console.log(`[TaskReconciliation P6.16] Reconciling job ${jobId} with task ${taskId}`)
 
   try {
     // Dynamic imports to avoid circular dependencies
@@ -86,71 +170,110 @@ async function onJobCompleted(jobId: string, jobType: string, meta: Record<strin
     // Get current task state
     const task = getTask(taskId)
     if (!task) {
-      console.error(`[TaskReconciliation P6.10] Task ${taskId} not found`)
+      console.error(`[TaskReconciliation P6.16] Task ${taskId} not found`)
       return
     }
 
     // Don't update if task is already in terminal state (except queued/running)
     const terminalStates: TaskStatus[] = ['success', 'error', 'blocked', 'unconfirmed']
     if (terminalStates.includes(task.status)) {
-      console.log(`[TaskReconciliation P6.10] Task ${taskId} already in terminal state: ${task.status}`)
+      console.log(`[TaskReconciliation P6.16] Task ${taskId} already in terminal state: ${task.status}`)
       return
     }
 
-    // Determine success based on job result
-    const jobResult = job.result as { success?: boolean; result?: unknown; error?: unknown } | undefined
-    const isSuccess = jobResult?.success !== false
+    // P6.16: Determine success using validation authority
+    const jobResult = job.result as CompositeExecutionResultFields | undefined
+    const { isSuccess, reason } = determineTaskSuccess(jobResult)
 
     // Update task status
     const newStatus: TaskStatus = isSuccess ? 'success' : 'error'
-    console.log(`[TaskReconciliation P6.10] Updating task ${taskId} status: ${task.status} → ${newStatus}`)
+    console.log(`[TaskReconciliation P6.16] Task ${taskId}: ${task.status} → ${newStatus} (${reason})`)
+
+    // P6.16: Include validation details in result
+    const enrichedResult = {
+      ...(jobResult?.result ?? job.result ?? {}),
+      _reconciliation: {
+        phase: 'P6.16',
+        isSuccess,
+        reason,
+        executionStatus: jobResult?.executionStatus,
+        validationFailedSteps: jobResult?.validationFailedSteps,
+        validatedSteps: jobResult?.validatedSteps,
+        completedSteps: jobResult?.completedSteps
+      }
+    }
 
     completeTask(
       taskId,
       newStatus,
-      jobResult?.result ?? job.result,
+      enrichedResult,
       'queue',  // source
       undefined, // trace - could be extracted from job
       undefined, // debugSnapshot
       job.startedAt && job.completedAt
         ? new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()
         : undefined,
-      isSuccess ? undefined : String(jobResult?.error || 'Job completed with errors')
+      isSuccess ? undefined : reason
     )
 
     // Sync thread - pass status and optional error
-    console.log(`[TaskReconciliation P6.10] Syncing thread for task ${taskId}`)
-    syncThreadWithTask(taskId, newStatus, isSuccess ? undefined : 'Job completed with errors')
+    console.log(`[TaskReconciliation P6.16] Syncing thread for task ${taskId}`)
+    syncThreadWithTask(taskId, newStatus, isSuccess ? undefined : reason)
 
-    // Log completion (WS events will be added in FASE G)
-    console.log(`[TaskReconciliation P6.10] Task ${taskId} reconciled successfully`)
+    // P6.16: Emit task event for live monitoring
+    const duration = job.startedAt && job.completedAt
+      ? new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()
+      : undefined
+
+    emitTaskEvent(
+      task.tenantId,
+      task.userId,
+      isSuccess ? 'task:completed' : 'task:failed',
+      {
+        taskId,
+        threadId: extractThreadId(job),
+        jobId,
+        status: newStatus,
+        message: reason,
+        error: isSuccess ? undefined : reason,
+        executionStatus: jobResult?.executionStatus,
+        completedSteps: jobResult?.completedSteps?.length,
+        totalSteps: jobResult?.completedSteps?.length,  // Approximation
+        validatedSteps: jobResult?.validatedSteps?.length,
+        validationFailedSteps: jobResult?.validationFailedSteps?.length,
+        duration
+      }
+    )
+
+    console.log(`[TaskReconciliation P6.16] Task ${taskId} reconciled: ${newStatus} (${reason})`)
 
   } catch (err) {
-    console.error(`[TaskReconciliation P6.10] Error reconciling task ${taskId}:`, err)
+    console.error(`[TaskReconciliation P6.16] Error reconciling task ${taskId}:`, err)
   }
 }
 
 /**
  * Handle job failed event
+ * P6.16: Updated logging
  */
 async function onJobFailed(jobId: string, jobType: string, meta: Record<string, unknown>): Promise<void> {
-  console.log(`[TaskReconciliation P6.10] Job failed: ${jobId} (${jobType})`)
+  console.log(`[TaskReconciliation P6.16] Job failed: ${jobId} (${jobType})`)
 
   const queue = getQueue()
   const job = queue.get(jobId)
 
   if (!job) {
-    console.warn(`[TaskReconciliation P6.10] Job ${jobId} not found for failure reconciliation`)
+    console.warn(`[TaskReconciliation P6.16] Job ${jobId} not found for failure reconciliation`)
     return
   }
 
   const taskId = extractTaskId(job)
   if (!taskId) {
-    console.log(`[TaskReconciliation P6.10] Job ${jobId} has no taskId, skipping failure reconciliation`)
+    console.log(`[TaskReconciliation P6.16] Job ${jobId} has no taskId, skipping failure reconciliation`)
     return
   }
 
-  console.log(`[TaskReconciliation P6.10] Reconciling failed job ${jobId} with task ${taskId}`)
+  console.log(`[TaskReconciliation P6.16] Reconciling failed job ${jobId} with task ${taskId}`)
 
   try {
     const { completeTask, getTask } = await import('../tasks/service')
@@ -158,21 +281,21 @@ async function onJobFailed(jobId: string, jobType: string, meta: Record<string, 
 
     const task = getTask(taskId)
     if (!task) {
-      console.error(`[TaskReconciliation P6.10] Task ${taskId} not found`)
+      console.error(`[TaskReconciliation P6.16] Task ${taskId} not found`)
       return
     }
 
     // Don't update if task is already in terminal error state
     if (task.status === 'error') {
-      console.log(`[TaskReconciliation P6.10] Task ${taskId} already in error state`)
+      console.log(`[TaskReconciliation P6.16] Task ${taskId} already in error state`)
       return
     }
 
     const errorMessage = job.lastError?.message || meta?.error?.toString() || 'Job failed'
     const errorCategory = job.lastError?.category || 'unknown'
 
-    console.log(`[TaskReconciliation P6.10] Updating task ${taskId} status: ${task.status} → error`)
-    console.log(`[TaskReconciliation P6.10] Error: ${errorMessage} (${errorCategory})`)
+    console.log(`[TaskReconciliation P6.16] Updating task ${taskId} status: ${task.status} → error`)
+    console.log(`[TaskReconciliation P6.16] Error: ${errorMessage} (${errorCategory})`)
 
     completeTask(
       taskId,
@@ -194,21 +317,42 @@ async function onJobFailed(jobId: string, jobType: string, meta: Record<string, 
     )
 
     // Sync thread with error
-    console.log(`[TaskReconciliation P6.10] Syncing thread for failed task ${taskId}`)
+    console.log(`[TaskReconciliation P6.16] Syncing thread for failed task ${taskId}`)
     syncThreadWithTask(taskId, 'error', errorMessage)
 
-    console.log(`[TaskReconciliation P6.10] Failed task ${taskId} reconciled`)
+    // P6.16: Emit task failed event for live monitoring
+    const duration = job.startedAt && job.completedAt
+      ? new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()
+      : undefined
+
+    emitTaskEvent(
+      task.tenantId,
+      task.userId,
+      'task:failed',
+      {
+        taskId,
+        threadId: extractThreadId(job),
+        jobId,
+        status: 'error',
+        message: errorMessage,
+        error: errorMessage,
+        duration
+      }
+    )
+
+    console.log(`[TaskReconciliation P6.16] Failed task ${taskId} reconciled`)
 
   } catch (err) {
-    console.error(`[TaskReconciliation P6.10] Error reconciling failed task ${taskId}:`, err)
+    console.error(`[TaskReconciliation P6.16] Error reconciling failed task ${taskId}:`, err)
   }
 }
 
 /**
  * Handle job cancelled event
+ * P6.16: Updated logging
  */
 async function onJobCancelled(jobId: string, jobType: string, meta: Record<string, unknown>): Promise<void> {
-  console.log(`[TaskReconciliation P6.10] Job cancelled: ${jobId} (${jobType})`)
+  console.log(`[TaskReconciliation P6.16] Job cancelled: ${jobId} (${jobType})`)
 
   const queue = getQueue()
   const job = queue.get(jobId)
@@ -239,17 +383,18 @@ async function onJobCancelled(jobId: string, jobType: string, meta: Record<strin
     syncThreadWithTask(taskId, 'error', 'Task cancelled by user')
 
   } catch (err) {
-    console.error(`[TaskReconciliation P6.10] Error handling cancelled job:`, err)
+    console.error(`[TaskReconciliation P6.16] Error handling cancelled job:`, err)
   }
 }
 
 /**
  * Initialize task reconciliation listeners
  * Call this after queue is initialized
+ * P6.16: Updated with validation authority
  */
 export function initializeTaskReconciliation(): void {
   if (initialized) {
-    console.log('[TaskReconciliation P6.10] Already initialized')
+    console.log('[TaskReconciliation P6.16] Already initialized')
     return
   }
 
@@ -261,7 +406,7 @@ export function initializeTaskReconciliation(): void {
   queue.on('job:cancelled', handleJobCancelled)
 
   initialized = true
-  console.log('[TaskReconciliation P6.10] Task reconciliation listeners initialized')
+  console.log('[TaskReconciliation P6.16] Task reconciliation listeners initialized (validation authority enabled)')
 }
 
 /**

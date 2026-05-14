@@ -9405,3 +9405,200 @@ const result = await executeX({ sessionId })
 - `docs/reports/claude/P6_15_runtime_pipeline_map.md`
 - `docs/reports/claude/P6_15_runtime_session_self_audit.md`
 - `docs/reports/claude/P6_15_runtime_session_report.md`
+
+---
+
+## P6.16 — Execution Truth Authority, Live Task Monitor & Real Task Interaction
+
+**Fecha**: 2026-05-14
+**Estado**: COMPLETADO
+
+### Problema
+
+```
+Tasks marcadas como success cuando validation falla
+Provider text response tratada como success para capability actions
+```
+
+Root cause en `task-reconciliation.ts`:
+```typescript
+// ANTES (BUG)
+const isSuccess = jobResult?.success !== false  // IGNORA VALIDATION!
+```
+
+Esto causaba:
+- `executionStatus === 'validation_failed'` → SUCCESS (incorrecto)
+- `validationFailedSteps.length > 0` → IGNORADO
+- Provider dice "voy a descargar VLC" pero no descarga → SUCCESS (incorrecto)
+
+### Solución
+
+#### FASE C: Validation es autoridad final
+
+Nueva función `determineTaskSuccess()` que verifica:
+1. `executionStatus === 'completed'` (DEBE ser completed)
+2. `validationFailedSteps` debe estar vacío
+3. `failedStep` no debe existir
+4. `success !== false`
+
+```typescript
+function determineTaskSuccess(jobResult) {
+  // Check executionStatus FIRST (validation authority)
+  if (jobResult.executionStatus === 'validation_failed') {
+    return { isSuccess: false, reason: 'Validation failed' }
+  }
+  if (jobResult.executionStatus !== 'completed') {
+    return { isSuccess: false, reason: `Status: ${jobResult.executionStatus}` }
+  }
+  // Check validationFailedSteps
+  if (jobResult.validationFailedSteps?.length > 0) {
+    return { isSuccess: false, reason: 'Validation failed for steps' }
+  }
+  return { isSuccess: true, reason: 'All validations passed' }
+}
+```
+
+#### FASE D: Semantic Step Success
+
+Nuevo mapping `CAPABILITY_VALIDATION`:
+```typescript
+const CAPABILITY_VALIDATION = {
+  'download': { validationRequired: true, validationType: 'file_downloaded', validationCritical: true },
+  'filesystem': { validationRequired: true, validationType: 'file_exists' },
+  'browser': { validationRequired: true, validationType: 'url_reachable' },
+  // ... más capabilities
+}
+```
+
+Cada capability-backed action ahora tiene validation semántica:
+- Download → Verifica que archivo existe
+- Browser → Verifica URL alcanzable
+- Filesystem → Verifica que archivo/directorio existe
+
+#### FASE F-G: Task Events para Live Monitoring
+
+Nuevos event types:
+- `task:created`, `task:queued`, `task:started`
+- `task:step-started`, `task:step-progress`, `task:step-completed`, `task:step-failed`
+- `task:step-validation`
+- `task:completed`, `task:failed`, `task:cancelled`
+- `task:waiting-user-input`
+
+Nuevo `TaskEventPayload`:
+```typescript
+interface TaskEventPayload extends RuntimeEventPayload {
+  taskId: string
+  threadId?: string
+  jobId?: string
+  status: string
+  stepId?: string
+  stepStatus?: string
+  validationOk?: boolean
+  validationReason?: string
+  executionStatus?: string
+  completedSteps?: number
+  totalSteps?: number
+}
+```
+
+Nuevas funciones:
+- `emitTaskEvent()` - Para eventos de ciclo de vida de task
+- `emitTaskStepEvent()` - Para progreso de steps
+
+### Archivos Modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| runtime-queue/task-reconciliation.ts | +80 líneas: validation authority, determineTaskSuccess(), emit events |
+| composite-tasks/planner.ts | +50 líneas: CAPABILITY_VALIDATION, getCapabilityValidation() |
+| runtime-ws/types.ts | +40 líneas: Task events, TaskEventPayload |
+| runtime-ws/event-bridge.ts | +60 líneas: emitTaskEvent(), emitTaskStepEvent() |
+| runtime-ws/index.ts | +5 líneas: exports |
+
+### Verificaciones
+
+- ✅ npm run check (api)
+- ✅ npm run check (web)
+- ✅ npm run build (api)
+- ✅ Tasks NO son success si validation falla
+- ✅ executionStatus === 'completed' requerido para success
+- ✅ Capability actions tienen validation semántica
+- ✅ Task events emitidos para monitoring
+
+### Principio Clave
+
+**Validation es la AUTORIDAD FINAL para el éxito de una task.**
+
+Una task SOLO puede ser success si:
+1. Provider respondió OK
+2. Execution evidence existe
+3. Validation no tiene errores críticos
+4. Artifacts/outputs requeridos existen según actionType
+
+### FASE H: TaskDetailPage Operativo
+
+Frontend actualizado para mostrar execution truth:
+
+**apps/web/src/services/api.ts**:
+- Campo `reconciliation` añadido a `GranClawTask`
+- Estado `'queued'` añadido a `TaskStatus`
+
+**apps/web/src/pages/product/TaskDetailPage.tsx**:
+- Sección "P6.16 Execution Truth" que muestra:
+  - executionStatus con badge de color
+  - validationFailedSteps si existen
+  - failedStep si existe
+  - Botón de auto-refresh cada 3s para tasks running/queued
+- Función `getExecutionStatusInfo()` con badges semánticos
+
+### FASE I: Runtime Monitor Dev Page
+
+**apps/web/src/pages/dev/RuntimePage.tsx**:
+- Sección "P6.16 Execution Truth" añadida
+- Muestra estadísticas de validation authority
+- Información de task events emitidos
+
+### FASE J-K: Capability Gates
+
+**apps/api/src/modules/orchestrator/routes.ts**:
+- Capability gate en endpoint normal (línea ~344)
+- Capability gate en streaming endpoint (línea ~1778)
+- Si `planResult.blockingCapabilities` no vacío:
+  - Task se completa como `'blocked'`
+  - Response incluye `capabilityGate: true`
+  - Ejecución NO procede
+
+```typescript
+// P6.16: Capability gate
+if (planResult.blockingCapabilities?.length > 0) {
+  completeTask(task.id, 'blocked', {
+    capabilityGate: true,
+    blockingCapabilities: planResult.blockingCapabilities,
+    reason: `Capacidades no disponibles`
+  }, 'validation', trace.getSteps(), debugSnapshot)
+  return
+}
+```
+
+### Archivos Frontend Modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| web/services/api.ts | +15 líneas: reconciliation field, queued status |
+| web/pages/product/TaskDetailPage.tsx | +80 líneas: Execution Truth section |
+| web/pages/dev/RuntimePage.tsx | +30 líneas: P6.16 stats section |
+| api/modules/orchestrator/routes.ts | +120 líneas: Capability gates (2 endpoints) |
+
+### Verificaciones Finales
+
+- ✅ npm run check (api)
+- ✅ npm run check (web)
+- ✅ npm run build (api)
+- ✅ npm run build (web)
+- ✅ Capability gate bloquea ejecución si capability no disponible
+- ✅ TaskDetailPage muestra execution truth con auto-refresh
+- ✅ Runtime monitor muestra P6.16 stats
+
+### Reportes Generados
+
+- `docs/reports/claude/P6_16_execution_truth_report.md`

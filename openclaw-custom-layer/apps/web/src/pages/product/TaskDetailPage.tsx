@@ -27,6 +27,16 @@ export function TaskDetailPage({ taskId }: TaskDetailPageProps) {
     loadTask()
   }, [taskId])
 
+  // P6.16: Auto-refresh for running/queued tasks
+  useEffect(() => {
+    if (task && (task.status === 'running' || task.status === 'queued')) {
+      const interval = setInterval(() => {
+        loadTask()
+      }, 2000)  // Refresh every 2 seconds
+      return () => clearInterval(interval)
+    }
+  }, [task?.status, taskId])
+
   const loadTask = async () => {
     setLoading(true)
     setError(null)
@@ -73,6 +83,8 @@ export function TaskDetailPage({ taskId }: TaskDetailPageProps) {
         return { bg: '#dcfce7', color: '#16a34a', label: 'Completada', icon: 'check' }
       case 'running':
         return { bg: '#dbeafe', color: '#2563eb', label: 'Ejecutando', icon: 'play' }
+      case 'queued':
+        return { bg: '#e0e7ff', color: '#4f46e5', label: 'En cola', icon: 'queue' }
       case 'blocked':
         return { bg: '#fee2e2', color: '#dc2626', label: 'Bloqueada', icon: 'ban' }
       case 'error':
@@ -83,6 +95,24 @@ export function TaskDetailPage({ taskId }: TaskDetailPageProps) {
         return { bg: '#f1f5f9', color: '#64748b', label: 'Pendiente', icon: 'clock' }
       default:
         return { bg: '#f3f4f6', color: '#6b7280', label: status, icon: 'info' }
+    }
+  }
+
+  // P6.16: Get execution status label
+  const getExecutionStatusInfo = (execStatus: string | undefined) => {
+    switch (execStatus) {
+      case 'completed':
+        return { bg: '#dcfce7', color: '#16a34a', label: 'Completado' }
+      case 'partial':
+        return { bg: '#fef3c7', color: '#d97706', label: 'Parcial' }
+      case 'failed':
+        return { bg: '#fee2e2', color: '#dc2626', label: 'Fallido' }
+      case 'blocked':
+        return { bg: '#fee2e2', color: '#dc2626', label: 'Bloqueado' }
+      case 'validation_failed':
+        return { bg: '#fef3c7', color: '#d97706', label: 'Validación falló' }
+      default:
+        return null
     }
   }
 
@@ -284,6 +314,110 @@ export function TaskDetailPage({ taskId }: TaskDetailPageProps) {
           </div>
         </div>
       </div>
+
+      {/* P6.16: Execution Truth / Reconciliation Info */}
+      {task.reconciliation && (
+        <div style={{
+          ...cardStyle,
+          backgroundColor: task.reconciliation.isSuccess ? '#f0fdf4' : '#fef2f2',
+          borderColor: task.reconciliation.isSuccess ? '#bbf7d0' : '#fecaca',
+          borderLeftWidth: '4px',
+          borderLeftColor: task.reconciliation.isSuccess ? '#22c55e' : '#ef4444'
+        }}>
+          <div style={sectionTitleStyle}>
+            Resultado de Ejecución (P6.16)
+          </div>
+
+          {/* Execution Status */}
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '16px' }}>
+            {task.reconciliation.executionStatus && (() => {
+              const execInfo = getExecutionStatusInfo(task.reconciliation.executionStatus)
+              return execInfo ? (
+                <span style={{
+                  padding: '4px 12px',
+                  borderRadius: '12px',
+                  backgroundColor: execInfo.bg,
+                  color: execInfo.color,
+                  fontSize: '12px',
+                  fontWeight: '600'
+                }}>
+                  {execInfo.label}
+                </span>
+              ) : null
+            })()}
+
+            {task.reconciliation.completedSteps && (
+              <span style={{
+                padding: '4px 12px',
+                borderRadius: '12px',
+                backgroundColor: '#f1f5f9',
+                color: '#475569',
+                fontSize: '12px'
+              }}>
+                {task.reconciliation.completedSteps.length} pasos completados
+              </span>
+            )}
+
+            {task.reconciliation.validatedSteps && task.reconciliation.validatedSteps.length > 0 && (
+              <span style={{
+                padding: '4px 12px',
+                borderRadius: '12px',
+                backgroundColor: '#dcfce7',
+                color: '#16a34a',
+                fontSize: '12px'
+              }}>
+                {task.reconciliation.validatedSteps.length} validados ✓
+              </span>
+            )}
+
+            {task.reconciliation.validationFailedSteps && task.reconciliation.validationFailedSteps.length > 0 && (
+              <span style={{
+                padding: '4px 12px',
+                borderRadius: '12px',
+                backgroundColor: '#fee2e2',
+                color: '#dc2626',
+                fontSize: '12px'
+              }}>
+                {task.reconciliation.validationFailedSteps.length} validación fallida ✗
+              </span>
+            )}
+          </div>
+
+          {/* Reason */}
+          <div style={{
+            padding: '12px',
+            backgroundColor: task.reconciliation.isSuccess ? '#dcfce7' : '#fee2e2',
+            borderRadius: '8px',
+            fontSize: '14px',
+            color: task.reconciliation.isSuccess ? '#166534' : '#991b1b'
+          }}>
+            <strong>Razón:</strong> {task.reconciliation.reason}
+          </div>
+
+          {/* Validation Failed Steps Detail */}
+          {task.reconciliation.validationFailedSteps && task.reconciliation.validationFailedSteps.length > 0 && (
+            <div style={{ marginTop: '12px' }}>
+              <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '8px' }}>
+                Pasos con validación fallida:
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {task.reconciliation.validationFailedSteps.map((stepId, idx) => (
+                  <span key={idx} style={{
+                    padding: '4px 8px',
+                    backgroundColor: '#fee2e2',
+                    color: '#991b1b',
+                    borderRadius: '4px',
+                    fontSize: '11px',
+                    fontFamily: 'monospace'
+                  }}>
+                    {stepId}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Outputs */}
       {task.outputs && task.outputs.length > 0 && (

@@ -341,9 +341,60 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           return
         }
 
+        // P6.16: Capability gate - block execution if required capabilities are not available
+        if (planResult.blockingCapabilities && planResult.blockingCapabilities.length > 0) {
+          const blockedCaps = planResult.blockingCapabilities.map(c => c.capability).join(', ')
+          console.log(`[GranClaw P6.16] Capability gate BLOCKED: ${blockedCaps}`)
+
+          trace.addStep({
+            stage: 'orchestrator',
+            status: 'error',
+            label: 'Capability no disponible',
+            detail: `Capacidades requeridas no disponibles: ${blockedCaps}`
+          })
+
+          const debugSnapshot = trace.getDebugSnapshot()
+          debugSnapshot.source = 'validation'
+          debugSnapshot.executionConfirmed = false
+          debugSnapshot.error = 'Capability not available'
+          logDebug(debugSnapshot)
+
+          completeTask(
+            task.id,
+            'blocked',
+            {
+              capabilityGate: true,
+              blockingCapabilities: planResult.blockingCapabilities,
+              reason: `Capacidades no disponibles: ${blockedCaps}`
+            },
+            'validation',
+            trace.getSteps(),
+            debugSnapshot,
+            trace.getTotalDurationMs(),
+            `La tarea requiere capacidades que no están disponibles: ${blockedCaps}`
+          )
+
+          ok(res, {
+            success: false,
+            error: `Capacidades requeridas no disponibles: ${blockedCaps}`,
+            capabilityGate: true,
+            blockingCapabilities: planResult.blockingCapabilities,
+            meta: {
+              requestId: trace.requestId,
+              taskId: task.id,
+              executionMode: executionMode.mode,
+              intentKind: intent.kind,
+              executionTrace: trace.getSteps(),
+              executionDurationMs: trace.getTotalDurationMs(),
+              debugSnapshot
+            }
+          })
+          return
+        }
+
         // Planner succeeded - continue with queueing
         {
-          console.log(`[GranClaw P6.9] Plan created: ${planResult.plan.id} with ${planResult.plan.steps.length} steps`)
+          console.log(`[GranClaw P6.16] Plan created: ${planResult.plan.id} with ${planResult.plan.steps.length} steps`)
 
           const queueResult: EnqueueResult = enqueueCompositeTask(
             {
@@ -1717,6 +1768,67 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
               routerDecision: {
                 provider: 'planner-failed',
                 reason: planResult.reason || 'No se pudo crear plan',
+                intentKind: intent.kind
+              }
+            }
+          })
+          return
+        }
+
+        // P6.16: Capability gate - block execution if required capabilities are not available
+        if (planResult.blockingCapabilities && planResult.blockingCapabilities.length > 0) {
+          const blockedCaps = planResult.blockingCapabilities.map(c => c.capability).join(', ')
+          console.log(`[GranClaw Stream P6.16] Capability gate BLOCKED: ${blockedCaps}`)
+
+          trace.addStep({
+            stage: 'orchestrator',
+            status: 'blocked',
+            label: 'Capacidades bloqueadas (P6.16)',
+            detail: `Capabilities not available: ${blockedCaps}`
+          })
+
+          const debugSnapshot = trace.getDebugSnapshot()
+          debugSnapshot.source = 'granclaw'
+          debugSnapshot.executionConfirmed = false
+          logDebug(debugSnapshot)
+
+          // Complete task as blocked
+          completeTask(
+            task.id,
+            'blocked',
+            {
+              blocked: true,
+              reason: 'capability_gate',
+              blockedCapabilities: planResult.blockingCapabilities,
+              planId: planResult.plan?.id,
+              executionMode: executionMode.mode
+            },
+            'granclaw',
+            trace.getSteps(),
+            debugSnapshot,
+            trace.getTotalDurationMs()
+          )
+
+          ok(res, {
+            success: false,
+            blocked: true,
+            message: `Ejecución bloqueada: capacidades no disponibles (${blockedCaps})`,
+            meta: {
+              requestId: trace.requestId,
+              taskId: task.id,
+              blockedCapabilities: planResult.blockingCapabilities,
+              planId: planResult.plan?.id,
+              executionMode: executionMode.mode,
+              intentKind: intent.kind,
+              isMultiStep: intent.isMultiStep,
+              hubDecision: hubResult.decisionLog,
+              executionTrace: trace.getSteps(),
+              tenantId: context.tenant.id,
+              adapterStatus,
+              debugSnapshot,
+              routerDecision: {
+                provider: 'capability-gate-blocked',
+                reason: `Capabilities not available: ${blockedCaps}`,
                 intentKind: intent.kind
               }
             }

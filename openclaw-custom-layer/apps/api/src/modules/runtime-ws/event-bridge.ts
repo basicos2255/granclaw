@@ -13,7 +13,8 @@ import type {
   WorkflowEventPayload,
   NodeEventPayload,
   QueueEventPayload,
-  RuntimeEventPayload
+  RuntimeEventPayload,
+  TaskEventPayload  // P6.16
 } from './types'
 
 /**
@@ -350,4 +351,66 @@ export function emitPairingStateChange(
   }, {})
 
   return Math.max(sentSpecific, sentGeneric)
+}
+
+/**
+ * P6.16: Emit task event for live task monitoring
+ */
+export function emitTaskEvent(
+  tenantId: string,
+  userId: string | undefined,
+  eventType: 'task:created' | 'task:queued' | 'task:started' | 'task:completed' | 'task:failed' | 'task:cancelled' | 'task:waiting-user-input',
+  payload: {
+    taskId: string
+    threadId?: string
+    jobId?: string
+    status: string
+    message?: string
+    error?: string
+    executionStatus?: string
+    completedSteps?: number
+    totalSteps?: number
+    validatedSteps?: number
+    validationFailedSteps?: number
+    duration?: number
+  }
+): number {
+  return emitToWs('runtime', eventType, {
+    timestamp: new Date().toISOString(),
+    source: 'task-reconciliation',
+    ...payload
+  } as TaskEventPayload, { tenantId, userId })
+}
+
+/**
+ * P6.16: Emit task step event for live progress monitoring
+ */
+export function emitTaskStepEvent(
+  tenantId: string,
+  userId: string | undefined,
+  eventType: 'task:step-started' | 'task:step-progress' | 'task:step-completed' | 'task:step-failed' | 'task:step-validation',
+  payload: {
+    taskId: string
+    threadId?: string
+    jobId?: string
+    stepId: string
+    stepOrder: number
+    stepActionType: string
+    stepDescription?: string
+    stepStatus: string
+    progress?: number
+    message?: string
+    error?: string
+    // Validation info
+    validationOk?: boolean
+    validationReason?: string
+    validationEvidence?: string[]
+    duration?: number
+  }
+): number {
+  return emitToWs('runtime', eventType, {
+    timestamp: new Date().toISOString(),
+    source: 'composite-executor',
+    ...payload
+  } as TaskEventPayload, { tenantId, userId })
 }

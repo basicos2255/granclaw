@@ -417,7 +417,7 @@ interface MeResponse {
  * FEATURE 080: Tipos para tareas
  * P6.3: Added structured result types
  */
-export type TaskStatus = 'pending' | 'running' | 'success' | 'blocked' | 'error' | 'unconfirmed'
+export type TaskStatus = 'pending' | 'queued' | 'running' | 'success' | 'blocked' | 'error' | 'unconfirmed'
 
 /**
  * P6.3: Task output types
@@ -516,6 +516,17 @@ export interface GranClawTask {
 
   // P6.13: Failure explanation
   failureExplanation?: TaskFailureExplanation
+
+  // P6.16: Execution truth / reconciliation info
+  reconciliation?: {
+    phase: string
+    isSuccess: boolean
+    reason: string
+    executionStatus?: 'completed' | 'partial' | 'failed' | 'blocked' | 'validation_failed'
+    validationFailedSteps?: string[]
+    validatedSteps?: string[]
+    completedSteps?: string[]
+  }
 }
 
 /**

@@ -54,6 +54,19 @@ export type RuntimeEventType =
   | 'queue:job-retrying'
   | 'queue:job-dead-lettered'
   | 'queue:pressure-change'
+  // P6.16: Task events (for live task monitoring)
+  | 'task:created'
+  | 'task:queued'
+  | 'task:started'
+  | 'task:step-started'
+  | 'task:step-progress'
+  | 'task:step-completed'
+  | 'task:step-failed'
+  | 'task:step-validation'
+  | 'task:completed'
+  | 'task:failed'
+  | 'task:cancelled'
+  | 'task:waiting-user-input'
   // Validation & setup
   | 'validation:failed'
   | 'setup:required'
@@ -250,6 +263,37 @@ export interface NotificationEventPayload extends RuntimeEventPayload {
   actionLabel?: string
   persistent?: boolean
   expiresAt?: string
+}
+
+/**
+ * P6.16: Task event payload for live task monitoring
+ */
+export interface TaskEventPayload extends RuntimeEventPayload {
+  taskId: string
+  threadId?: string
+  jobId?: string
+  status: string
+  progress?: number
+  message?: string
+  error?: string
+  // Step info
+  stepId?: string
+  stepOrder?: number
+  stepActionType?: string
+  stepDescription?: string
+  stepStatus?: string
+  // Validation info
+  validationOk?: boolean
+  validationReason?: string
+  validationEvidence?: string[]
+  // Execution result
+  executionStatus?: string
+  completedSteps?: number
+  totalSteps?: number
+  validatedSteps?: number
+  validationFailedSteps?: number
+  // Timing
+  duration?: number
 }
 
 /**

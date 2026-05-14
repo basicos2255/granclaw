@@ -400,6 +400,64 @@ export function RuntimePage() {
 
           </div>
 
+          {/* P6.16: Execution Truth Section */}
+          <div style={{
+            marginTop: '24px',
+            backgroundColor: 'white',
+            borderRadius: '12px',
+            border: '1px solid #e2e8f0',
+            padding: '20px'
+          }}>
+            <div style={{ fontSize: '13px', color: '#64748b', marginBottom: '16px', fontWeight: '500' }}>
+              P6.16 EXECUTION TRUTH
+            </div>
+            <div style={{
+              backgroundColor: '#f0fdf4',
+              border: '1px solid #bbf7d0',
+              borderRadius: '8px',
+              padding: '16px',
+              marginBottom: '12px'
+            }}>
+              <div style={{ fontSize: '14px', fontWeight: '600', color: '#166534', marginBottom: '8px' }}>
+                Validation Authority Enabled
+              </div>
+              <div style={{ fontSize: '13px', color: '#15803d' }}>
+                Tasks are only marked successful if executionStatus === 'completed' AND all validations pass.
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
+              <div style={{
+                padding: '12px',
+                backgroundColor: '#f8fafc',
+                borderRadius: '8px',
+                textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>VALIDATION</div>
+                <div style={{ fontSize: '18px', fontWeight: '600', color: '#16a34a' }}>REQUIRED</div>
+              </div>
+              <div style={{
+                padding: '12px',
+                backgroundColor: '#f8fafc',
+                borderRadius: '8px',
+                textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>SEMANTIC CHECK</div>
+                <div style={{ fontSize: '18px', fontWeight: '600', color: '#16a34a' }}>ENABLED</div>
+              </div>
+              <div style={{
+                padding: '12px',
+                backgroundColor: '#f8fafc',
+                borderRadius: '8px',
+                textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>LIVE EVENTS</div>
+                <div style={{ fontSize: '18px', fontWeight: '600', color: isConnected ? '#16a34a' : '#dc2626' }}>
+                  {isConnected ? 'ACTIVE' : 'OFFLINE'}
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Connection State Debug */}
           <div style={{
             marginTop: '24px',
@@ -414,6 +472,7 @@ export function RuntimePage() {
             <div>WebSocket: {connectionState}</div>
             <div>Runtime URL: /ws</div>
             <div>Last Heartbeat: {new Date().toISOString()}</div>
+            <div style={{ marginTop: '8px', color: '#16a34a' }}>P6.16 Execution Truth: Active</div>
           </div>
         </>
       )}

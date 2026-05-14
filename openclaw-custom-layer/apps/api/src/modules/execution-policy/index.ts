@@ -22,6 +22,7 @@ export {
 // FIX 121: Intent classifier exports
 // P6.9: Added execution mode classification
 // P6.11R: Added mustUseQueue and isStepSafeForSimpleExecution guards
+// P6.14: Added detectSuspiciousDownload for safe random software rule
 export {
   classifyIntent,
   shouldBlockLocalProposal,
@@ -31,8 +32,10 @@ export {
   requiresExecutionEvidence,
   mustUseQueue,
   isStepSafeForSimpleExecution,
+  detectSuspiciousDownload,
   type IntentKind,
-  type IntentClassification
+  type IntentClassification,
+  type SuspiciousDownloadResult
 } from './intent-classifier'
 export {
   handleGetExecutionPolicy,

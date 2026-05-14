@@ -9220,3 +9220,100 @@ Nueva sección con:
 - `docs/reports/claude/P6_13_validation_explainability_audit.md`
 - `docs/reports/claude/P6_13_self_audit.md`
 - `docs/reports/claude/P6_13_validation_capability_report.md`
+
+---
+
+## P6.14 — Composite Planner Fix & Safe Download Rule
+
+**Fecha**: 2026-05-13
+**Estado**: COMPLETADO
+
+### Problema
+
+"descarga un programa random freeware" retornaba:
+```
+Error: No se pudo crear plan de ejecución: Input es tarea simple, no composite
+```
+
+El planner solo manejaba tareas multi-step (compuestas), no acciones simples con capability.
+
+### Solución
+
+#### SINGLE_ACTION_VERBS
+Mapa de verbos que mapean a capabilities:
+```typescript
+const SINGLE_ACTION_VERBS = {
+  'descarga': { actionType: 'download_file', capability: 'download' },
+  'busca': { actionType: 'search_web', capability: 'web_search' },
+  'navega': { actionType: 'navigate_url', capability: 'browser' },
+  // ... más verbos
+}
+```
+
+#### detectSingleAction()
+Detecta acciones simples con capability al inicio del input.
+
+#### detectSuspiciousDownload()
+Detecta descargas riesgosas:
+- HIGH RISK: random, freeware, cracked, pirated, hack, keygen
+- MEDIUM RISK: unknown sources, "from internet"
+- LOW RISK: downloads without official source
+
+#### SecurityWarning en BuildCompositePlanResult
+```typescript
+export interface SecurityWarning {
+  type: 'suspicious_download' | 'untrusted_source' | 'high_risk_action'
+  riskLevel: 'low' | 'medium' | 'high'
+  message: string
+  recommendedAction?: string
+}
+```
+
+#### CapabilityReadinessSummary en BuildCompositePlanResult
+```typescript
+export interface CapabilityReadinessSummary {
+  capability: string
+  implemented: boolean
+  configured: boolean
+  available: boolean
+  statusMessage: string
+}
+```
+
+### Nuevo Flujo
+
+1. Usuario: "descarga un programa random freeware"
+2. `classifyIntent()` → `install_download_action`
+3. `classifyExecutionMode()` → `useQueue: true`
+4. `buildCompositeExecutionPlan()`:
+   - `detectSingleAction()` → `{ verb: 'descarga', capability: 'download' }`
+   - Crea plan de un paso
+   - `getCapabilityReadiness()` → `{ implemented: false }`
+   - `detectSuspiciousDownload()` → `{ riskLevel: 'high' }`
+5. Plan se encola con warnings
+6. Executor intenta ejecutar
+7. Falla con mensaje claro (capability not implemented)
+
+### Archivos Modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| composite-tasks/planner.ts | +120 líneas: SINGLE_ACTION_VERBS, detectSingleAction() |
+| composite-tasks/types.ts | +20 líneas: SecurityWarning, CapabilityReadinessSummary |
+| execution-policy/intent-classifier.ts | +80 líneas: detectSuspiciousDownload() |
+| execution-policy/index.ts | +3 exports |
+
+### Verificaciones
+
+- ✅ npm run check (api)
+- ✅ npm run check (web)
+- ✅ npm run build (api)
+- ✅ "descarga X" crea plan de un paso
+- ✅ "busca X" crea plan de un paso
+- ✅ "random freeware" genera warning de seguridad
+- ✅ Capability readiness incluido en respuesta
+
+### Reportes Generados
+
+- `docs/reports/claude/P6_14_composite_planner_fix_report.md`
+- `docs/reports/claude/P6_14_self_audit.md`

@@ -15,7 +15,8 @@ import {
   type BuildCompositePlanInput,
   type BuildCompositePlanResult,
   type StepPreconditionResult,
-  type CompositeStepType
+  type CompositeStepType,
+  type SecurityWarning
 } from './types'
 import {
   findCompositeByInput,
@@ -28,7 +29,8 @@ import {
   type TaskActionType,
   type NormalizedIntent
 } from '../task-memory'
-import { getEnabledCapabilityByKey, normalizeCapabilityKey } from '../capabilities'
+import { getEnabledCapabilityByKey, normalizeCapabilityKey, getCapabilityReadiness } from '../capabilities'
+import { detectSuspiciousDownload, type SuspiciousDownloadResult } from '../execution-policy'
 
 /**
  * Patterns for splitting compound inputs
@@ -56,6 +58,38 @@ const ACTION_CHAINS: Record<string, TaskActionType[]> = {
   'install and open': ['download_file', 'install_app', 'open_app'],
   'descargar, instalar y abrir': ['download_file', 'install_app', 'open_app'],
   'download, install and open': ['download_file', 'install_app', 'open_app'],
+}
+
+/**
+ * P6.14: Single action verbs that map to capabilities
+ * These allow single actions to create single-step plans
+ */
+const SINGLE_ACTION_VERBS: Record<string, { actionType: TaskActionType; capability: string }> = {
+  // Download actions
+  'descarga': { actionType: 'download_file', capability: 'download' },
+  'descargar': { actionType: 'download_file', capability: 'download' },
+  'download': { actionType: 'download_file', capability: 'download' },
+  'baja': { actionType: 'download_file', capability: 'download' },
+  'bajar': { actionType: 'download_file', capability: 'download' },
+  // Search actions
+  'busca': { actionType: 'search_web', capability: 'web_search' },
+  'buscar': { actionType: 'search_web', capability: 'web_search' },
+  'search': { actionType: 'search_web', capability: 'web_search' },
+  'encuentra': { actionType: 'search_web', capability: 'web_search' },
+  'encontrar': { actionType: 'search_web', capability: 'web_search' },
+  // Browser actions
+  'navega': { actionType: 'navigate_url', capability: 'browser' },
+  'navegar': { actionType: 'navigate_url', capability: 'browser' },
+  'navigate': { actionType: 'navigate_url', capability: 'browser' },
+  'abre': { actionType: 'navigate_url', capability: 'browser' },
+  'abrir': { actionType: 'navigate_url', capability: 'browser' },
+  'open': { actionType: 'navigate_url', capability: 'browser' },
+  // Open app actions
+  'ejecuta': { actionType: 'open_app', capability: 'filesystem' },
+  'ejecutar': { actionType: 'open_app', capability: 'filesystem' },
+  'run': { actionType: 'open_app', capability: 'filesystem' },
+  'lanza': { actionType: 'open_app', capability: 'filesystem' },
+  'lanzar': { actionType: 'open_app', capability: 'filesystem' },
 }
 
 /**
@@ -101,6 +135,45 @@ function detectActionChain(input: string): TaskActionType[] | null {
   for (const [pattern, chain] of Object.entries(ACTION_CHAINS)) {
     if (lower.includes(pattern)) {
       return chain
+    }
+  }
+
+  return null
+}
+
+/**
+ * P6.14: Detect if input is a single capability-backed action
+ * Returns the action details if found, null otherwise
+ */
+function detectSingleAction(input: string): { actionType: TaskActionType; capability: string; verb: string } | null {
+  const lower = input.toLowerCase().trim()
+
+  // Check each single action verb at the START of the input
+  for (const [verb, details] of Object.entries(SINGLE_ACTION_VERBS)) {
+    // Match verb at start of input (e.g., "descarga un archivo", "busca en google")
+    if (lower.startsWith(verb + ' ') || lower === verb) {
+      return { ...details, verb }
+    }
+  }
+
+  // Also check if verb appears after common prefixes
+  const prefixPatterns = [
+    /^(por favor|porfavor|please)\s+/i,
+    /^(quiero|necesito|want to|need to)\s+/i,
+    /^(puedes|puede|can you)\s+/i,
+    /^(me|te)\s+(puedes|puede)\s+/i,
+  ]
+
+  let strippedInput = lower
+  for (const pattern of prefixPatterns) {
+    strippedInput = strippedInput.replace(pattern, '')
+  }
+
+  if (strippedInput !== lower) {
+    for (const [verb, details] of Object.entries(SINGLE_ACTION_VERBS)) {
+      if (strippedInput.startsWith(verb + ' ') || strippedInput === verb) {
+        return { ...details, verb }
+      }
     }
   }
 
@@ -300,11 +373,97 @@ export function buildCompositeExecutionPlan(
     substeps = splitInputIntoSteps(userInput)
   }
 
-  // If only one substep and no chain, not a composite
+  // If only one substep and no chain, check for single capability action
   if (substeps.length <= 1 && !actionChain) {
+    // P6.14: Check if this is a single capability-backed action
+    const singleAction = detectSingleAction(userInput)
+
+    if (singleAction) {
+      console.log(`[CompositePlanner P6.14] Detected single capability action: ${singleAction.verb} -> ${singleAction.capability}`)
+
+      // Create a single-step plan for the capability action
+      const singleStep: CompositeTaskStep = {
+        stepId: generateStepId(),
+        order: 1,
+        type: 'openclaw',  // Will be executed via provider
+        actionType: singleAction.actionType,
+        targetEntity: targetEntity || undefined,
+        description: userInput,
+        capabilityKey: singleAction.capability,
+        requiresAi: true,
+        requiresConfirmation: singleAction.capability === 'download',  // Downloads need confirmation
+        dependsOnPrevious: false,
+        estimatedDurationMs: estimateStepDuration(singleAction.actionType),
+        // P6.14: Validation for capability actions
+        validationRequired: singleAction.capability === 'download',
+        validationType: singleAction.capability === 'download' ? 'file_downloaded' : undefined,
+        validationCritical: false
+      }
+
+      const plan: CompositeExecutionPlan = {
+        id: generatePlanId(),
+        tenantId,
+        userId,
+        sourceInput: userInput,
+        steps: [singleStep],
+        confidence: 0.8,  // Moderate confidence for single action
+        estimatedDurationMs: singleStep.estimatedDurationMs || 5000,
+        requiresAi: true,
+        tokenSavingEstimate: 0,
+        reusedPatternIds: [],
+        reusedCapabilityKeys: [singleAction.capability],
+        skippableSteps: [],
+        createdAt: new Date().toISOString()
+      }
+
+      // P6.14: Get capability readiness to include in response
+      const readiness = getCapabilityReadiness(tenantId, singleAction.capability)
+      const capabilityReadiness = {
+        capability: readiness.capability as string,
+        implemented: readiness.implemented,
+        configured: readiness.configured,
+        available: readiness.available,
+        statusMessage: readiness.statusMessage
+      }
+
+      // P6.14: Check for suspicious download requests
+      const securityWarnings: SecurityWarning[] = []
+      if (singleAction.capability === 'download') {
+        const downloadCheck = detectSuspiciousDownload(userInput)
+        if (downloadCheck.isSuspicious) {
+          console.log(`[CompositePlanner P6.14] Suspicious download detected: ${downloadCheck.reason}`)
+          securityWarnings.push({
+            type: 'suspicious_download',
+            riskLevel: downloadCheck.riskLevel as 'low' | 'medium' | 'high',
+            message: downloadCheck.reason || 'Descarga sospechosa detectada',
+            recommendedAction: downloadCheck.recommendedAction
+          })
+        }
+      }
+
+      console.log(`[CompositePlanner P6.14] Capability readiness: ${JSON.stringify(capabilityReadiness)}`)
+
+      return {
+        found: true,
+        plan,
+        reason: `Plan de un paso para acción ${singleAction.verb} (capability: ${singleAction.capability})`,
+        confidence: 0.8,
+        stepsFromTaskMemory: 0,
+        stepsFromCapabilities: 1,
+        stepsRequiringAi: 1,
+        estimatedTokenSaving: 0,
+        // P6.14: Include capability readiness so UI can show warnings
+        capabilityReadiness,
+        blockingCapabilities: capabilityReadiness.available ? undefined : [capabilityReadiness],
+        // P6.14: Include security warnings for risky requests
+        securityWarnings: securityWarnings.length > 0 ? securityWarnings : undefined
+      }
+    }
+
+    // Truly simple task - no capability backing
     return {
       found: false,
-      reason: 'Input es tarea simple, no composite',
+      reason: 'Input es tarea simple sin capability asociada',
       confidence: 0,
       stepsFromTaskMemory: 0,
       stepsFromCapabilities: 0,
@@ -409,6 +568,7 @@ function calculatePlanConfidence(steps: CompositeTaskStep[]): number {
 
 /**
  * Check if input is a composite task candidate
+ * P6.14: Also returns true for single capability-backed actions
  */
 export function isCompositeCandidate(input: string): boolean {
   // Check for split patterns
@@ -424,6 +584,12 @@ export function isCompositeCandidate(input: string): boolean {
     if (lower.includes(pattern)) {
       return true
     }
+  }
+
+  // P6.14: Check for single capability-backed actions
+  const singleAction = detectSingleAction(input)
+  if (singleAction) {
+    return true
   }
 
   return false

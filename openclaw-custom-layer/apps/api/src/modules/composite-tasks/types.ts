@@ -174,6 +174,27 @@ export interface BuildCompositePlanInput {
 }
 
 /**
+ * P6.14: Capability readiness summary for plan result
+ */
+export interface CapabilityReadinessSummary {
+  capability: string
+  implemented: boolean
+  configured: boolean
+  available: boolean
+  statusMessage: string
+}
+
+/**
+ * P6.14: Security warning for risky requests
+ */
+export interface SecurityWarning {
+  type: 'suspicious_download' | 'untrusted_source' | 'high_risk_action'
+  riskLevel: 'low' | 'medium' | 'high'
+  message: string
+  recommendedAction?: string
+}
+
+/**
  * Result of composite plan building
  */
 export interface BuildCompositePlanResult {
@@ -187,6 +208,11 @@ export interface BuildCompositePlanResult {
   stepsFromCapabilities: number
   stepsRequiringAi: number
   estimatedTokenSaving: number
+  // P6.14: Capability readiness for single-action plans
+  capabilityReadiness?: CapabilityReadinessSummary
+  blockingCapabilities?: CapabilityReadinessSummary[]
+  // P6.14: Security warnings for risky requests
+  securityWarnings?: SecurityWarning[]
 }
 
 /**

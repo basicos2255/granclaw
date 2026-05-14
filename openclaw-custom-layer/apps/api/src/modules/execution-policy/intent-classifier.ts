@@ -524,3 +524,101 @@ export function isStepSafeForSimpleExecution(stepDescription: string): boolean {
   // Default: conservative - assume unsafe for unrecognized patterns
   return false
 }
+
+/**
+ * P6.14: Detect suspicious or risky download requests
+ * Returns warning info if the download request is potentially dangerous
+ */
+export interface SuspiciousDownloadResult {
+  isSuspicious: boolean
+  riskLevel: 'none' | 'low' | 'medium' | 'high'
+  warnings: string[]
+  reason?: string
+  recommendedAction?: string
+}
+
+export function detectSuspiciousDownload(input: string): SuspiciousDownloadResult {
+  const lowerInput = input.toLowerCase()
+
+  // Check if this is a download request
+  const isDownloadRequest = /\b(descarga|descargar|baja|bajar|download)\b/i.test(lowerInput)
+
+  if (!isDownloadRequest) {
+    return { isSuspicious: false, riskLevel: 'none', warnings: [] }
+  }
+
+  const warnings: string[] = []
+  let riskLevel: 'none' | 'low' | 'medium' | 'high' = 'none'
+
+  // HIGH RISK: Random/arbitrary software
+  const randomSoftwarePatterns = [
+    /\b(random|aleatorio|cualquier)\b/i,
+    /\b(freeware|shareware|cracked|pirated|pirateado)\b/i,
+    /\b(programa\s+random|software\s+random|aplicación\s+random)\b/i,
+    /\b(any\s+program|cualquier\s+programa|un\s+programa)\b/i,
+    /\b(hack|keygen|crack|serial)\b/i,
+    /\b(torrent|warez)\b/i
+  ]
+
+  for (const pattern of randomSoftwarePatterns) {
+    if (pattern.test(lowerInput)) {
+      warnings.push('Solicitud de descarga de software aleatorio o no especificado detectada')
+      riskLevel = 'high'
+      break
+    }
+  }
+
+  // MEDIUM RISK: Unknown sources
+  const unknownSourcePatterns = [
+    /\b(internet|web|sitio|site)\b.*\b(descarga|download)\b/i,
+    /\b(descarga|download)\b.*\b(internet|web|sitio|site)\b/i,
+    /\bde\s+internet\b/i,
+    /\bfrom\s+(the\s+)?web\b/i,
+    /\b(algún|algun|some)\s+(programa|software|aplicación|app)\b/i
+  ]
+
+  if (riskLevel !== 'high') {
+    for (const pattern of unknownSourcePatterns) {
+      if (pattern.test(lowerInput)) {
+        warnings.push('Descarga de fuente no especificada')
+        riskLevel = 'medium'
+        break
+      }
+    }
+  }
+
+  // LOW RISK: Downloads without explicit source
+  if (riskLevel === 'none' && !/\b(oficial|official|github|sourceforge|microsoft|google|adobe)\b/i.test(lowerInput)) {
+    if (!/https?:\/\//i.test(lowerInput)) {
+      warnings.push('No se especificó una fuente conocida para la descarga')
+      riskLevel = 'low'
+    }
+  }
+
+  // Determine recommended action
+  let recommendedAction: string | undefined
+  let reason: string | undefined
+
+  switch (riskLevel) {
+    case 'high':
+      reason = 'Solicitud de descarga de alto riesgo detectada'
+      recommendedAction = 'Especifica el software exacto que necesitas y la fuente oficial de descarga'
+      break
+    case 'medium':
+      reason = 'Descarga de fuente no verificada'
+      recommendedAction = 'Proporciona la URL oficial o el nombre exacto del software'
+      break
+    case 'low':
+      reason = 'Descarga sin fuente especificada'
+      recommendedAction = 'Considera especificar la fuente oficial para mayor seguridad'
+      break
+  }
+
+  return {
+    isSuspicious: riskLevel !== 'none',
+    riskLevel,
+    warnings,
+    reason,
+    recommendedAction
+  }
+}

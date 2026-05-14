@@ -9317,3 +9317,91 @@ export interface CapabilityReadinessSummary {
 
 - `docs/reports/claude/P6_14_composite_planner_fix_report.md`
 - `docs/reports/claude/P6_14_self_audit.md`
+
+---
+
+## P6.15 — Queue Session Lifecycle, Executor Binding & Runtime Persistence
+
+**Fecha**: 2026-05-14
+**Estado**: COMPLETADO
+
+### Problema
+
+```
+Session with id "queue-xxx" not found
+```
+
+Causaba:
+- Queue job quedaba retrying
+- Task quedaba queued/pending eternamente
+- UI mostraba "Pensando..." sin resolver
+- Sin artifacts ni outputs
+
+### Root Cause
+
+El queue executor en `execution-integration.ts` creaba un sessionId `queue-${job.id}` pero **NUNCA** creaba la sesión en storage. Cuando `executeProviderTask()` intentaba validar la sesión, fallaba porque no existía.
+
+```typescript
+// ANTES (BUG)
+const sessionId = `queue-${job.id}`  // Solo string
+executeProviderTask({ sessionId })   // Session no existe!
+
+// orchestrator/service.ts
+session = getSession(sessionId)      // Returns null
+if (!session) → ERROR                // "Session not found"
+```
+
+### Solución
+
+#### Nueva función: ensureSession()
+```typescript
+// sessions/service.ts
+export function ensureSession(
+  sessionId: string,
+  tenantId: string,
+  initialMessage?: string
+): Session {
+  const existing = getSession(sessionId)
+  if (existing) return existing
+
+  const session = {
+    id: sessionId,  // Usar ID específico
+    tenantId,
+    messages: [...],
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  }
+
+  storage.add('sessions', session)
+  return session
+}
+```
+
+#### Handlers actualizados
+Todos los handlers en `execution-integration.ts` ahora llaman a `ensureSession()`:
+```typescript
+const sessionId = `queue-${job.id}`
+ensureSession(sessionId, job.context.tenantId)  // P6.15
+const result = await executeX({ sessionId })
+```
+
+### Archivos Modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| sessions/service.ts | +40 líneas: ensureSession() |
+| runtime-queue/execution-integration.ts | +15 líneas: ensureSession calls |
+
+### Verificaciones
+
+- ✅ npm run check (api)
+- ✅ npm run build (api)
+- ✅ Queue sessions se crean antes de ejecución
+- ✅ Sessions persisten en file storage
+- ✅ executeProviderTask() encuentra la sesión
+
+### Reportes Generados
+
+- `docs/reports/claude/P6_15_runtime_pipeline_map.md`
+- `docs/reports/claude/P6_15_runtime_session_self_audit.md`
+- `docs/reports/claude/P6_15_runtime_session_report.md`

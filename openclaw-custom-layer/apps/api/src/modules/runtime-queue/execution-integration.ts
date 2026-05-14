@@ -10,6 +10,8 @@ import type { QueuedJob, JobHandler, JobHandlerResult, JobContext, CompositeTask
 import { getQueue } from './queue'
 import { registerHandler } from './scheduler'
 import { emitQueueEvent, emitSystemEvent } from '../observability'
+// P6.15: Import ensureSession to create queue sessions
+import { ensureSession } from '../sessions/service'
 
 // ============================================================================
 // TYPES
@@ -329,13 +331,18 @@ const dagExecutionHandler: JobHandler = async (job, helpers) => {
       executionId?: string
     }
 
+    // P6.15: Create queue session BEFORE execution
+    const sessionId = `queue-${job.id}`
+    ensureSession(sessionId, job.context.tenantId)
+    helpers.log('info', `[P6.15] Queue session created: ${sessionId}`)
+
     helpers.reportProgress(10, 'Initializing DAG execution')
 
     const result = await executeGraph({
       graph: payload.graph as any,
       tenantId: job.context.tenantId,
       userId: job.context.userId,
-      sessionId: `queue-${job.id}`
+      sessionId
     }, (progress) => {
       const pct = progress.progress ?? 0
       helpers.reportProgress(10 + (pct * 0.8), progress.message)
@@ -373,13 +380,18 @@ const compositeTaskHandler: JobHandler = async (job, helpers) => {
       plan: unknown
     }
 
+    // P6.15: Create queue session BEFORE execution
+    const sessionId = `queue-${job.id}`
+    ensureSession(sessionId, job.context.tenantId)
+    helpers.log('info', `[P6.15] Queue session created: ${sessionId}`)
+
     helpers.reportProgress(10, 'Initializing composite task')
 
     const result = await executeCompositePlan({
       plan: payload.plan as any,
       tenantId: job.context.tenantId,
       userId: job.context.userId,
-      sessionId: `queue-${job.id}`
+      sessionId
     })
 
     helpers.reportProgress(100, 'Composite task completed')
@@ -403,6 +415,7 @@ const compositeTaskHandler: JobHandler = async (job, helpers) => {
 /**
  * Handler for simple-task jobs
  * P6.9R: Uses executeProviderTask (no guard) for internal queue execution
+ * P6.15: Creates queue session before execution
  */
 const simpleTaskHandler: JobHandler = async (job, helpers) => {
   helpers.log('info', 'Starting simple task from queue')
@@ -418,13 +431,19 @@ const simpleTaskHandler: JobHandler = async (job, helpers) => {
       tenantId?: string
     }
 
+    // P6.15: Create queue session BEFORE execution
+    const sessionId = payload.sessionId || `queue-${job.id}`
+    const tenantId = payload.tenantId || job.context.tenantId
+    ensureSession(sessionId, tenantId, payload.message)
+    helpers.log('info', `[P6.15] Queue session created: ${sessionId}`)
+
     helpers.reportProgress(10, 'Executing task')
 
     const result = await executeProviderTask({
       message: payload.message,
       agentId: payload.agentId,
-      sessionId: payload.sessionId || `queue-${job.id}`,
-      tenantId: payload.tenantId || job.context.tenantId
+      sessionId,
+      tenantId
     })
 
     helpers.reportProgress(100, 'Task completed')

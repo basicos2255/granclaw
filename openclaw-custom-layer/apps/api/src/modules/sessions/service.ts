@@ -69,6 +69,53 @@ export function createSession(input: CreateSessionInput | undefined, tenantId: s
   return session
 }
 
+/**
+ * P6.15: Ensure a session exists with the given ID
+ * Creates the session if it doesn't exist, returns existing if it does.
+ * Used by queue executor to create queue sessions on-demand.
+ */
+export function ensureSession(
+  sessionId: string,
+  tenantId: string,
+  initialMessage?: string
+): Session {
+  // Check if session already exists
+  const existing = getSession(sessionId)
+  if (existing) {
+    // Verify tenant ownership
+    if (existing.tenantId !== tenantId) {
+      console.warn(`[Sessions P6.15] Session ${sessionId} exists but belongs to different tenant`)
+      // Create new session with different ID for this tenant
+      return createSession({ initialMessage }, tenantId)
+    }
+    return existing
+  }
+
+  // Create new session with the specified ID
+  const now = Date.now()
+  const messages: SessionMessage[] = []
+
+  if (initialMessage) {
+    messages.push({
+      role: 'user',
+      content: initialMessage,
+      timestamp: now
+    })
+  }
+
+  const session: Session = {
+    id: sessionId,
+    tenantId,
+    messages,
+    createdAt: now,
+    updatedAt: now
+  }
+
+  storage.add('sessions', session)
+  console.log(`[Sessions P6.15] Created queue session: ${sessionId}`)
+  return session
+}
+
 export interface AddMessageResult {
   success: boolean
   session?: Session

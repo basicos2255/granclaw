@@ -355,6 +355,7 @@ export function emitPairingStateChange(
 
 /**
  * P6.16: Emit task event for live task monitoring
+ * P6.17R: Changed to emit to 'tasks' channel (also emit to 'runtime' for backward compat)
  */
 export function emitTaskEvent(
   tenantId: string,
@@ -375,15 +376,24 @@ export function emitTaskEvent(
     duration?: number
   }
 ): number {
-  return emitToWs('runtime', eventType, {
+  const taskPayload = {
     timestamp: new Date().toISOString(),
     source: 'task-reconciliation',
     ...payload
-  } as TaskEventPayload, { tenantId, userId })
+  } as TaskEventPayload
+
+  // P6.17R: Emit to 'tasks' channel (primary) - this is what frontend subscribes to
+  const tasksSent = emitToWs('tasks', eventType, taskPayload, { tenantId, userId })
+
+  // P6.17R: Also emit to 'runtime' for backward compatibility
+  emitToWs('runtime', eventType, taskPayload, { tenantId, userId })
+
+  return tasksSent
 }
 
 /**
  * P6.16: Emit task step event for live progress monitoring
+ * P6.17R: Changed to emit to 'tasks' channel (primary) + 'runtime' for backward compat
  */
 export function emitTaskStepEvent(
   tenantId: string,
@@ -408,9 +418,17 @@ export function emitTaskStepEvent(
     duration?: number
   }
 ): number {
-  return emitToWs('runtime', eventType, {
+  const stepPayload = {
     timestamp: new Date().toISOString(),
     source: 'composite-executor',
     ...payload
-  } as TaskEventPayload, { tenantId, userId })
+  } as TaskEventPayload
+
+  // P6.17R: Emit to 'tasks' channel (primary) - this is what frontend subscribes to
+  const tasksSent = emitToWs('tasks', eventType, stepPayload, { tenantId, userId })
+
+  // P6.17R: Also emit to 'runtime' for backward compatibility
+  emitToWs('runtime', eventType, stepPayload, { tenantId, userId })
+
+  return tasksSent
 }

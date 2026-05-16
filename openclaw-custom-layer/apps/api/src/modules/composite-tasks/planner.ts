@@ -16,7 +16,8 @@ import {
   type BuildCompositePlanResult,
   type StepPreconditionResult,
   type CompositeStepType,
-  type SecurityWarning
+  type SecurityWarning,
+  type CapabilityReadinessSummary
 } from './types'
 import {
   findCompositeByInput,
@@ -590,6 +591,36 @@ export function buildCompositeExecutionPlan(
 
   console.log(`[CompositePlanner] Built plan with ${steps.length} steps: ${stepsFromTaskMemory} task-memory, ${stepsFromCapabilities} capability, ${stepsRequiringAi} openclaw`)
 
+  // P6.17R: Check capability readiness for ALL steps with capability keys
+  // This ensures multistep plans also get blocked if capabilities are not available
+  // Using CapabilityReadinessSummary to match BuildCompositePlanResult types
+  const capabilityReadinessResults: CapabilityReadinessSummary[] = []
+  const blockingCapabilities: CapabilityReadinessSummary[] = []
+
+  for (const step of steps) {
+    if (step.capabilityKey) {
+      const readiness = getCapabilityReadiness(step.capabilityKey, tenantId)
+      const summary: CapabilityReadinessSummary = {
+        capability: readiness.capability as string,
+        capabilityKey: step.capabilityKey,
+        available: readiness.available,
+        implemented: readiness.implemented,
+        configured: readiness.configured,
+        statusMessage: readiness.statusMessage,
+        reason: readiness.statusMessage // Alias for compatibility
+      }
+      capabilityReadinessResults.push(summary)
+
+      if (!readiness.available) {
+        blockingCapabilities.push(summary)
+      }
+    }
+  }
+
+  if (blockingCapabilities.length > 0) {
+    console.log(`[CompositePlanner P6.17R] Multistep plan has ${blockingCapabilities.length} blocking capabilities: ${blockingCapabilities.map(c => c.capabilityKey || c.capability).join(', ')}`)
+  }
+
   return {
     found: true,
     plan,
@@ -598,7 +629,10 @@ export function buildCompositeExecutionPlan(
     stepsFromTaskMemory,
     stepsFromCapabilities,
     stepsRequiringAi,
-    estimatedTokenSaving: tokenSaving
+    estimatedTokenSaving: tokenSaving,
+    // P6.17R: Include capability readiness for multistep plans
+    capabilityReadiness: capabilityReadinessResults.length > 0 ? capabilityReadinessResults : undefined,
+    blockingCapabilities: blockingCapabilities.length > 0 ? blockingCapabilities : undefined
   }
 }
 

@@ -9602,3 +9602,105 @@ if (planResult.blockingCapabilities?.length > 0) {
 ### Reportes Generados
 
 - `docs/reports/claude/P6_16_execution_truth_report.md`
+
+---
+
+## P6.17R — Runtime Events Channel Alignment, E2E Harness Real, Retry Lifecycle Fix, Multistep Capability Gates y Execution Truth para bloqueos
+
+**Fecha**: 2026-05-15
+**Estado**: COMPLETADO
+
+### Problema
+
+P6.17 fue reportado como completado pero presentaba fallas críticas descubiertas en auditoría:
+
+1. **Task Events WS desalineados**: Frontend suscrito a canal 'tasks' pero backend emitía a 'runtime'
+2. **Harness P6.17 fallaba**: 25% passRate (1/4 tests)
+3. **Retry lifecycle roto**: `getNextPending()` devuelve jobs 'retrying' pero `markScheduled()` solo acepta 'pending'
+4. **Capability gates multistep incompletos**: Solo single-action plans incluían blockingCapabilities
+5. **Execution Truth para blocked débil**: Sin failureExplanation específico para blocked tasks
+6. **PROJECT_MEMORY.md no actualizado**: P6.17 no documentado
+
+### Solución
+
+#### FASE A: Auditoría inicial obligatoria
+
+Auditoría de código real antes de modificar:
+
+| # | Problema | Archivo | Línea | Impacto |
+|---|----------|---------|-------|---------|
+| 1 | WsChannel NO incluye 'tasks' | runtime-ws/types.ts | 23-28 | Frontend suscrito a canal inexistente |
+| 2 | emitTaskEvent emite a 'runtime' | event-bridge.ts | 378, 411 | Frontend no recibe eventos |
+| 3 | markScheduled() solo acepta 'pending' | queue.ts | 116-118 | Jobs retrying nunca se procesan |
+| 4 | getNextPending() devuelve jobs retrying | queue.ts | 269-290 | Se seleccionan pero no se marcan |
+| 5 | Multistep plans no verifican capability | planner.ts | 593-602 | No hay blockingCapabilities |
+| 6 | P6.17 NO documentado | PROJECT_MEMORY.md | - | Falta documentación |
+
+#### FASE B: Fix WS Task Events channel alignment
+
+**apps/api/src/modules/runtime-ws/types.ts**:
+- Añadido 'tasks' a WsChannel type
+
+**apps/api/src/modules/runtime-ws/event-bridge.ts**:
+- `emitTaskEvent()` ahora emite a canal 'tasks' (primario) y 'runtime' (backward compat)
+- `emitTaskStepEvent()` ahora emite a canal 'tasks' (primario) y 'runtime' (backward compat)
+
+#### FASE C: Fix Harness E2E P6.17
+
+**apps/api/src/modules/testing/e2e/p6-17-harness.ts**:
+- Corregido unwrapping de API responses (ApiResponse wrapper)
+- Añadido `fetchTask()` helper para obtener task completo
+- Actualizados todos los tests para usar estructura de respuesta correcta
+- Test "Task Creation" busca `meta.taskId` en response
+- Test "Mock Safety" valida múltiples escenarios de bloqueo
+
+#### FASE D: Fix Retry Lifecycle
+
+**apps/api/src/modules/runtime-queue/queue.ts**:
+- `markScheduled()` ahora acepta jobs con status 'pending' O 'retrying'
+- Esto corrige el ciclo donde jobs retrying eran seleccionados pero nunca procesados
+
+#### FASE E: Fix Multistep Capability Gates
+
+**apps/api/src/modules/composite-tasks/types.ts**:
+- `CapabilityReadinessSummary` extendido con campos opcionales para multistep
+- `BuildCompositePlanResult.capabilityReadiness` ahora acepta array para multistep
+
+**apps/api/src/modules/composite-tasks/planner.ts**:
+- Multistep plans ahora verifican capability readiness para TODOS los steps
+- `blockingCapabilities` se incluye en return si algún step tiene capability no disponible
+
+#### FASE F: Fix Execution Truth para blocked
+
+**apps/api/src/modules/runtime-queue/task-reconciliation.ts**:
+- Nueva función `createFailureExplanation()` genera TaskFailureExplanation
+- Task status se establece como 'blocked' cuando executionStatus es 'blocked'
+- `failureExplanation` se guarda en task para UI
+- Códigos específicos: `capability_not_configured`, `pairing_required`, `permission_required`
+- Recovery actions incluidas para cada tipo de bloqueo
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| `apps/api/src/modules/runtime-ws/types.ts` | +1 línea (canal 'tasks') |
+| `apps/api/src/modules/runtime-ws/event-bridge.ts` | ~40 líneas (dual channel emission) |
+| `apps/api/src/modules/testing/e2e/p6-17-harness.ts` | ~150 líneas (harness rewrite) |
+| `apps/api/src/modules/runtime-queue/queue.ts` | ~5 líneas (markScheduled fix) |
+| `apps/api/src/modules/composite-tasks/types.ts` | ~15 líneas (type extensions) |
+| `apps/api/src/modules/composite-tasks/planner.ts` | ~40 líneas (capability check) |
+| `apps/api/src/modules/runtime-queue/task-reconciliation.ts` | ~100 líneas (failure explanation) |
+| `PROJECT_MEMORY.md` | +esta sección |
+
+### Verificación
+
+- ✅ `npm run check` API: passed
+- ✅ `npm run check` web: passed
+- ✅ `npm run build` API: passed
+- ✅ `npm run build` web: passed
+- ✅ WsChannel incluye 'tasks'
+- ✅ emitTaskEvent emite a 'tasks' channel
+- ✅ markScheduled acepta 'retrying'
+- ✅ Multistep plans incluyen blockingCapabilities
+- ✅ TaskFailureExplanation generado para blocked/failed tasks
+- ✅ UI ya muestra failureExplanation (TasksPage, TaskDetailPage)

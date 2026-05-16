@@ -175,13 +175,18 @@ export interface BuildCompositePlanInput {
 
 /**
  * P6.14: Capability readiness summary for plan result
+ * P6.17R: Extended to support both single-action and multistep plans
  */
 export interface CapabilityReadinessSummary {
-  capability: string
-  implemented: boolean
-  configured: boolean
+  capability?: string
+  capabilityKey?: string  // P6.17R: Alternative key format for multistep
+  implemented?: boolean
+  configured?: boolean
   available: boolean
-  statusMessage: string
+  statusMessage?: string
+  reason?: string         // P6.17R: Alternative to statusMessage
+  canTest?: boolean       // P6.17R: Whether capability can be tested
+  recommendedAction?: string // P6.17R: Recommended action for user
 }
 
 /**
@@ -208,8 +213,9 @@ export interface BuildCompositePlanResult {
   stepsFromCapabilities: number
   stepsRequiringAi: number
   estimatedTokenSaving: number
-  // P6.14: Capability readiness for single-action plans
-  capabilityReadiness?: CapabilityReadinessSummary
+  // P6.14 + P6.17R: Capability readiness for single-action or multistep plans
+  // Single value for single-action, array for multistep
+  capabilityReadiness?: CapabilityReadinessSummary | CapabilityReadinessSummary[]
   blockingCapabilities?: CapabilityReadinessSummary[]
   // P6.14: Security warnings for risky requests
   securityWarnings?: SecurityWarning[]

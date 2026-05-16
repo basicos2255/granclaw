@@ -112,10 +112,14 @@ export class RuntimeQueue {
 
   /**
    * Mark job as scheduled (picked by scheduler)
+   * P6.17R: Accept both 'pending' and 'retrying' statuses
+   * This fixes the retry lifecycle where getNextPending returns retrying jobs
+   * but markScheduled was rejecting them
    */
   markScheduled(jobId: string): QueuedJob | undefined {
     const job = this.jobs.get(jobId)
-    if (!job || job.status !== 'pending') return undefined
+    // P6.17R: Accept pending OR retrying (when ready for retry)
+    if (!job || (job.status !== 'pending' && job.status !== 'retrying')) return undefined
 
     const updated = this.update(jobId, {
       status: 'scheduled',

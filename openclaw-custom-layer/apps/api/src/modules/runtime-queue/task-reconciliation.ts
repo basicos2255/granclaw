@@ -16,7 +16,13 @@
 
 import type { QueuedJob, TaskLinkedJobPayload, QueueEvent } from './types'
 import { getQueue } from './queue'
-import type { TaskStatus, TaskReconciliation } from '../tasks/types'
+import type {
+  TaskStatus,
+  TaskReconciliation,
+  TaskFailureExplanation,
+  ValidationFailureReason,
+  RecoveryAction
+} from '../tasks/types'
 import { emitTaskEvent } from '../runtime-ws'  // P6.16
 
 // Track initialization state
@@ -77,6 +83,134 @@ interface CompositeExecutionResultFields {
   failedStep?: { stepId: string; error: string; recoverable: boolean }
   result?: unknown
   error?: unknown
+  // P6.17R: Additional context for failure explanations
+  blockedCapability?: string
+  blockedReason?: string
+}
+
+/**
+ * P6.17R: Create failure explanation for blocked/failed tasks
+ * Maps execution status and reason to user-friendly explanations
+ */
+function createFailureExplanation(
+  executionStatus: string | undefined,
+  reason: string,
+  jobResult?: CompositeExecutionResultFields
+): TaskFailureExplanation {
+  // Determine failure code based on execution status and reason
+  let code: ValidationFailureReason = 'unknown'
+  let title = 'Error de ejecución'
+  let humanMessage = reason
+  const recoveryActions: RecoveryAction[] = []
+
+  if (executionStatus === 'blocked') {
+    // Check reason for specific blocking cause
+    if (reason.includes('capability') || reason.includes('Capacidad')) {
+      code = 'capability_not_configured'
+      title = 'Capacidad no configurada'
+      humanMessage = 'La tarea requiere una capacidad que no está disponible o configurada.'
+      recoveryActions.push({
+        type: 'configure_capability',
+        label: 'Configurar capacidad',
+        description: 'Ir a configuración de capacidades',
+        navigateTo: '/settings/capabilities',
+        primary: true
+      })
+    } else if (reason.includes('pairing') || reason.includes('OpenClaw')) {
+      code = 'pairing_required'
+      title = 'Conexión requerida'
+      humanMessage = 'La tarea requiere conexión con OpenClaw Desktop.'
+      recoveryActions.push({
+        type: 'repair_connection',
+        label: 'Conectar OpenClaw',
+        description: 'Verificar conexión con OpenClaw Desktop',
+        navigateTo: '/runtime',
+        primary: true
+      })
+    } else if (reason.includes('permission') || reason.includes('permiso')) {
+      code = 'permission_required'
+      title = 'Permiso requerido'
+      humanMessage = 'La tarea requiere permisos adicionales.'
+      recoveryActions.push({
+        type: 'approve_action',
+        label: 'Aprobar acción',
+        description: 'Revisar y aprobar los permisos necesarios',
+        primary: true
+      })
+    } else {
+      code = 'unsupported_action'
+      title = 'Acción bloqueada'
+      humanMessage = reason
+    }
+  } else if (executionStatus === 'validation_failed') {
+    code = 'missing_execution_evidence'
+    title = 'Validación fallida'
+    humanMessage = 'La tarea se ejecutó pero no se pudo verificar que las acciones se completaron correctamente.'
+    if (jobResult?.validationFailedSteps?.length) {
+      humanMessage += ` Pasos fallidos: ${jobResult.validationFailedSteps.join(', ')}`
+    }
+    recoveryActions.push({
+      type: 'retry',
+      label: 'Reintentar',
+      description: 'Volver a ejecutar la tarea',
+      primary: true
+    })
+  } else if (executionStatus === 'failed') {
+    // Check for specific failure types
+    if (reason.includes('download') || reason.includes('descarga')) {
+      code = 'download_failed'
+      title = 'Descarga fallida'
+      humanMessage = 'No se pudo completar la descarga del archivo.'
+    } else if (reason.includes('browser') || reason.includes('navegador')) {
+      code = 'browser_failed'
+      title = 'Error de navegador'
+      humanMessage = 'Hubo un error al interactuar con el navegador.'
+    } else if (reason.includes('timeout') || reason.includes('tiempo')) {
+      code = 'execution_timeout'
+      title = 'Tiempo agotado'
+      humanMessage = 'La tarea tardó demasiado y fue cancelada.'
+    } else {
+      code = 'unknown'
+      title = 'Error de ejecución'
+      humanMessage = reason
+    }
+    recoveryActions.push({
+      type: 'retry',
+      label: 'Reintentar',
+      description: 'Volver a ejecutar la tarea',
+      primary: true
+    })
+  } else if (executionStatus === 'partial') {
+    code = 'no_actions_executed'
+    title = 'Ejecución parcial'
+    humanMessage = 'Solo se completaron algunos pasos de la tarea.'
+    recoveryActions.push({
+      type: 'retry_with_replan',
+      label: 'Reintentar con nuevo plan',
+      description: 'Crear un nuevo plan y ejecutar',
+      primary: true
+    })
+  }
+
+  // Always add cancel and view details
+  recoveryActions.push({
+    type: 'view_details',
+    label: 'Ver detalles',
+    description: 'Ver información técnica del error'
+  })
+
+  return {
+    code,
+    title,
+    humanMessage,
+    technicalMessage: reason,
+    failedStep: jobResult?.failedStep?.stepId,
+    capability: jobResult?.blockedCapability,
+    recoveryActions,
+    canRetry: executionStatus !== 'blocked',
+    canRepair: executionStatus === 'blocked',
+    canReplan: executionStatus === 'partial' || executionStatus === 'validation_failed'
+  }
 }
 
 /**
@@ -185,9 +319,21 @@ async function onJobCompleted(jobId: string, jobType: string, meta: Record<strin
     const jobResult = job.result as CompositeExecutionResultFields | undefined
     const { isSuccess, reason } = determineTaskSuccess(jobResult)
 
-    // Update task status
-    const newStatus: TaskStatus = isSuccess ? 'success' : 'error'
-    console.log(`[TaskReconciliation P6.16] Task ${taskId}: ${task.status} → ${newStatus} (${reason})`)
+    // P6.17R: Determine task status - use 'blocked' for blocked execution
+    let newStatus: TaskStatus
+    if (isSuccess) {
+      newStatus = 'success'
+    } else if (jobResult?.executionStatus === 'blocked') {
+      newStatus = 'blocked' // P6.17R: Use blocked status for blocked tasks
+    } else {
+      newStatus = 'error'
+    }
+    console.log(`[TaskReconciliation P6.17R] Task ${taskId}: ${task.status} → ${newStatus} (${reason})`)
+
+    // P6.17R: Create failure explanation for non-success tasks
+    const failureExplanation = isSuccess
+      ? undefined
+      : createFailureExplanation(jobResult?.executionStatus, reason, jobResult)
 
     // P6.17: Create reconciliation object for top-level storage
     const reconciliation: TaskReconciliation = {
@@ -221,8 +367,11 @@ async function onJobCompleted(jobId: string, jobType: string, meta: Record<strin
       isSuccess ? undefined : reason
     )
 
-    // P6.17: Save reconciliation at top-level for easy frontend access
-    updateTask(taskId, { reconciliation })
+    // P6.17R: Save reconciliation and failure explanation at top-level
+    updateTask(taskId, {
+      reconciliation,
+      failureExplanation // P6.17R: Include failure explanation for blocked/failed tasks
+    })
 
     // Sync thread - pass status and optional error
     console.log(`[TaskReconciliation P6.16] Syncing thread for task ${taskId}`)
@@ -316,6 +465,9 @@ async function onJobFailed(jobId: string, jobType: string, meta: Record<string, 
         : undefined
     }
 
+    // P6.17R: Create failure explanation
+    const failureExplanation = createFailureExplanation('failed', errorMessage)
+
     completeTask(
       taskId,
       'error',
@@ -334,8 +486,11 @@ async function onJobFailed(jobId: string, jobType: string, meta: Record<string, 
       errorMessage
     )
 
-    // P6.17: Save reconciliation at top-level
-    updateTask(taskId, { reconciliation })
+    // P6.17R: Save reconciliation and failure explanation at top-level
+    updateTask(taskId, {
+      reconciliation,
+      failureExplanation
+    })
 
     // Sync thread with error
     console.log(`[TaskReconciliation P6.16] Syncing thread for failed task ${taskId}`)

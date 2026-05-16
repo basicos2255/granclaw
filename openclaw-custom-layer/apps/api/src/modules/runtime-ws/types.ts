@@ -19,6 +19,7 @@ export type WsConnectionState =
 
 /**
  * WebSocket channel types
+ * P6.17R: Added 'tasks' channel for task lifecycle events
  */
 export type WsChannel =
   | 'runtime'      // /ws/runtime - global runtime events
@@ -26,6 +27,7 @@ export type WsChannel =
   | 'workflow'     // /ws/workflows/:id - specific workflow events
   | 'notifications'// /ws/notifications - user notifications
   | 'debug'        // /ws/debug - debug events
+  | 'tasks'        // P6.17R: /ws/tasks - task lifecycle events
 
 /**
  * Runtime event types emitted via WebSocket

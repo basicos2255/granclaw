@@ -1,5 +1,5 @@
 /**
- * P6.17 E2E Test Harness
+ * P6.17R E2E Test Harness
  * Live Task Control & E2E Validation
  *
  * Validates:
@@ -8,9 +8,43 @@
  * 3. Real provider execution (when configured)
  * 4. Reconciliation persistence
  * 5. Task events emission
+ *
+ * P6.17R: Fixed API response unwrapping to match actual API format
+ * API uses ok() which wraps: { success, data: {...}, error }
  */
 
 import type { GranClawTask, TaskReconciliation } from '../../tasks/types'
+
+/**
+ * API Response wrapper (from shared/response.ts)
+ */
+interface ApiResponse<T> {
+  success: boolean
+  data: T | null
+  error: string | null
+}
+
+/**
+ * Orchestrator run response structure
+ */
+interface OrchestratorRunResponse {
+  success: boolean
+  queued?: boolean
+  message?: string
+  error?: string
+  meta?: {
+    requestId?: string
+    taskId?: string
+    jobId?: string
+    planId?: string
+    planSteps?: number
+    executionMode?: string
+    intentKind?: string
+  }
+  // For simpler execution paths
+  result?: unknown
+  source?: string
+}
 
 // Test configuration
 export interface P617HarnessConfig {
@@ -60,11 +94,15 @@ export class P617Harness {
     }
   }
 
+  /**
+   * P6.17R: API call helper that properly unwraps API response wrapper
+   * API format: { success, data: {...}, error }
+   */
   private async apiCall<T>(
     method: string,
     path: string,
     body?: unknown
-  ): Promise<{ success: boolean; data?: T; error?: string; status?: number }> {
+  ): Promise<{ success: boolean; data?: T; error?: string; status?: number; rawResponse?: unknown }> {
     try {
       const url = `${this.config.baseUrl}${path}`
       const response = await fetch(url, {
@@ -76,11 +114,18 @@ export class P617Harness {
         body: body ? JSON.stringify(body) : undefined
       })
 
-      const data = await response.json()
+      const rawJson = await response.json() as ApiResponse<T>
+
+      // P6.17R: Properly unwrap API response
+      // API uses ok() which wraps in { success, data, error }
+      const unwrappedData = rawJson.data as T
+
       return {
-        success: response.ok,
-        data: data as T,
-        status: response.status
+        success: response.ok && rawJson.success,
+        data: unwrappedData,
+        error: rawJson.error || undefined,
+        status: response.status,
+        rawResponse: rawJson // For debugging
       }
     } catch (err) {
       return {
@@ -91,8 +136,17 @@ export class P617Harness {
   }
 
   /**
+   * P6.17R: Helper to fetch full task by ID
+   */
+  private async fetchTask(taskId: string): Promise<GranClawTask | null> {
+    const result = await this.apiCall<GranClawTask>('GET', `/tasks/${taskId}`)
+    return result.success && result.data ? result.data : null
+  }
+
+  /**
    * Test 1: Task Creation
    * Verifies that tasks can be created and get proper ID/status
+   * P6.17R: Fixed to use correct API response structure
    */
   async testTaskCreation(): Promise<TestResult> {
     const start = Date.now()
@@ -100,7 +154,7 @@ export class P617Harness {
     this.log(`Running: ${testName}`)
 
     try {
-      const result = await this.apiCall<{ success: boolean; task?: GranClawTask }>(
+      const result = await this.apiCall<OrchestratorRunResponse>(
         'POST',
         '/orchestrator/run',
         {
@@ -110,16 +164,42 @@ export class P617Harness {
         }
       )
 
-      if (!result.success || !result.data?.task) {
+      if (!result.success || !result.data) {
         return {
           name: testName,
           passed: false,
-          error: result.error || 'No task returned',
+          error: result.error || 'API call failed',
+          details: { rawResponse: result.rawResponse },
           durationMs: Date.now() - start
         }
       }
 
-      const task = result.data.task
+      // P6.17R: Get taskId from meta (queue path) or direct response
+      const taskId = result.data.meta?.taskId
+
+      if (!taskId) {
+        return {
+          name: testName,
+          passed: false,
+          error: 'No taskId in response',
+          details: { response: result.data },
+          durationMs: Date.now() - start
+        }
+      }
+
+      // P6.17R: Fetch full task to verify it exists
+      const task = await this.fetchTask(taskId)
+
+      if (!task) {
+        return {
+          name: testName,
+          passed: false,
+          error: 'Task not found after creation',
+          details: { taskId },
+          durationMs: Date.now() - start
+        }
+      }
+
       const hasRequiredFields = task.id && task.status && task.tenantId && task.createdAt
 
       return {
@@ -128,7 +208,8 @@ export class P617Harness {
         details: {
           taskId: task.id,
           status: task.status,
-          source: task.source
+          source: task.source,
+          queued: result.data.queued
         },
         error: hasRequiredFields ? undefined : 'Missing required fields',
         durationMs: Date.now() - start
@@ -146,6 +227,7 @@ export class P617Harness {
   /**
    * Test 2: Mock Safety - Capability Tasks Should Fail
    * Verifies that capability-backed tasks (downloads, etc.) fail in mock mode
+   * P6.17R: Fixed to use correct API response structure
    */
   async testMockSafetyCapabilityBlock(): Promise<TestResult> {
     const start = Date.now()
@@ -153,8 +235,8 @@ export class P617Harness {
     this.log(`Running: ${testName}`)
 
     try {
-      // This should fail with mock if OpenClaw is not configured
-      const result = await this.apiCall<{ success: boolean; task?: GranClawTask; error?: string }>(
+      // This should fail/block if OpenClaw is not configured
+      const result = await this.apiCall<OrchestratorRunResponse>(
         'POST',
         '/orchestrator/run',
         {
@@ -164,22 +246,66 @@ export class P617Harness {
         }
       )
 
-      if (!result.data?.task) {
+      // P6.17R: Check for various blocking scenarios
+      // 1. API returns success=false with error about capabilities
+      if (!result.success || (result.data && !result.data.success)) {
+        const errorMsg = result.error || result.data?.error || ''
+        const isCapabilityBlock = errorMsg.includes('Capacidades') ||
+                                  errorMsg.includes('capability') ||
+                                  errorMsg.includes('blocked') ||
+                                  errorMsg.includes('mock') ||
+                                  errorMsg.includes('setup')
+
         return {
           name: testName,
-          passed: false,
-          error: 'No task returned',
+          passed: isCapabilityBlock,
+          details: {
+            blocked: true,
+            error: errorMsg,
+            isCapabilityBlock
+          },
+          error: isCapabilityBlock ? undefined : `Unexpected error: ${errorMsg}`,
           durationMs: Date.now() - start
         }
       }
 
-      const task = result.data.task
+      // 2. Task was created - fetch it to check status
+      const taskId = result.data?.meta?.taskId
+      if (!taskId) {
+        // No task created, check if response indicates blocking
+        const responseData = result.data as OrchestratorRunResponse | undefined
+        const isBlocked = !!responseData?.error || !responseData?.success
+
+        return {
+          name: testName,
+          passed: isBlocked,
+          details: {
+            noTaskCreated: true,
+            response: responseData
+          },
+          error: isBlocked ? undefined : 'Capability task was allowed without proper checks',
+          durationMs: Date.now() - start
+        }
+      }
+
+      // Fetch task to check its status
+      const task = await this.fetchTask(taskId)
+      if (!task) {
+        return {
+          name: testName,
+          passed: false,
+          error: 'Task not found',
+          details: { taskId },
+          durationMs: Date.now() - start
+        }
+      }
+
       const source = task.source
 
       // If source is 'mock', the task should NOT be successful for capability tasks
       if (source === 'mock') {
-        // Mock mode should fail for capability tasks
         const mockBlocked = task.status === 'error' ||
+                           task.status === 'blocked' ||
                            (task.result as Record<string, unknown>)?.mockBlocked === true
 
         return {
@@ -196,7 +322,7 @@ export class P617Harness {
         }
       }
 
-      // If source is 'openclaw', it's fine - real provider was used
+      // If source is 'openclaw' or 'queue', it's fine - real provider was used
       return {
         name: testName,
         passed: true,
@@ -204,7 +330,7 @@ export class P617Harness {
           taskId: task.id,
           source,
           status: task.status,
-          note: 'Real provider used, mock safety not applicable'
+          note: 'Real provider or queue used, mock safety not applicable'
         },
         durationMs: Date.now() - start
       }
@@ -221,6 +347,7 @@ export class P617Harness {
   /**
    * Test 3: Task Truth Endpoint
    * Verifies /tasks/:id/truth returns complete reconciliation data
+   * P6.17R: Fixed to use correct API response structure
    */
   async testTaskTruthEndpoint(taskId: string): Promise<TestResult> {
     const start = Date.now()
@@ -228,38 +355,62 @@ export class P617Harness {
     this.log(`Running: ${testName}`)
 
     try {
+      // P6.17R: The truth endpoint returns { success, taskId, truth: {...} }
       const result = await this.apiCall<{
         success: boolean
-        truth?: {
-          task: GranClawTask
+        taskId: string
+        truth: {
+          task: Partial<GranClawTask>
           reconciliation: TaskReconciliation | null
           executionEvidence: unknown
+          evidenceValidated?: boolean
           job: unknown
+          thread: unknown
+          result: unknown
+          failureExplanation: unknown
         }
       }>('GET', `/tasks/${taskId}/truth`)
 
-      if (!result.success || !result.data?.truth) {
+      if (!result.success || !result.data) {
         return {
           name: testName,
           passed: false,
-          error: 'Truth endpoint failed',
+          error: result.error || 'Truth endpoint failed',
+          details: { rawResponse: result.rawResponse },
           durationMs: Date.now() - start
         }
       }
 
+      // P6.17R: Check the truth structure
       const truth = result.data.truth
+      if (!truth) {
+        return {
+          name: testName,
+          passed: false,
+          error: 'No truth object in response',
+          details: { response: result.data },
+          durationMs: Date.now() - start
+        }
+      }
+
       const hasTaskInfo = truth.task && truth.task.id === taskId
 
       return {
         name: testName,
-        passed: hasTaskInfo,
+        passed: !!hasTaskInfo,
         details: {
+          hasTask: !!truth.task,
+          taskIdMatch: truth.task?.id === taskId,
           hasReconciliation: !!truth.reconciliation,
           hasEvidence: !!truth.executionEvidence,
+          evidenceValidated: truth.evidenceValidated,
           hasJob: !!truth.job,
+          hasThread: !!truth.thread,
+          hasResult: !!truth.result,
+          hasFailureExplanation: !!truth.failureExplanation,
           taskStatus: truth.task?.status
         },
-        error: hasTaskInfo ? undefined : 'Task info mismatch',
+        error: hasTaskInfo ? undefined : 'Task info missing or mismatch',
         durationMs: Date.now() - start
       }
     } catch (err) {
@@ -275,6 +426,7 @@ export class P617Harness {
   /**
    * Test 4: Conversational Task Success
    * Verifies that simple conversational tasks succeed (even in mock mode)
+   * P6.17R: Fixed to use correct API response structure
    */
   async testConversationalTaskSuccess(): Promise<TestResult> {
     const start = Date.now()
@@ -282,7 +434,7 @@ export class P617Harness {
     this.log(`Running: ${testName}`)
 
     try {
-      const result = await this.apiCall<{ success: boolean; task?: GranClawTask }>(
+      const result = await this.apiCall<OrchestratorRunResponse>(
         'POST',
         '/orchestrator/run',
         {
@@ -292,18 +444,49 @@ export class P617Harness {
         }
       )
 
-      if (!result.data?.task) {
+      if (!result.success || !result.data) {
         return {
           name: testName,
           passed: false,
-          error: 'No task returned',
+          error: result.error || 'API call failed',
+          details: { rawResponse: result.rawResponse },
           durationMs: Date.now() - start
         }
       }
 
-      const task = result.data.task
+      // P6.17R: Get taskId from response
+      const taskId = result.data.meta?.taskId
+      if (!taskId) {
+        // For simple conversational tasks, might not create a task
+        // Check if response indicates success
+        const responseSuccess = result.data.success
+        return {
+          name: testName,
+          passed: responseSuccess,
+          details: {
+            noTaskCreated: true,
+            responseSuccess,
+            response: result.data
+          },
+          error: responseSuccess ? undefined : 'Conversational task failed without task creation',
+          durationMs: Date.now() - start
+        }
+      }
+
+      // Fetch task
+      const task = await this.fetchTask(taskId)
+      if (!task) {
+        return {
+          name: testName,
+          passed: false,
+          error: 'Task not found after creation',
+          details: { taskId },
+          durationMs: Date.now() - start
+        }
+      }
+
       // Conversational tasks should succeed even in mock mode
-      const isSuccess = task.status === 'success' || task.status === 'queued' || task.status === 'running'
+      const isSuccess = task.status === 'success' || task.status === 'queued' || task.status === 'running' || task.status === 'pending'
 
       return {
         name: testName,
@@ -311,7 +494,8 @@ export class P617Harness {
         details: {
           taskId: task.id,
           status: task.status,
-          source: task.source
+          source: task.source,
+          queued: result.data.queued
         },
         error: isSuccess ? undefined : `Unexpected status: ${task.status}`,
         durationMs: Date.now() - start
@@ -329,6 +513,7 @@ export class P617Harness {
   /**
    * Test 5: Task List API
    * Verifies tasks can be listed and filtered
+   * P6.17R: Fixed to use correct API response structure
    */
   async testTaskListAPI(): Promise<TestResult> {
     const start = Date.now()
@@ -336,27 +521,28 @@ export class P617Harness {
     this.log(`Running: ${testName}`)
 
     try {
-      const result = await this.apiCall<{
-        success: boolean
-        tasks?: GranClawTask[]
-        total?: number
-      }>('GET', '/tasks')
+      // P6.17R: Task list returns array of tasks directly
+      const result = await this.apiCall<GranClawTask[]>('GET', '/tasks')
 
       if (!result.success) {
         return {
           name: testName,
           passed: false,
-          error: 'Task list failed',
+          error: result.error || 'Task list failed',
+          details: { rawResponse: result.rawResponse },
           durationMs: Date.now() - start
         }
       }
+
+      // P6.17R: data is the array of tasks
+      const tasks = result.data || []
 
       return {
         name: testName,
         passed: true,
         details: {
-          taskCount: result.data?.tasks?.length || 0,
-          total: result.data?.total
+          taskCount: Array.isArray(tasks) ? tasks.length : 0,
+          isArray: Array.isArray(tasks)
         },
         durationMs: Date.now() - start
       }

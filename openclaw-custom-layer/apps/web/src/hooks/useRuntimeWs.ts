@@ -196,3 +196,23 @@ export function useApprovalEvents() {
     'approval:denied'
   ])
 }
+
+/**
+ * P6.17: Hook for task lifecycle events
+ */
+export function useTaskEvents() {
+  return useRuntimeEvents('tasks', [
+    'task:created',
+    'task:queued',
+    'task:started',
+    'task:step-started',
+    'task:step-progress',
+    'task:step-completed',
+    'task:step-failed',
+    'task:step-validation',
+    'task:completed',
+    'task:failed',
+    'task:cancelled',
+    'task:waiting-user-input'
+  ])
+}

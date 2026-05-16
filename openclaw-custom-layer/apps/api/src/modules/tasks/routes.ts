@@ -798,6 +798,7 @@ export function handleGetTaskTruth(
   const queue = getQueue()
   const job = task.lastRetryJobId ? queue.get(task.lastRetryJobId) : null
 
+  // P6.17: Enhanced truth response with reconciliation and execution details
   ok(res, {
     success: true,
     taskId,
@@ -805,6 +806,7 @@ export function handleGetTaskTruth(
       task: {
         id: task.id,
         status: task.status,
+        humanStatus: task.humanStatus,
         source: task.source,
         input: task.input,
         retryCount: task.retryCount || 0,
@@ -812,6 +814,11 @@ export function handleGetTaskTruth(
         createdAt: task.createdAt,
         updatedAt: task.updatedAt
       },
+      // P6.17: Reconciliation (top-level for direct access)
+      reconciliation: task.reconciliation || null,
+      // P6.17: Execution evidence
+      executionEvidence: task.executionEvidence || null,
+      evidenceValidated: task.evidenceValidated || false,
       thread: thread ? {
         id: thread.id,
         status: thread.status,
@@ -826,9 +833,24 @@ export function handleGetTaskTruth(
       } : null,
       result: result ? {
         status: result.status,
+        summary: result.summary,
         hasArtifacts: (result.artifacts?.length || 0) > 0,
-        hasOutputs: (result.outputs?.length || 0) > 0
-      } : null
+        hasOutputs: (result.outputs?.length || 0) > 0,
+        // P6.17: Detailed artifacts summary
+        artifacts: result.artifacts?.map(a => ({
+          type: a.type,
+          name: a.name,
+          mimeType: a.mimeType,
+          size: a.size
+        })),
+        // P6.17: Outputs summary
+        outputs: result.outputs?.map(o => ({
+          type: o.type,
+          label: o.label
+        }))
+      } : null,
+      // P6.17: Failure explanation for UI
+      failureExplanation: task.failureExplanation || null
     }
   })
 }

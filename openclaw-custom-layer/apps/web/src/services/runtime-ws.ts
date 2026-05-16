@@ -26,6 +26,7 @@ export type WsChannel =
   | 'workflow'
   | 'notifications'
   | 'debug'
+  | 'tasks'  // P6.17: Task channel for task lifecycle events
 
 /**
  * Runtime event types
@@ -79,6 +80,19 @@ export type RuntimeEventType =
   | 'repair-required'
   | 'pairing-restored'
   | 'openclaw-health-change'
+  // P6.17: Task lifecycle events
+  | 'task:created'
+  | 'task:queued'
+  | 'task:started'
+  | 'task:step-started'
+  | 'task:step-progress'
+  | 'task:step-completed'
+  | 'task:step-failed'
+  | 'task:step-validation'
+  | 'task:completed'
+  | 'task:failed'
+  | 'task:cancelled'
+  | 'task:waiting-user-input'
 
 /**
  * WebSocket frame

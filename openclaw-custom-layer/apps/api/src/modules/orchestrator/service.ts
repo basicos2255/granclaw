@@ -510,7 +510,25 @@ function extractResponseContent(result: unknown): string | null {
 }
 
 /**
+ * P6.17: Check if message requires a real capability (not just conversation)
+ * Tasks that require actual execution should NOT succeed with mock
+ */
+function requiresRealCapability(message: string): boolean {
+  const lowerMsg = message.toLowerCase()
+  const capabilityKeywords = [
+    'descargar', 'download', 'instalar', 'install',
+    'abrir', 'open', 'ejecutar', 'run', 'launch',
+    'buscar en', 'search', 'navegar', 'navigate', 'browse',
+    'enviar', 'send', 'crear archivo', 'create file',
+    'actualizar', 'update', 'eliminar', 'delete',
+    'configurar', 'configure', 'setup'
+  ]
+  return capabilityKeywords.some(kw => lowerMsg.includes(kw))
+}
+
+/**
  * Ejecuta tarea mock (sin OpenClaw)
+ * P6.17: Mock safety - capability-backed tasks should NOT succeed
  */
 function runMockTask(
   input: RunTaskInput,
@@ -518,6 +536,25 @@ function runMockTask(
   agentId?: string,
   presetId?: string
 ): RunTaskResult {
+  // P6.17: Check if task requires real capability
+  if (requiresRealCapability(input.message)) {
+    return {
+      success: false,
+      result: {
+        response: `[MOCK] Cannot execute capability-backed task without OpenClaw.`,
+        timestamp: new Date().toISOString(),
+        note: 'This task requires a real AI provider (OpenClaw). Mock mode cannot perform actual actions.',
+        mockBlocked: true
+      },
+      source: 'mock',
+      agentId,
+      presetId,
+      systemPrompt,
+      error: 'Capability-backed task blocked in mock mode. Configure OpenClaw to enable execution.'
+    }
+  }
+
+  // Conversational/informational tasks can succeed with mock
   return {
     success: true,
     result: {
@@ -525,7 +562,8 @@ function runMockTask(
         ? `[MOCK] System: "${systemPrompt}" | User: "${input.message}"`
         : `[MOCK] Processed: "${input.message}"`,
       timestamp: new Date().toISOString(),
-      note: 'OpenClaw not configured. This is a mock response.'
+      note: 'OpenClaw not configured. This is a mock response.',
+      mockMode: true
     },
     source: 'mock',
     agentId,

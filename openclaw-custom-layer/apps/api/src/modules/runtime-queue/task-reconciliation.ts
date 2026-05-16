@@ -16,7 +16,7 @@
 
 import type { QueuedJob, TaskLinkedJobPayload, QueueEvent } from './types'
 import { getQueue } from './queue'
-import type { TaskStatus } from '../tasks/types'
+import type { TaskStatus, TaskReconciliation } from '../tasks/types'
 import { emitTaskEvent } from '../runtime-ws'  // P6.16
 
 // Track initialization state
@@ -164,7 +164,7 @@ async function onJobCompleted(jobId: string, jobType: string, meta: Record<strin
 
   try {
     // Dynamic imports to avoid circular dependencies
-    const { completeTask, getTask } = await import('../tasks/service')
+    const { completeTask, getTask, updateTask } = await import('../tasks/service')
     const { syncThreadWithTask } = await import('../task-threads/service')
 
     // Get current task state
@@ -189,18 +189,25 @@ async function onJobCompleted(jobId: string, jobType: string, meta: Record<strin
     const newStatus: TaskStatus = isSuccess ? 'success' : 'error'
     console.log(`[TaskReconciliation P6.16] Task ${taskId}: ${task.status} → ${newStatus} (${reason})`)
 
-    // P6.16: Include validation details in result
+    // P6.17: Create reconciliation object for top-level storage
+    const reconciliation: TaskReconciliation = {
+      phase: 'P6.17',
+      isSuccess,
+      reason,
+      executionStatus: jobResult?.executionStatus,
+      validationFailedSteps: jobResult?.validationFailedSteps,
+      validatedSteps: jobResult?.validatedSteps,
+      completedSteps: jobResult?.completedSteps,
+      failedStep: jobResult?.failedStep,
+      totalDurationMs: job.startedAt && job.completedAt
+        ? new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()
+        : undefined
+    }
+
+    // P6.16: Include validation details in result (for backward compat)
     const enrichedResult = {
       ...(jobResult?.result ?? job.result ?? {}),
-      _reconciliation: {
-        phase: 'P6.16',
-        isSuccess,
-        reason,
-        executionStatus: jobResult?.executionStatus,
-        validationFailedSteps: jobResult?.validationFailedSteps,
-        validatedSteps: jobResult?.validatedSteps,
-        completedSteps: jobResult?.completedSteps
-      }
+      _reconciliation: reconciliation  // Keep nested for backward compat
     }
 
     completeTask(
@@ -210,11 +217,12 @@ async function onJobCompleted(jobId: string, jobType: string, meta: Record<strin
       'queue',  // source
       undefined, // trace - could be extracted from job
       undefined, // debugSnapshot
-      job.startedAt && job.completedAt
-        ? new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()
-        : undefined,
+      reconciliation.totalDurationMs,
       isSuccess ? undefined : reason
     )
+
+    // P6.17: Save reconciliation at top-level for easy frontend access
+    updateTask(taskId, { reconciliation })
 
     // Sync thread - pass status and optional error
     console.log(`[TaskReconciliation P6.16] Syncing thread for task ${taskId}`)
@@ -276,7 +284,7 @@ async function onJobFailed(jobId: string, jobType: string, meta: Record<string, 
   console.log(`[TaskReconciliation P6.16] Reconciling failed job ${jobId} with task ${taskId}`)
 
   try {
-    const { completeTask, getTask } = await import('../tasks/service')
+    const { completeTask, getTask, updateTask } = await import('../tasks/service')
     const { syncThreadWithTask } = await import('../task-threads/service')
 
     const task = getTask(taskId)
@@ -297,6 +305,17 @@ async function onJobFailed(jobId: string, jobType: string, meta: Record<string, 
     console.log(`[TaskReconciliation P6.16] Updating task ${taskId} status: ${task.status} → error`)
     console.log(`[TaskReconciliation P6.16] Error: ${errorMessage} (${errorCategory})`)
 
+    // P6.17: Create reconciliation for failed job
+    const reconciliation: TaskReconciliation = {
+      phase: 'P6.17',
+      isSuccess: false,
+      reason: errorMessage,
+      executionStatus: 'failed',
+      totalDurationMs: job.startedAt && job.completedAt
+        ? new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()
+        : undefined
+    }
+
     completeTask(
       taskId,
       'error',
@@ -305,16 +324,18 @@ async function onJobFailed(jobId: string, jobType: string, meta: Record<string, 
         error: errorMessage,
         errorCategory,
         retryCount: job.retryCount,
-        errorHistory: job.errorHistory
+        errorHistory: job.errorHistory,
+        _reconciliation: reconciliation
       },
       'queue',
       undefined,
       undefined,
-      job.startedAt && job.completedAt
-        ? new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()
-        : undefined,
+      reconciliation.totalDurationMs,
       errorMessage
     )
+
+    // P6.17: Save reconciliation at top-level
+    updateTask(taskId, { reconciliation })
 
     // Sync thread with error
     console.log(`[TaskReconciliation P6.16] Syncing thread for failed task ${taskId}`)
@@ -363,22 +384,33 @@ async function onJobCancelled(jobId: string, jobType: string, meta: Record<strin
   if (!taskId) return
 
   try {
-    const { completeTask, getTask } = await import('../tasks/service')
+    const { completeTask, getTask, updateTask } = await import('../tasks/service')
     const { syncThreadWithTask } = await import('../task-threads/service')
 
     const task = getTask(taskId)
     if (!task || task.status === 'error') return
 
+    // P6.17: Create reconciliation for cancelled job
+    const reconciliation: TaskReconciliation = {
+      phase: 'P6.17',
+      isSuccess: false,
+      reason: 'Task cancelled by user',
+      executionStatus: 'failed'
+    }
+
     completeTask(
       taskId,
       'error',
-      { jobId, cancelled: true },
+      { jobId, cancelled: true, _reconciliation: reconciliation },
       'queue',
       undefined,
       undefined,
       undefined,
       'Task cancelled by user'
     )
+
+    // P6.17: Save reconciliation at top-level
+    updateTask(taskId, { reconciliation })
 
     syncThreadWithTask(taskId, 'error', 'Task cancelled by user')
 

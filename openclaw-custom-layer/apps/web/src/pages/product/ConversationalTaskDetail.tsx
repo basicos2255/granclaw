@@ -1,11 +1,12 @@
 /**
  * Conversational Task Detail Page
  * P6.6: Human Interaction Layer, Task Threads & Conversational Control
+ * P6.17: Live Task Updates, Execution Truth & Polling
  *
  * Shows detailed task information with a conversational interface.
  */
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigation } from '../../hooks/useNavigation'
 import { api, type GranClawTask, type TaskThread } from '../../services/api'
 import { OutputsRenderer, ArtifactsRenderer } from '../../components/results/ResultRenderers'
@@ -16,6 +17,76 @@ interface ConversationalTaskDetailProps {
   taskId: string
 }
 
+/**
+ * P6.17: Extract reconciliation from task (top-level or nested in result)
+ */
+interface ReconciliationInfo {
+  phase: string
+  isSuccess: boolean
+  reason: string
+  executionStatus?: string
+  validationFailedSteps?: string[]
+  validatedSteps?: string[]
+  completedSteps?: string[]
+}
+
+function getReconciliation(task: GranClawTask): ReconciliationInfo | null {
+  // Try top-level first (P6.16+)
+  if (task.reconciliation) {
+    return task.reconciliation as ReconciliationInfo
+  }
+  // Fallback: nested in result._reconciliation
+  const result = task.result as Record<string, unknown> | undefined
+  if (result && result._reconciliation) {
+    return result._reconciliation as ReconciliationInfo
+  }
+  return null
+}
+
+/**
+ * P6.17: Get task status badge info
+ */
+function getTaskStatusInfo(status: string): { bg: string; color: string; label: string } {
+  switch (status) {
+    case 'success':
+      return { bg: '#dcfce7', color: '#16a34a', label: 'Completada' }
+    case 'running':
+      return { bg: '#dbeafe', color: '#2563eb', label: 'Ejecutando' }
+    case 'queued':
+      return { bg: '#e0e7ff', color: '#4f46e5', label: 'En cola' }
+    case 'blocked':
+      return { bg: '#fee2e2', color: '#dc2626', label: 'Bloqueada' }
+    case 'error':
+      return { bg: '#fef3c7', color: '#d97706', label: 'Error' }
+    case 'unconfirmed':
+      return { bg: '#f3e8ff', color: '#7c3aed', label: 'Sin confirmar' }
+    case 'pending':
+      return { bg: '#f1f5f9', color: '#64748b', label: 'Pendiente' }
+    default:
+      return { bg: '#f3f4f6', color: '#6b7280', label: status }
+  }
+}
+
+/**
+ * P6.17: Get execution status badge info
+ */
+function getExecStatusInfo(execStatus: string | undefined): { bg: string; color: string; label: string } | null {
+  switch (execStatus) {
+    case 'completed':
+      return { bg: '#dcfce7', color: '#16a34a', label: 'Completado' }
+    case 'partial':
+      return { bg: '#fef3c7', color: '#d97706', label: 'Parcial' }
+    case 'failed':
+      return { bg: '#fee2e2', color: '#dc2626', label: 'Fallido' }
+    case 'blocked':
+      return { bg: '#fee2e2', color: '#dc2626', label: 'Bloqueado' }
+    case 'validation_failed':
+      return { bg: '#fef3c7', color: '#d97706', label: 'Validación falló' }
+    default:
+      return null
+  }
+}
+
 export function ConversationalTaskDetail({ taskId }: ConversationalTaskDetailProps) {
   const { navigate } = useNavigation()
   const [task, setTask] = useState<GranClawTask | null>(null)
@@ -24,11 +95,35 @@ export function ConversationalTaskDetail({ taskId }: ConversationalTaskDetailPro
   const [error, setError] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState(false)
   const [showLegacyView, setShowLegacyView] = useState(false)
+  const [lastRefresh, setLastRefresh] = useState<string>('')
   const timelineRef = useRef<HTMLDivElement>(null)
+
+  // P6.17: Load task only (for polling)
+  const loadTaskOnly = useCallback(async () => {
+    try {
+      const taskResponse = await api.getTask(taskId)
+      if (taskResponse.success && taskResponse.data) {
+        setTask(taskResponse.data)
+        setLastRefresh(new Date().toLocaleTimeString())
+      }
+    } catch {
+      // Silent fail for polling
+    }
+  }, [taskId])
 
   useEffect(() => {
     loadTaskAndThread()
   }, [taskId])
+
+  // P6.17: Auto-refresh for running/queued tasks (every 2 seconds)
+  useEffect(() => {
+    if (task && (task.status === 'running' || task.status === 'queued')) {
+      const interval = setInterval(() => {
+        loadTaskOnly()
+      }, 2000)
+      return () => clearInterval(interval)
+    }
+  }, [task?.status, loadTaskOnly])
 
   // Auto-scroll timeline on new messages
   useEffect(() => {
@@ -202,11 +297,46 @@ export function ConversationalTaskDetail({ taskId }: ConversationalTaskDetailPro
             <h1 style={{ fontSize: '20px', fontWeight: '700', color: '#0f172a', margin: '0 0 8px 0' }}>
               {thread?.title || task.input.substring(0, 60)}...
             </h1>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+              {/* P6.17: Task status badge */}
+              {(() => {
+                const statusInfo = getTaskStatusInfo(task.status)
+                return (
+                  <span style={{
+                    padding: '2px 8px',
+                    borderRadius: '10px',
+                    backgroundColor: statusInfo.bg,
+                    color: statusInfo.color,
+                    fontSize: '11px',
+                    fontWeight: '600'
+                  }}>
+                    {statusInfo.label}
+                  </span>
+                )
+              })()}
               {thread && <HumanTaskStateBadge state={thread.status} size="sm" />}
               <span style={{ fontSize: '12px', color: '#94a3b8' }}>
                 ID: {task.id}
               </span>
+              {/* P6.17: Polling indicator */}
+              {(task.status === 'running' || task.status === 'queued') && (
+                <span style={{
+                  fontSize: '11px',
+                  color: '#3b82f6',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px'
+                }}>
+                  <span style={{
+                    width: '6px',
+                    height: '6px',
+                    borderRadius: '50%',
+                    backgroundColor: '#3b82f6',
+                    animation: 'pulse 1s infinite'
+                  }} />
+                  Auto-refresh {lastRefresh && `(${lastRefresh})`}
+                </span>
+              )}
             </div>
           </div>
 
@@ -317,6 +447,116 @@ export function ConversationalTaskDetail({ taskId }: ConversationalTaskDetailPro
                 </div>
               </div>
             )}
+
+            {/* P6.17: Execution Truth / Reconciliation Section */}
+            {(() => {
+              const recon = getReconciliation(task)
+              if (!recon) return null
+              return (
+                <div style={{
+                  ...cardStyle,
+                  padding: '16px',
+                  marginBottom: '16px',
+                  backgroundColor: recon.isSuccess ? '#f0fdf4' : '#fef2f2',
+                  borderColor: recon.isSuccess ? '#bbf7d0' : '#fecaca',
+                  borderLeftWidth: '4px',
+                  borderLeftColor: recon.isSuccess ? '#22c55e' : '#ef4444'
+                }}>
+                  <div style={{ fontSize: '14px', fontWeight: '600', color: '#475569', marginBottom: '12px' }}>
+                    EXECUTION TRUTH (P6.17)
+                  </div>
+
+                  {/* Status badges */}
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                    {recon.executionStatus && (() => {
+                      const execInfo = getExecStatusInfo(recon.executionStatus)
+                      return execInfo ? (
+                        <span style={{
+                          padding: '4px 10px',
+                          borderRadius: '12px',
+                          backgroundColor: execInfo.bg,
+                          color: execInfo.color,
+                          fontSize: '12px',
+                          fontWeight: '600'
+                        }}>
+                          {execInfo.label}
+                        </span>
+                      ) : null
+                    })()}
+
+                    {recon.completedSteps && (
+                      <span style={{
+                        padding: '4px 10px',
+                        borderRadius: '12px',
+                        backgroundColor: '#f1f5f9',
+                        color: '#475569',
+                        fontSize: '12px'
+                      }}>
+                        {recon.completedSteps.length} pasos completados
+                      </span>
+                    )}
+
+                    {recon.validatedSteps && recon.validatedSteps.length > 0 && (
+                      <span style={{
+                        padding: '4px 10px',
+                        borderRadius: '12px',
+                        backgroundColor: '#dcfce7',
+                        color: '#16a34a',
+                        fontSize: '12px'
+                      }}>
+                        {recon.validatedSteps.length} validados
+                      </span>
+                    )}
+
+                    {recon.validationFailedSteps && recon.validationFailedSteps.length > 0 && (
+                      <span style={{
+                        padding: '4px 10px',
+                        borderRadius: '12px',
+                        backgroundColor: '#fee2e2',
+                        color: '#dc2626',
+                        fontSize: '12px'
+                      }}>
+                        {recon.validationFailedSteps.length} validación fallida
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Reason */}
+                  <div style={{
+                    padding: '10px',
+                    backgroundColor: recon.isSuccess ? '#dcfce7' : '#fee2e2',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    color: recon.isSuccess ? '#166534' : '#991b1b'
+                  }}>
+                    <strong>Razón:</strong> {recon.reason}
+                  </div>
+
+                  {/* Validation failed steps detail */}
+                  {recon.validationFailedSteps && recon.validationFailedSteps.length > 0 && (
+                    <div style={{ marginTop: '10px' }}>
+                      <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '6px' }}>
+                        Pasos con validación fallida:
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {recon.validationFailedSteps.map((stepId, idx) => (
+                          <span key={idx} style={{
+                            padding: '3px 6px',
+                            backgroundColor: '#fee2e2',
+                            color: '#991b1b',
+                            borderRadius: '4px',
+                            fontSize: '11px',
+                            fontFamily: 'monospace'
+                          }}>
+                            {stepId}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
 
             {/* Execution Trace */}
             {task.executionTrace && task.executionTrace.length > 0 && (

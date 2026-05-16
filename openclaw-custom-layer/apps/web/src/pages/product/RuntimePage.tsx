@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect } from 'react'
-import { useRuntimeWs, useQueueEvents } from '../../hooks/useRuntimeWs'
+import { useRuntimeWs, useQueueEvents, useTaskEvents } from '../../hooks/useRuntimeWs'
 import { getRuntimeState, RuntimeStateData } from '../../services/api'
 
 interface RuntimeState {
@@ -48,14 +48,28 @@ interface RuntimeState {
   }
 }
 
+// P6.17: Task event log entry
+interface TaskEventEntry {
+  id: string
+  type: string
+  timestamp: string
+  taskId?: string
+  stepId?: string
+  message?: string
+  status?: string
+}
+
 export function RuntimePage() {
   const { isConnected, state: connectionState } = useRuntimeWs()
   const { lastEvent } = useQueueEvents()
+  const { lastEvent: lastTaskEvent } = useTaskEvents()
   const [state, setState] = useState<RuntimeState | null>(null)
   const [loading, setLoading] = useState(true)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
   const [apiError, setApiError] = useState<string | null>(null)
+  // P6.17: Task events log
+  const [taskEvents, setTaskEvents] = useState<TaskEventEntry[]>([])
 
   // P2.2: Fetch runtime state using centralized API client
   const fetchState = async () => {
@@ -131,6 +145,24 @@ export function RuntimePage() {
       fetchState()
     }
   }, [lastEvent])
+
+  // P6.17: Capture task events
+  useEffect(() => {
+    if (lastTaskEvent) {
+      const payload = lastTaskEvent.payload as Record<string, unknown> | undefined
+      const frame = lastTaskEvent.frame
+      const newEntry: TaskEventEntry = {
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        type: frame?.event || 'unknown',
+        timestamp: frame?.timestamp || new Date().toISOString(),
+        taskId: payload?.taskId as string | undefined,
+        stepId: payload?.stepId as string | undefined,
+        message: payload?.message as string | undefined,
+        status: payload?.status as string | undefined
+      }
+      setTaskEvents(prev => [newEntry, ...prev].slice(0, 50)) // Keep last 50
+    }
+  }, [lastTaskEvent])
 
   const getPressureLevel = (pressure: number): { label: string; color: string } => {
     if (pressure < 0.3) return { label: 'Normal', color: '#16a34a' }
@@ -458,6 +490,89 @@ export function RuntimePage() {
             </div>
           </div>
 
+          {/* P6.17: Task Events Log */}
+          <div style={{
+            marginTop: '24px',
+            backgroundColor: 'white',
+            borderRadius: '12px',
+            border: '1px solid #e2e8f0',
+            padding: '20px'
+          }}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '16px'
+            }}>
+              <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '500' }}>
+                P6.17 TASK EVENTS
+              </div>
+              <span style={{
+                fontSize: '11px',
+                color: '#64748b',
+                backgroundColor: '#f1f5f9',
+                padding: '4px 8px',
+                borderRadius: '4px'
+              }}>
+                {taskEvents.length} events
+              </span>
+            </div>
+            {taskEvents.length === 0 ? (
+              <div style={{
+                padding: '24px',
+                textAlign: 'center',
+                color: '#94a3b8',
+                fontSize: '13px'
+              }}>
+                No task events yet. Events will appear when tasks are created/executed.
+              </div>
+            ) : (
+              <div style={{
+                maxHeight: '300px',
+                overflowY: 'auto',
+                borderRadius: '8px',
+                border: '1px solid #e2e8f0'
+              }}>
+                {taskEvents.map((event, idx) => (
+                  <div
+                    key={event.id}
+                    style={{
+                      padding: '10px 12px',
+                      borderBottom: idx < taskEvents.length - 1 ? '1px solid #f1f5f9' : 'none',
+                      fontSize: '12px',
+                      fontFamily: 'monospace',
+                      backgroundColor: idx % 2 === 0 ? 'white' : '#fafafa'
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                      <span style={{
+                        fontWeight: '600',
+                        color: event.type.includes('failed') ? '#dc2626' :
+                               event.type.includes('completed') ? '#16a34a' :
+                               event.type.includes('started') ? '#3b82f6' : '#64748b'
+                      }}>
+                        {event.type}
+                      </span>
+                      <span style={{ color: '#94a3b8' }}>
+                        {new Date(event.timestamp).toLocaleTimeString('es-ES')}
+                      </span>
+                    </div>
+                    <div style={{ color: '#64748b' }}>
+                      {event.taskId && <span>Task: {event.taskId.slice(0, 8)}... </span>}
+                      {event.stepId && <span>Step: {event.stepId} </span>}
+                      {event.status && <span>Status: {event.status} </span>}
+                    </div>
+                    {event.message && (
+                      <div style={{ color: '#475569', marginTop: '4px' }}>
+                        {event.message}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Connection State Debug */}
           <div style={{
             marginTop: '24px',
@@ -473,6 +588,7 @@ export function RuntimePage() {
             <div>Runtime URL: /ws</div>
             <div>Last Heartbeat: {new Date().toISOString()}</div>
             <div style={{ marginTop: '8px', color: '#16a34a' }}>P6.16 Execution Truth: Active</div>
+            <div style={{ color: '#3b82f6' }}>P6.17 Task Events: {taskEvents.length > 0 ? 'Receiving' : 'Waiting'}</div>
           </div>
         </>
       )}

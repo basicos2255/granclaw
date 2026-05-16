@@ -55,6 +55,8 @@ import {
 } from '../execution-policy'
 // P6.9: Queue integration for multistep tasks
 import { enqueueCompositeTask, type EnqueueResult } from '../runtime-queue/execution-integration'
+// P6.17: Task events for live monitoring
+import { emitTaskEvent } from '../runtime-ws'
 // P6.9: Composite task planning for proper plan structure
 import { buildCompositeExecutionPlan } from '../composite-tasks/planner'
 // FIX 124: Final Execution Status Resolution
@@ -137,6 +139,18 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
       input: input.message
     })
     console.log(`[GranClaw] Created task ${task.id}`)
+
+    // P6.17: Emit task:created event
+    emitTaskEvent(
+      context.tenant.id,
+      context.user.id,
+      'task:created',
+      {
+        taskId: task.id,
+        status: 'pending',
+        message: `Task created: ${input.message.substring(0, 50)}...`
+      }
+    )
 
     // FIX 077: Try/catch para garantizar meta en todas las respuestas
     try {
@@ -453,6 +467,20 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
               trace.getSteps(),
               debugSnapshot,
               trace.getTotalDurationMs()
+            )
+
+            // P6.17: Emit task:queued event
+            emitTaskEvent(
+              context.tenant.id,
+              context.user.id,
+              'task:queued',
+              {
+                taskId: task.id,
+                jobId: queueResult.jobId,
+                status: 'queued',
+                message: `Task queued with ${planResult.plan.steps.length} steps`,
+                totalSteps: planResult.plan.steps.length
+              }
             )
 
             // Return queued response
@@ -1590,6 +1618,18 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
     })
     console.log(`[GranClaw] Created task ${task.id}`)
 
+    // P6.17: Emit task:created event
+    emitTaskEvent(
+      context.tenant.id,
+      context.user.id,
+      'task:created',
+      {
+        taskId: task.id,
+        status: 'pending',
+        message: `Task created (stream): ${input.message.substring(0, 50)}...`
+      }
+    )
+
     // FIX 077: Try/catch para garantizar meta en todas las respuestas
     try {
       trace.hubStart()
@@ -1896,6 +1936,20 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
               trace.getSteps(),
               debugSnapshot,
               trace.getTotalDurationMs()
+            )
+
+            // P6.17: Emit task:queued event (stream)
+            emitTaskEvent(
+              context.tenant.id,
+              context.user.id,
+              'task:queued',
+              {
+                taskId: task.id,
+                jobId: queueResult.jobId,
+                status: 'queued',
+                message: `Task queued (stream) with ${planResult.plan.steps.length} steps`,
+                totalSteps: planResult.plan.steps.length
+              }
             )
 
             ok(res, {

@@ -178,6 +178,32 @@ export interface GranClawTask {
   // P6.13: Failure explanation for validation errors
   /** Human-readable failure explanation */
   failureExplanation?: TaskFailureExplanation
+
+  // P6.17: Reconciliation info (top-level for easy access)
+  /** Reconciliation result from task-reconciliation */
+  reconciliation?: TaskReconciliation
+}
+
+/**
+ * P6.17: Task reconciliation info
+ * Persisted at top-level for easy frontend access
+ */
+export interface TaskReconciliation {
+  phase: string
+  isSuccess: boolean
+  reason: string
+  executionStatus?: 'completed' | 'partial' | 'failed' | 'blocked' | 'validation_failed'
+  validationFailedSteps?: string[]
+  validatedSteps?: string[]
+  completedSteps?: string[]
+  failedStep?: {
+    stepId: string
+    error: string
+    recoverable: boolean
+  }
+  skippedSteps?: string[]
+  totalDurationMs?: number
+  tokenSaving?: number
 }
 
 /**
@@ -225,4 +251,7 @@ export interface UpdateTaskInput {
 
   // P6.13: Failure explanation
   failureExplanation?: TaskFailureExplanation
+
+  // P6.17: Reconciliation info
+  reconciliation?: TaskReconciliation
 }

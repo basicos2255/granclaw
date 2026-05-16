@@ -43,6 +43,8 @@ import {
   getValidationForAction,
   type StepValidationResult
 } from '../workflow-validation'
+// P6.17: Task step events for live monitoring
+import { emitTaskStepEvent } from '../runtime-ws'
 
 /**
  * Minimum success rate to learn as composite
@@ -267,6 +269,8 @@ export async function executeCompositePlan(
     plan,
     tenantId,
     userId,
+    taskId,
+    jobId,
     stopOnFirstFailure = true,
     allowPartialCompletion = true,
     retryFailedSteps = false,
@@ -283,6 +287,30 @@ export async function executeCompositePlan(
 
   console.log(`[CompositeExecutor] Starting plan ${plan.id} with ${plan.steps.length} steps`)
 
+  // P6.17: Helper to emit step events if taskId is available
+  const emitStepEvent = (
+    eventType: 'task:step-started' | 'task:step-progress' | 'task:step-completed' | 'task:step-failed' | 'task:step-validation',
+    step: CompositeTaskStep,
+    extra: Record<string, unknown> = {}
+  ) => {
+    if (!taskId) return
+    emitTaskStepEvent(
+      tenantId,
+      userId,
+      eventType,
+      {
+        taskId,
+        jobId,
+        stepId: step.stepId,
+        stepOrder: step.order,
+        stepActionType: step.actionType,
+        stepDescription: step.description,
+        stepStatus: step.status || 'unknown',
+        ...extra
+      }
+    )
+  }
+
   // Execute steps sequentially
   for (const step of plan.steps) {
     // Check if step should be skipped
@@ -297,6 +325,9 @@ export async function executeCompositePlan(
     step.status = 'running'
     step.startedAt = new Date().toISOString()
 
+    // P6.17: Emit step started event
+    emitStepEvent('task:step-started', step, { message: `Starting step ${step.order}` })
+
     let attempts = 0
     let stepResult: { success: boolean; result?: unknown; error?: string; skipped: boolean }
 
@@ -307,6 +338,8 @@ export async function executeCompositePlan(
 
       if (!stepResult.success && retryFailedSteps && attempts < maxRetries) {
         console.log(`[CompositeExecutor] Step ${step.stepId} failed, retrying (${attempts}/${maxRetries})`)
+        // P6.17: Emit progress for retry
+        emitStepEvent('task:step-progress', step, { message: `Retrying step ${step.order} (${attempts}/${maxRetries})`, progress: attempts })
       }
     } while (!stepResult.success && retryFailedSteps && attempts < maxRetries)
 
@@ -316,10 +349,14 @@ export async function executeCompositePlan(
       step.status = 'skipped'
       step.skippedReason = stepResult.result?.toString() || 'Skipped'
       skippedSteps.push(step.stepId)
+      // P6.17: Emit step completed (skipped)
+      emitStepEvent('task:step-completed', step, { message: `Step ${step.order} skipped` })
     } else if (stepResult.success) {
       step.status = 'success'
       step.result = stepResult.result
       completedSteps.push(step.stepId)
+      // P6.17: Emit step completed
+      emitStepEvent('task:step-completed', step, { message: `Step ${step.order} completed` })
 
       // FEATURE 130.3: Run validation if required
       if (step.validationRequired) {
@@ -347,6 +384,14 @@ export async function executeCompositePlan(
           attempts: validationResult.validationAttempts
         }
 
+        // P6.17: Emit validation event
+        emitStepEvent('task:step-validation', step, {
+          validationOk: validationResult.ok,
+          validationReason: validationResult.reason,
+          validationEvidence: validationResult.evidence,
+          message: validationResult.ok ? 'Validation passed' : `Validation failed: ${validationResult.reason}`
+        })
+
         if (validationResult.ok) {
           validatedSteps.push(step.stepId)
           console.log(`[CompositeExecutor] Step ${step.stepId} validation passed`)
@@ -366,6 +411,9 @@ export async function executeCompositePlan(
     } else {
       step.status = 'failed'
       step.error = stepResult.error
+
+      // P6.17: Emit step failed
+      emitStepEvent('task:step-failed', step, { error: stepResult.error, message: `Step ${step.order} failed: ${stepResult.error}` })
 
       failedStep = {
         stepId: step.stepId,

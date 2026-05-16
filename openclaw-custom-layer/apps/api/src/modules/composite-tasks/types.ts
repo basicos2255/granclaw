@@ -223,6 +223,10 @@ export interface ExecuteCompositePlanInput {
   tenantId: string
   userId?: string
   sessionId?: string
+  /** P6.17: Task ID for event emission */
+  taskId?: string
+  /** P6.17: Job ID for event emission */
+  jobId?: string
   // Options
   stopOnFirstFailure?: boolean
   allowPartialCompletion?: boolean

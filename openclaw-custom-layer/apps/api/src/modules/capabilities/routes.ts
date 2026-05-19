@@ -295,3 +295,112 @@ export function handleTestCapability(
     note: 'Este es un test básico de configuración. La ejecución real puede variar según la tarea.'
   })
 }
+
+// ============================================================================
+// P6.18: REAL PROBE ENDPOINTS
+// ============================================================================
+
+import {
+  probeOpenClawGateway,
+  probeCapabilityReadiness,
+  probeAllCapabilities
+} from './probe'
+
+/**
+ * P6.18C: GET /capabilities/probe/gateway - Probe OpenClaw gateway connectivity
+ * Returns OpenClawProbeResult directly in data (no extra wrapper)
+ */
+export function handleProbeGateway(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  context: AuthContext | null
+): void {
+  if (!context) {
+    unauthorized(res, 'Authentication required')
+    return
+  }
+
+  // P6.18C: Return data directly, not wrapped in { success, probe }
+  probeOpenClawGateway(true).then(result => {
+    ok(res, result)
+  }).catch(err => {
+    // On error, return a valid OpenClawProbeResult with error state
+    const errorResult: import('./types').OpenClawProbeResult = {
+      state: 'unknown',
+      gateway: { configured: false, reachable: false, error: err.message || 'Probe failed' },
+      websocket: { configured: false, connected: false, handshakeComplete: false },
+      probedAt: new Date().toISOString()
+    }
+    ok(res, errorResult)
+  })
+}
+
+/**
+ * P6.18C: GET /capabilities/probe/:capability - Probe specific capability readiness
+ * Returns RealCapabilityReadiness directly in data (no extra wrapper)
+ */
+export function handleProbeCapability(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  capabilityKey: string,
+  context: AuthContext | null
+): void {
+  if (!context) {
+    unauthorized(res, 'Authentication required')
+    return
+  }
+
+  // P6.18C: Return data directly, not wrapped in { success, readiness }
+  probeCapabilityReadiness(context.tenant.id, capabilityKey).then(readiness => {
+    ok(res, readiness)
+  }).catch(err => {
+    // On error, return a valid RealCapabilityReadiness with error state
+    const errorReadiness: import('./types').RealCapabilityReadiness = {
+      capability: capabilityKey,
+      displayName: capabilityKey,
+      state: 'unknown',
+      isCore: false,
+      providerChain: ['unknown'],
+      statusMessage: `Error al probar ${capabilityKey}: ${err.message || 'Error desconocido'}`
+    }
+    ok(res, errorReadiness)
+  })
+}
+
+/**
+ * P6.18C: GET /capabilities/probe/all - Full system readiness snapshot
+ * Returns SystemReadinessSnapshot directly in data (no extra wrapper)
+ */
+export function handleProbeAllCapabilities(
+  req: IncomingMessage,
+  res: ServerResponse,
+  context: AuthContext | null
+): void {
+  if (!context) {
+    unauthorized(res, 'Authentication required')
+    return
+  }
+
+  // Check for refresh query param
+  const url = new URL(req.url || '/', `http://${req.headers.host}`)
+  const forceRefresh = url.searchParams.get('refresh') === 'true'
+
+  // P6.18C: Return data directly, not wrapped in { success, snapshot }
+  probeAllCapabilities(context.tenant.id, forceRefresh).then(snapshot => {
+    ok(res, snapshot)
+  }).catch(err => {
+    // On error, return a valid SystemReadinessSnapshot with error state
+    const errorSnapshot: import('./types').SystemReadinessSnapshot = {
+      openclaw: {
+        state: 'unknown',
+        gateway: { configured: false, reachable: false, error: err.message || 'Probe failed' },
+        websocket: { configured: false, connected: false, handshakeComplete: false },
+        probedAt: new Date().toISOString()
+      },
+      capabilities: [],
+      summary: { total: 0, ready: 0, unavailable: 0, notConfigured: 0, degraded: 0, unknown: 0 },
+      snapshotAt: new Date().toISOString()
+    }
+    ok(res, errorSnapshot)
+  })
+}

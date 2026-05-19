@@ -511,19 +511,38 @@ function extractResponseContent(result: unknown): string | null {
 
 /**
  * P6.17: Check if message requires a real capability (not just conversation)
+ * P6.18D: Extended patterns to catch more search/web variations
  * Tasks that require actual execution should NOT succeed with mock
  */
 function requiresRealCapability(message: string): boolean {
   const lowerMsg = message.toLowerCase()
+
+  // P6.18D: Simple keyword matches
   const capabilityKeywords = [
     'descargar', 'download', 'instalar', 'install',
     'abrir', 'open', 'ejecutar', 'run', 'launch',
-    'buscar en', 'search', 'navegar', 'navigate', 'browse',
+    'navegar', 'navigate', 'browse',
     'enviar', 'send', 'crear archivo', 'create file',
     'actualizar', 'update', 'eliminar', 'delete',
     'configurar', 'configure', 'setup'
   ]
-  return capabilityKeywords.some(kw => lowerMsg.includes(kw))
+
+  if (capabilityKeywords.some(kw => lowerMsg.includes(kw))) {
+    return true
+  }
+
+  // P6.18D: CRITICAL - Pattern matches for search with web context
+  // This catches "busca info de libra en internet" and similar variations
+  const searchWebPatterns = [
+    /\b(busca|buscar|búsqueda)\b.*\b(internet|web|google|online)\b/i,
+    /\b(internet|web|google|online)\b.*\b(busca|buscar|búsqueda)\b/i,
+    /\bsearch\b.*\b(web|internet|online|google)\b/i,
+    /\b(web|internet)\b.*\bsearch\b/i,
+    /\bbusca\s+(info|información|datos|sobre|acerca)/i,
+    /\b(investiga|investigar)\b.*\b(web|internet|online)\b/i
+  ]
+
+  return searchWebPatterns.some(pattern => pattern.test(lowerMsg))
 }
 
 /**
@@ -939,19 +958,25 @@ async function runRpcStreamingTask(input: StreamTaskInput): Promise<StreamTaskRe
 /**
  * Ejecuta fallback cuando WS no disponible
  * Usa REST o mock
+ *
+ * P6.18D3: Mock fallback is only reached for tasks that DON'T require capabilities.
+ * Capability-backed tasks are blocked by the capability gate check at the route level.
  */
 async function runFallbackStreamingTask(input: StreamTaskInput): Promise<StreamTaskResult> {
   const config = getOpenClawConfig()
 
   if (!config.baseUrl) {
-    // Mock fallback
+    // P6.18D3: Mock fallback - only for non-capability tasks (gate check done earlier)
+    // Mark clearly as mock so calling code knows this is NOT a real execution
     return {
       success: true,
       mode: 'fallback',
       result: {
         response: `[MOCK STREAM] Processed: "${input.message}"`,
         timestamp: new Date().toISOString(),
-        note: 'WS not connected, OpenClaw not configured. Mock fallback.'
+        note: 'WS not connected, OpenClaw not configured. Mock fallback.',
+        isMock: true,  // P6.18D3: Explicit mock marker
+        source: 'mock' // P6.18D3: Explicit source
       }
     }
   }

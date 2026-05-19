@@ -51,7 +51,8 @@ import { handleListSessions, handleGetSession, handleCreateSession, handleAddMes
 import { handleTasks, handleGetTaskById, handleGetTaskResult, handleExecuteSteps, handleReconcileTask, handleReconcileAllTasks, handleRetryTask, handleCancelTask, handleRepairTask, handleGetTaskTruth } from './modules/tasks'
 import { handleGetToolProposals, handleGetToolProposalById, handleApproveToolProposal, handleRejectToolProposal, handleArchiveToolProposal } from './modules/tool-proposals'
 // P6.13: Added capability readiness handlers
-import { handleGetCapabilities, handleGetCapabilityById, handleEnableCapability, handleDisableCapability, handleDeleteCapability, handleGetAllCapabilitiesReadiness, handleGetCapabilityReadiness, handleTestCapability } from './modules/capabilities'
+// P6.18: Added capability probe handlers
+import { handleGetCapabilities, handleGetCapabilityById, handleEnableCapability, handleDisableCapability, handleDeleteCapability, handleGetAllCapabilitiesReadiness, handleGetCapabilityReadiness, handleTestCapability, handleProbeGateway, handleProbeCapability, handleProbeAllCapabilities } from './modules/capabilities'
 // FIX 113: OS Tools routes
 import { handleGetOSTools, handleGetPendingConfirmations, handleConfirmOSTool, handleCleanupOSTools } from './modules/os-tools'
 // FEATURE 120: Execution Policy routes
@@ -193,7 +194,7 @@ import {
   handleGetOrCreateThread,
   handleGetAllThreadsByTask,
   handleSyncThreadWithTask,
-  handleGetExecutionTruth,
+  // P6.17R2: handleGetExecutionTruth removed - duplicate route, use handleGetTaskTruth instead
   handleDetectZombies,
   handleRepairZombies,
   handleDetectDuplicates,
@@ -251,6 +252,9 @@ const getRoutes: Record<string, RouteHandler> = {
   '/capabilities': handleGetCapabilities,
   // P6.13: Capability readiness
   '/capabilities/readiness': handleGetAllCapabilitiesReadiness,
+  // P6.18: Capability probes (real connectivity checks)
+  '/capabilities/probe/gateway': handleProbeGateway,
+  '/capabilities/probe/all': handleProbeAllCapabilities,
   '/audit': handleAudit,
   '/tools': wrapHandler(handleListTools),
   '/openclaw/status': wrapHandler(handleOpenClawStatus),
@@ -405,6 +409,16 @@ const getDynamicRoutes: DynamicRoute[] = [
     pattern: /^\/tool-proposals\/([^/]+)$/,
     handler: handleGetToolProposalById
   },
+  // P6.18C: Probe specific capability - MUST be before generic /capabilities/:id
+  {
+    pattern: /^\/capabilities\/probe\/([^/]+)$/,
+    handler: handleProbeCapability
+  },
+  // P6.18D: Capability readiness GET - MUST be before generic /capabilities/:id
+  {
+    pattern: /^\/capabilities\/([^/]+)\/readiness$/,
+    handler: handleGetCapabilityReadiness
+  },
   {
     pattern: /^\/capabilities\/([^/]+)$/,
     handler: handleGetCapabilityById
@@ -456,11 +470,7 @@ const getDynamicRoutes: DynamicRoute[] = [
     pattern: /^\/threads\/by-task\/([^/]+)\/all$/,
     handler: wrapDynamicHandler(handleGetAllThreadsByTask)
   },
-  // P6.8: Get execution truth (combined task + thread state)
-  {
-    pattern: /^\/tasks\/([^/]+)\/truth$/,
-    handler: wrapDynamicHandler(handleGetExecutionTruth)
-  },
+  // P6.17R2: REMOVED duplicate route - handleGetTaskTruth at line ~397 handles /tasks/:id/truth
   {
     pattern: /^\/threads\/([^/]+)$/,
     handler: wrapDynamicHandler(handleGetThread)
@@ -505,6 +515,7 @@ const postDynamicRoutes: DynamicRoute[] = [
     pattern: /^\/capabilities\/([^/]+)\/test$/,
     handler: handleTestCapability
   },
+  // P6.18C: Probe specific capability moved to getDynamicRoutes for GET method
   {
     pattern: /^\/granclaw-hub\/config\/([^/]+)$/,
     handler: handleSetTenantConfig

@@ -307,13 +307,16 @@ export function deduplicateCapabilities(tenantId?: string): { deleted: number; k
 // ============================================================================
 
 /**
- * P6.13: System capability implementation status
+ * P6.18C: System capability implementation status
  * Maps which capabilities are actually implemented vs stubs
+ * CRITICAL: OpenClaw-dependent capabilities should NOT be marked implemented=true
+ * unless we have actual evidence of tool/plugin availability.
  */
 const CAPABILITY_IMPLEMENTATION_STATUS: Record<string, {
   implemented: boolean
   provider?: string
   requiresApproval: boolean
+  requiresOpenClaw: boolean  // P6.18C: Whether this needs OpenClaw gateway
   limitations?: string[]
   missingSetup?: string[]
 }> = {
@@ -321,39 +324,46 @@ const CAPABILITY_IMPLEMENTATION_STATUS: Record<string, {
     implemented: false, // Stub - requires Playwright
     provider: 'playwright',
     requiresApproval: true,
+    requiresOpenClaw: true,
     limitations: ['Requires Playwright installation', 'Only works on server with display'],
     missingSetup: ['Playwright not installed', 'Browser automation not configured']
   },
   download: {
-    implemented: false, // Stub - requires browser or HTTP client
-    provider: 'browser',
+    implemented: false, // P6.18C: NOT implemented until we have proof of tool
+    provider: 'openclaw',
     requiresApproval: true,
-    limitations: ['Requires browser capability', 'File storage not configured'],
-    missingSetup: ['Download directory not configured', 'Browser capability required']
+    requiresOpenClaw: true,
+    limitations: ['Requires OpenClaw download tool', 'File storage not configured'],
+    missingSetup: ['Download tool not verified', 'OpenClaw plugin required']
   },
   filesystem: {
-    implemented: true,
+    implemented: true,  // Actually implemented locally
     provider: 'node',
     requiresApproval: true,
+    requiresOpenClaw: false,
     limitations: ['Sandboxed to allowed paths']
   },
   install_app: {
     implemented: false, // Very dangerous - not implemented
     provider: 'os',
     requiresApproval: true,
+    requiresOpenClaw: false,
     limitations: ['Requires explicit approval', 'Windows only'],
     missingSetup: ['OS tools capability not enabled', 'Requires admin approval']
   },
   web_search: {
-    implemented: true,
+    implemented: false, // P6.18C: NOT implemented - needs OpenClaw tool verification
     provider: 'openclaw',
     requiresApproval: false,
-    limitations: ['Depends on OpenClaw availability']
+    requiresOpenClaw: true,
+    limitations: ['Depends on OpenClaw web_search tool'],
+    missingSetup: ['OpenClaw web_search tool not verified']
   },
   ftp: {
     implemented: false, // Stub
     provider: 'ftp-client',
     requiresApproval: true,
+    requiresOpenClaw: false,
     limitations: ['Requires FTP client configuration'],
     missingSetup: ['FTP credentials not configured']
   },
@@ -361,6 +371,7 @@ const CAPABILITY_IMPLEMENTATION_STATUS: Record<string, {
     implemented: false, // Stub
     provider: 'smtp',
     requiresApproval: true,
+    requiresOpenClaw: false,
     limitations: ['Requires email provider configuration'],
     missingSetup: ['SMTP settings not configured', 'Email account not connected']
   },
@@ -368,6 +379,7 @@ const CAPABILITY_IMPLEMENTATION_STATUS: Record<string, {
     implemented: false, // Stub
     provider: 'whatsapp-business',
     requiresApproval: true,
+    requiresOpenClaw: false,
     limitations: ['Requires WhatsApp Business API'],
     missingSetup: ['WhatsApp Business API not configured']
   },
@@ -375,6 +387,7 @@ const CAPABILITY_IMPLEMENTATION_STATUS: Record<string, {
     implemented: false, // Stub
     provider: 'google-calendar',
     requiresApproval: true,
+    requiresOpenClaw: false,
     limitations: ['Requires calendar provider OAuth'],
     missingSetup: ['Calendar provider not connected']
   },
@@ -382,6 +395,7 @@ const CAPABILITY_IMPLEMENTATION_STATUS: Record<string, {
     implemented: false, // Requires browser
     provider: 'browser',
     requiresApproval: false,
+    requiresOpenClaw: true,
     limitations: ['Requires browser capability'],
     missingSetup: ['Browser capability required']
   },
@@ -389,13 +403,16 @@ const CAPABILITY_IMPLEMENTATION_STATUS: Record<string, {
     implemented: false, // Requires OS access
     provider: 'os',
     requiresApproval: true,
+    requiresOpenClaw: false,
     limitations: ['Requires OS tools capability'],
     missingSetup: ['OS tools capability not enabled']
   }
 }
 
 /**
- * P6.13: Get readiness status for a specific capability
+ * P6.18C: Get readiness status for a specific capability
+ * CRITICAL: OpenClaw-dependent capabilities should NOT be available=true
+ * without actual evidence of tool/plugin availability.
  */
 export function getCapabilityReadiness(
   tenantId: string,
@@ -422,20 +439,35 @@ export function getCapabilityReadiness(
     }
   }
 
-  const { implemented, provider, requiresApproval, limitations, missingSetup } = implStatus
+  const { implemented, provider, requiresApproval, requiresOpenClaw, limitations, missingSetup } = implStatus
 
-  // Determine availability and health
-  const available = implemented && configured
+  // P6.18C: OpenClaw-dependent capabilities need gateway + tool verification
+  // Without actual evidence, they are NOT available
+  let available: boolean
   let health: 'healthy' | 'degraded' | 'unavailable' | 'unknown' = 'unknown'
   let statusMessage: string
 
   if (!implemented) {
+    available = false
     health = 'unavailable'
-    statusMessage = `La capacidad "${normalizedType}" aún no está implementada en GranClaw. ${missingSetup?.[0] || ''}`
-  } else if (!configured) {
+    if (requiresOpenClaw) {
+      statusMessage = `La capacidad "${normalizedType}" depende de OpenClaw pero no esta verificada. ${missingSetup?.[0] || ''}`
+    } else {
+      statusMessage = `La capacidad "${normalizedType}" aún no está implementada en GranClaw. ${missingSetup?.[0] || ''}`
+    }
+  } else if (requiresOpenClaw) {
+    // P6.18C: Even if "implemented", OpenClaw capabilities need runtime verification
+    // Mark as unavailable unless we have evidence (which requires async probe)
+    available = false
     health = 'degraded'
-    statusMessage = `La capacidad "${normalizedType}" está implementada pero no está configurada para tu cuenta.`
+    statusMessage = `La capacidad "${normalizedType}" depende de OpenClaw. Verifica estado del sistema en /control/tools.`
+  } else if (!configured && requiresApproval) {
+    available = false
+    health = 'degraded'
+    statusMessage = `La capacidad "${normalizedType}" está implementada pero requiere aprobación.`
   } else {
+    // Local capability that's implemented and (configured OR doesn't require approval)
+    available = true
     health = 'healthy'
     statusMessage = `La capacidad "${normalizedType}" está disponible y configurada.`
   }
@@ -447,7 +479,7 @@ export function getCapabilityReadiness(
     implemented,
     provider,
     requiresApproval,
-    missingSetup: !configured ? missingSetup : undefined,
+    missingSetup: !available ? missingSetup : undefined,
     limitations,
     health,
     statusMessage

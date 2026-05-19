@@ -24,6 +24,70 @@ export interface ActionResult<T = unknown> {
 }
 
 /**
+ * P6.17R6: Orchestrator response normalizer
+ * Handles both wrapper format and legacy direct format
+ *
+ * Wrapper format (from ok(res, data)):
+ * { success: true, data: { success: boolean, error?, meta?, ... }, error: null }
+ *
+ * Legacy direct format:
+ * { success: boolean, task?: { id }, jobId?, error? }
+ */
+interface OrchestratorNormalizedResponse {
+  operationalSuccess: boolean
+  taskId?: string
+  jobId?: string
+  queued?: boolean
+  error?: string
+  capabilityGate?: boolean
+  blockingCapabilities?: unknown[]
+}
+
+function normalizeOrchestratorResponse(response: unknown): OrchestratorNormalizedResponse {
+  // Safety check
+  if (!response || typeof response !== 'object') {
+    return { operationalSuccess: false, error: 'Invalid response' }
+  }
+
+  const res = response as Record<string, unknown>
+
+  // Check if this is a wrapper response (has 'data' field with object)
+  const hasDataObject = res.data && typeof res.data === 'object'
+
+  if (hasDataObject) {
+    // Wrapper format: extract from data
+    const data = res.data as Record<string, unknown>
+    const meta = data.meta as Record<string, unknown> | undefined
+
+    return {
+      operationalSuccess: data.success === true,
+      taskId: (data.task as Record<string, unknown>)?.id as string ||
+              meta?.taskId as string ||
+              undefined,
+      jobId: data.jobId as string,
+      queued: data.queued === true,
+      error: data.error as string,
+      capabilityGate: data.capabilityGate === true,
+      blockingCapabilities: data.blockingCapabilities as unknown[]
+    }
+  }
+
+  // Legacy direct format
+  const task = res.task as Record<string, unknown> | undefined
+  const meta = res.meta as Record<string, unknown> | undefined
+
+  return {
+    operationalSuccess: res.success === true,
+    taskId: task?.id as string || meta?.taskId as string,
+    jobId: res.jobId as string,
+    queued: res.queued === true,
+    error: res.error as string,
+    capabilityGate: res.capabilityGate === true,
+    blockingCapabilities: res.blockingCapabilities as unknown[]
+  }
+}
+
+/**
  * Task creation input
  * P6.2: Fixed - backend expects "message" not "input"
  */
@@ -38,16 +102,11 @@ export interface CreateTaskInput {
 
 /**
  * Create a new task
+ * P6.17R6: Uses normalizer to handle wrapper vs legacy response format
  */
 export async function createTask(input: CreateTaskInput): Promise<ActionResult<{ taskId: string; jobId?: string }>> {
   try {
-    const response = await apiFetch<{
-      success: boolean
-      task?: { id: string }
-      jobId?: string
-      queued?: boolean
-      error?: string
-    }>('/orchestrator/run', {
+    const response = await apiFetch<unknown>('/orchestrator/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -60,25 +119,47 @@ export async function createTask(input: CreateTaskInput): Promise<ActionResult<{
       })
     })
 
-    if (response.success) {
+    // P6.17R6: Normalize response to extract operational success
+    const normalized = normalizeOrchestratorResponse(response)
+
+    // P6.17R6: Check operational success, not wrapper success
+    if (normalized.operationalSuccess) {
       return {
         success: true,
-        status: response.queued ? 'queued' : 'executed',
-        message: response.queued ? 'Tarea encolada' : 'Tarea iniciada',
+        status: normalized.queued ? 'queued' : 'executed',
+        message: normalized.queued ? 'Tarea encolada' : 'Tarea iniciada',
         data: {
-          taskId: response.task?.id || '',
-          jobId: response.jobId
+          taskId: normalized.taskId || '',
+          jobId: normalized.jobId
         },
-        taskId: response.task?.id,
-        jobId: response.jobId
+        taskId: normalized.taskId,
+        jobId: normalized.jobId
+      }
+    }
+
+    // P6.17R6: Handle capability gate blocked - task exists but is blocked
+    if (normalized.capabilityGate && normalized.taskId) {
+      return {
+        success: false,
+        status: 'not_available',
+        message: normalized.error || 'Bloqueada: capacidades no disponibles',
+        data: {
+          taskId: normalized.taskId,
+          jobId: undefined
+        },
+        taskId: normalized.taskId,
+        error: normalized.error
       }
     }
 
     return {
       success: false,
       status: 'failed',
-      message: response.error || 'Error al crear tarea',
-      error: response.error
+      message: normalized.error || 'Error al crear tarea',
+      error: normalized.error,
+      // P6.17R6: Preserve taskId even on failure if available
+      taskId: normalized.taskId,
+      data: normalized.taskId ? { taskId: normalized.taskId, jobId: undefined } : undefined
     }
   } catch (err) {
     return handleActionError<{ taskId: string; jobId?: string }>(err, 'crear tarea')
@@ -86,19 +167,55 @@ export async function createTask(input: CreateTaskInput): Promise<ActionResult<{
 }
 
 /**
+ * P6.17R6: Generic response normalizer for simple API responses
+ * Handles wrapper format { success: true, data: { success, ... } }
+ */
+interface NormalizedSimpleResponse {
+  operationalSuccess: boolean
+  jobId?: string
+  taskId?: string
+  status?: string
+  error?: string
+}
+
+function normalizeSimpleResponse(response: unknown): NormalizedSimpleResponse {
+  if (!response || typeof response !== 'object') {
+    return { operationalSuccess: false, error: 'Invalid response' }
+  }
+
+  const res = response as Record<string, unknown>
+  const hasDataObject = res.data && typeof res.data === 'object'
+
+  if (hasDataObject) {
+    // Wrapper format
+    const data = res.data as Record<string, unknown>
+    return {
+      operationalSuccess: data.success === true,
+      jobId: data.jobId as string,
+      taskId: data.taskId as string,
+      status: data.status as string,
+      error: data.error as string
+    }
+  }
+
+  // Legacy direct format
+  return {
+    operationalSuccess: res.success === true,
+    jobId: res.jobId as string,
+    taskId: res.taskId as string,
+    status: res.status as string,
+    error: res.error as string
+  }
+}
+
+/**
  * P6.12: Retry a failed task
+ * P6.17R6: Uses normalizer to handle wrapper vs legacy response format
  * Uses /tasks/:id/retry (not /queue/jobs/:id/retry)
  */
 export async function retryTask(taskId: string, options?: { mode?: string }): Promise<ActionResult> {
   try {
-    const response = await apiFetch<{
-      success: boolean
-      jobId?: string
-      taskId?: string
-      retryMode?: string
-      status?: string
-      error?: string
-    }>(
+    const response = await apiFetch<unknown>(
       `/tasks/${taskId}/retry`,
       {
         method: 'POST',
@@ -107,21 +224,24 @@ export async function retryTask(taskId: string, options?: { mode?: string }): Pr
       }
     )
 
-    if (response.success) {
+    // P6.17R6: Normalize to extract operational success
+    const normalized = normalizeSimpleResponse(response)
+
+    if (normalized.operationalSuccess) {
       return {
         success: true,
-        status: response.status === 'queued' ? 'queued' : 'executed',
+        status: normalized.status === 'queued' ? 'queued' : 'executed',
         message: 'Reintento encolado',
-        jobId: response.jobId,
-        taskId: response.taskId
+        jobId: normalized.jobId,
+        taskId: normalized.taskId || taskId
       }
     }
 
     return {
       success: false,
       status: 'failed',
-      message: response.error || 'Error al reintentar',
-      error: response.error
+      message: normalized.error || 'Error al reintentar',
+      error: normalized.error
     }
   } catch (err) {
     return handleActionError(err, 'reintentar tarea')

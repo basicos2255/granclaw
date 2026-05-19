@@ -55,7 +55,7 @@ export interface DebugSnapshot {
   orchestratorCalled: boolean
   openclawCalled?: boolean
   toolCalled?: boolean
-  source?: 'openclaw' | 'tool' | 'mock' | 'fallback' | 'unknown' | 'granclaw' | 'error' | 'setup-required' | 'task-memory' | 'composite' | 'validation' | 'dag' | 'queue' // P6.9: Added queue source
+  source?: 'openclaw' | 'tool' | 'mock' | 'fallback' | 'unknown' | 'granclaw' | 'error' | 'setup-required' | 'task-memory' | 'composite' | 'validation' | 'dag' | 'queue' | 'capability_gate' // P6.18D4: Added capability_gate source
   executionConfirmed: boolean
   tracePresent: boolean
   error?: string

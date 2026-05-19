@@ -67,6 +67,7 @@ export function TasksPage() {
   const filteredTasks = filter === 'all' ? tasks : tasks.filter(t => t.status === filter)
 
   // P6.1: Create task handler
+  // P6.17R6: Handle both success and capability-blocked tasks (have taskId but success=false)
   const handleCreateTask = async () => {
     if (!taskInput.trim()) return
 
@@ -79,13 +80,24 @@ export function TasksPage() {
 
     setCreating(false)
 
-    if (result.success) {
+    // P6.17R6: Close modal if task was created (even if blocked)
+    // A blocked task has success=false but taskId exists - it was registered
+    const taskWasCreated = result.success || result.taskId
+
+    if (taskWasCreated) {
       setShowCreateModal(false)
       setTaskInput('')
       setTaskMode('safe')
-      // Reload tasks after creation
+      // Reload tasks to show new/blocked task
       loadTasks()
+
+      // P6.17R6: If blocked, show brief feedback but still close modal
+      if (!result.success && result.taskId) {
+        setActionFeedback({ id: 'create', result })
+        setTimeout(() => setActionFeedback(null), 4000)
+      }
     } else {
+      // True failure - no task created
       setActionFeedback({ id: 'create', result })
       setTimeout(() => setActionFeedback(null), 3000)
     }
@@ -420,24 +432,27 @@ export function TasksPage() {
                 {/* Actions */}
                 {(task.status === 'error' || task.status === 'blocked') && (
                   <div style={{ marginTop: '12px', display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleRetryTask(task.id) }}
-                      disabled={actionLoading === task.id}
-                      style={{
-                        padding: '6px 12px',
-                        fontSize: '12px',
-                        backgroundColor: actionLoading === task.id ? '#e2e8f0' : '#f1f5f9',
-                        border: 'none',
-                        borderRadius: '6px',
-                        cursor: actionLoading === task.id ? 'not-allowed' : 'pointer',
-                        color: '#475569',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px'
-                      }}
-                    >
-                      {actionLoading === task.id ? '...' : 'Reintentar'}
-                    </button>
+                    {/* P6.17R5: Only show Retry if canRetry is not explicitly false */}
+                    {task.failureExplanation?.canRetry !== false && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleRetryTask(task.id) }}
+                        disabled={actionLoading === task.id}
+                        style={{
+                          padding: '6px 12px',
+                          fontSize: '12px',
+                          backgroundColor: actionLoading === task.id ? '#e2e8f0' : '#f1f5f9',
+                          border: 'none',
+                          borderRadius: '6px',
+                          cursor: actionLoading === task.id ? 'not-allowed' : 'pointer',
+                          color: '#475569',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}
+                      >
+                        {actionLoading === task.id ? '...' : 'Reintentar'}
+                      </button>
+                    )}
                     <button
                       onClick={(e) => { e.stopPropagation(); navigate(`/tasks/${task.id}`) }}
                       style={{

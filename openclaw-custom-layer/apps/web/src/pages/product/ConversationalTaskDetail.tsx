@@ -132,12 +132,28 @@ export function ConversationalTaskDetail({ taskId }: ConversationalTaskDetailPro
     }
   }, [thread?.messages?.length])
 
+  /**
+   * P6.17R7: Determine if we should auto-create a thread for this task
+   * Blocked tasks and tasks with failureExplanation should NOT auto-create threads
+   * to preserve the failure panel display
+   */
+  const shouldAutoCreateThread = (taskData: GranClawTask): boolean => {
+    // Don't auto-create for blocked tasks
+    if (taskData.status === 'blocked') return false
+    // Don't auto-create if task has failure explanation (capability gate, etc)
+    if (taskData.failureExplanation) return false
+    // Don't auto-create for terminal error states with failure explanation
+    if (taskData.status === 'error' && taskData.source === 'capability_gate') return false
+    // Allow for other states (running, queued, success, etc)
+    return true
+  }
+
   const loadTaskAndThread = async () => {
     setLoading(true)
     setError(null)
 
     try {
-      // Load task
+      // Load task first
       const taskResponse = await api.getTask(taskId)
       if (taskResponse.success && taskResponse.data) {
         setTask(taskResponse.data)
@@ -147,21 +163,26 @@ export function ConversationalTaskDetail({ taskId }: ConversationalTaskDetailPro
         return
       }
 
+      const taskData = taskResponse.data
+
       // Try to load existing thread
       const threadResponse = await api.getThreadByTask(taskId)
       if (threadResponse.success && threadResponse.data) {
         setThread(threadResponse.data)
       } else {
-        // Create new thread if none exists
-        const createResponse = await api.createThread({
-          tenantId: taskResponse.data.tenantId,
-          title: taskResponse.data.input.substring(0, 100),
-          taskId: taskId,
-          initialMessage: taskResponse.data.input
-        })
-        if (createResponse.success && createResponse.data) {
-          setThread(createResponse.data)
+        // P6.17R7: Only auto-create thread if task is not blocked/failed
+        if (shouldAutoCreateThread(taskData)) {
+          const createResponse = await api.createThread({
+            tenantId: taskData.tenantId,
+            title: taskData.input.substring(0, 100),
+            taskId: taskId,
+            initialMessage: taskData.input
+          })
+          if (createResponse.success && createResponse.data) {
+            setThread(createResponse.data)
+          }
         }
+        // P6.17R7: For blocked/failed tasks, leave thread=null to show failure panel
       }
     } catch (err) {
       setError('Error de conexion')
@@ -626,6 +647,80 @@ export function ConversationalTaskDetail({ taskId }: ConversationalTaskDetailPro
               </div>
             )}
 
+            {/* P6.17R7B: Failure panel - shown ALWAYS when task has failureExplanation, regardless of thread */}
+            {task?.failureExplanation && (task.status === 'blocked' || task.source === 'capability_gate' || task.failureExplanation.canRetry === false) && (
+              <div style={{ padding: '20px', borderBottom: thread ? '1px solid #e2e8f0' : 'none' }}>
+                <div style={{
+                  maxWidth: '600px',
+                  margin: '0 auto',
+                  padding: '20px',
+                  backgroundColor: '#fef2f2',
+                  borderRadius: '12px',
+                  border: '1px solid #fecaca'
+                }}>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    marginBottom: '12px'
+                  }}>
+                    <div style={{
+                      width: '36px',
+                      height: '36px',
+                      borderRadius: '50%',
+                      backgroundColor: '#fee2e2',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '18px',
+                      flexShrink: 0
+                    }}>
+                      🚫
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: '600', color: '#991b1b', fontSize: '15px' }}>
+                        {task.failureExplanation.title}
+                      </div>
+                      {task.failureExplanation.capability && (
+                        <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                          Capacidad: {task.failureExplanation.capability}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ color: '#7f1d1d', marginBottom: '12px', lineHeight: '1.5', fontSize: '14px' }}>
+                    {task.failureExplanation.humanMessage}
+                  </div>
+                  {task.failureExplanation.recoveryActions && task.failureExplanation.recoveryActions.length > 0 && (
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ fontSize: '11px', fontWeight: '600', color: '#991b1b', marginBottom: '6px' }}>
+                        Acciones recomendadas:
+                      </div>
+                      <ul style={{ margin: 0, paddingLeft: '18px', color: '#7f1d1d', fontSize: '13px' }}>
+                        {task.failureExplanation.recoveryActions.map((action, i) => (
+                          <li key={i} style={{ marginBottom: '3px' }}>
+                            <strong>{action.label}</strong>
+                            {action.description && ` - ${action.description}`}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {task.failureExplanation.canRetry === false && (
+                    <div style={{
+                      padding: '10px',
+                      backgroundColor: '#fee2e2',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      color: '#991b1b'
+                    }}>
+                      Esta tarea no puede reintentarse hasta habilitar la capacidad requerida.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Timeline */}
             <div
               ref={timelineRef}
@@ -641,11 +736,12 @@ export function ConversationalTaskDetail({ taskId }: ConversationalTaskDetailPro
                   onApprove={handleApprove}
                   onReject={handleReject}
                 />
-              ) : (
+              ) : !task?.failureExplanation ? (
+                /* P6.17R7B: Only show "Sin conversacion" if there's no failure panel above */
                 <div style={{ padding: '40px', textAlign: 'center', color: '#64748b' }}>
                   Sin conversacion disponible
                 </div>
-              )}
+              ) : null}
             </div>
 
             {/* Chat input */}
@@ -673,7 +769,8 @@ export function ConversationalTaskDetail({ taskId }: ConversationalTaskDetailPro
                 gap: '8px',
                 justifyContent: 'center'
               }}>
-                {thread.status === 'failed' && (
+                {/* P6.17R5: Only show retry if canRetry is not explicitly false */}
+                {thread.status === 'failed' && task?.failureExplanation?.canRetry !== false && (
                   <button
                     onClick={() => handleSendMessage('reintenta')}
                     style={{
@@ -688,6 +785,51 @@ export function ConversationalTaskDetail({ taskId }: ConversationalTaskDetailPro
                     Reintentar
                   </button>
                 )}
+                {/* P6.17R5: Show message when retry is not available */}
+                {thread.status === 'failed' && task?.failureExplanation?.canRetry === false && (
+                  <span style={{ fontSize: '13px', color: '#64748b' }}>
+                    No reintentable hasta habilitar capacidad
+                  </span>
+                )}
+                <button
+                  onClick={() => navigate('/tasks?create=true')}
+                  style={{
+                    padding: '8px 16px',
+                    backgroundColor: '#f1f5f9',
+                    color: '#475569',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: '6px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Nueva Tarea
+                </button>
+              </div>
+            )}
+
+            {/* P6.17R7B: Actions for blocked tasks - show regardless of thread existence */}
+            {task?.status === 'blocked' && task?.failureExplanation && (
+              <div style={{
+                padding: '16px 20px',
+                borderTop: '1px solid #e2e8f0',
+                backgroundColor: '#f8fafc',
+                display: 'flex',
+                gap: '8px',
+                justifyContent: 'center'
+              }}>
+                <button
+                  onClick={() => navigate('/control/tools')}
+                  style={{
+                    padding: '8px 16px',
+                    backgroundColor: '#3b82f6',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Configurar capacidades
+                </button>
                 <button
                   onClick={() => navigate('/tasks?create=true')}
                   style={{

@@ -4,10 +4,11 @@
  * FEATURE 091: Approved Capabilities v1
  * FIX 092: UX Feedback improvements
  * FIX 105: Canonical Capability Groups & Cleanup
+ * P6.18: System Readiness & OpenClaw Probe
  */
 
 import { useState, useEffect, useMemo } from 'react'
-import { api, type ToolProposal, type ApprovedCapability } from '../../services/api'
+import { api, type ToolProposal, type ApprovedCapability, type SystemReadinessSnapshot, type ReadinessState } from '../../services/api'
 
 // FIX 092: Notice type for toast
 interface Notice {
@@ -33,6 +34,28 @@ function normalizeKey(input: string): string {
   return input.toLowerCase().trim().replace(/[^a-z0-9_]/g, '_')
 }
 
+// P6.18C: Get state badge styling - expanded for all states
+function getReadinessStateStyle(state: ReadinessState): { bg: string; text: string; label: string } {
+  switch (state) {
+    case 'ready': return { bg: '#dcfce7', text: '#16a34a', label: 'LISTO' }
+    case 'unavailable': return { bg: '#fee2e2', text: '#dc2626', label: 'NO DISPONIBLE' }
+    case 'not_installed': return { bg: '#fee2e2', text: '#dc2626', label: 'NO INSTALADO' }
+    case 'not_configured': return { bg: '#fef3c7', text: '#d97706', label: 'SIN CONFIGURAR' }
+    case 'not_authorized': return { bg: '#fee2e2', text: '#dc2626', label: 'NO AUTORIZADO' }
+    case 'gateway_unreachable': return { bg: '#fee2e2', text: '#dc2626', label: 'GATEWAY INACCESIBLE' }
+    case 'cli_unavailable':
+    case 'cli_not_running': return { bg: '#fef3c7', text: '#d97706', label: 'CLI NO DISPONIBLE' }
+    case 'plugin_missing': return { bg: '#fef3c7', text: '#d97706', label: 'PLUGIN FALTANTE' }
+    case 'tool_missing': return { bg: '#fef3c7', text: '#d97706', label: 'HERRAMIENTA FALTANTE' }
+    case 'policy_blocked': return { bg: '#fee2e2', text: '#dc2626', label: 'BLOQUEADO POR POLITICA' }
+    case 'sandbox_blocked': return { bg: '#fee2e2', text: '#dc2626', label: 'BLOQUEADO POR SANDBOX' }
+    case 'auth_expired': return { bg: '#fee2e2', text: '#dc2626', label: 'AUTH EXPIRADA' }
+    case 'rate_limited': return { bg: '#fef3c7', text: '#d97706', label: 'LIMITE ALCANZADO' }
+    case 'unknown': return { bg: '#e0e7ff', text: '#4f46e5', label: 'NO VERIFICADO' }
+    default: return { bg: '#f3f4f6', text: '#6b7280', label: 'DESCONOCIDO' }
+  }
+}
+
 export function Tools() {
   const [proposals, setProposals] = useState<ToolProposal[]>([])
   const [capabilities, setCapabilities] = useState<ApprovedCapability[]>([])
@@ -41,6 +64,9 @@ export function Tools() {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [cleaningUp, setCleaningUp] = useState(false)
+  // P6.18: System readiness state
+  const [systemReadiness, setSystemReadiness] = useState<SystemReadinessSnapshot | null>(null)
+  const [probing, setProbing] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -64,9 +90,10 @@ export function Tools() {
   const loadData = async () => {
     setLoading(true)
     try {
-      const [proposalsRes, capabilitiesRes] = await Promise.all([
+      const [proposalsRes, capabilitiesRes, probeRes] = await Promise.all([
         api.getToolProposals(),
-        api.getCapabilities()
+        api.getCapabilities(),
+        api.probeAllCapabilities(false)
       ])
       if (proposalsRes.success && proposalsRes.data) {
         setProposals(proposalsRes.data)
@@ -74,10 +101,33 @@ export function Tools() {
       if (capabilitiesRes.success && capabilitiesRes.data) {
         setCapabilities(capabilitiesRes.data)
       }
+      // P6.18: Set system readiness from probe
+      if (probeRes.success && probeRes.data) {
+        setSystemReadiness(probeRes.data)
+      }
     } catch {
       setNotice({ message: 'Error cargando datos', type: 'error' })
     } finally {
       setLoading(false)
+    }
+  }
+
+  // P6.18: Manual probe refresh
+  const probeSystem = async () => {
+    if (probing) return
+    setProbing(true)
+    try {
+      const probeRes = await api.probeAllCapabilities(true) // Force refresh
+      if (probeRes.success && probeRes.data) {
+        setSystemReadiness(probeRes.data)
+        setNotice({ message: 'Estado del sistema actualizado', type: 'success' })
+      } else {
+        setNotice({ message: probeRes.error || 'Error al sondear sistema', type: 'error' })
+      }
+    } catch {
+      setNotice({ message: 'Error al sondear sistema', type: 'error' })
+    } finally {
+      setProbing(false)
     }
   }
 
@@ -391,6 +441,141 @@ export function Tools() {
             </button>
           </div>
         </div>
+
+        {/* P6.18: System Readiness Panel */}
+        {systemReadiness && (
+          <div style={{
+            marginBottom: '32px',
+            padding: '24px',
+            backgroundColor: 'white',
+            borderRadius: '16px',
+            border: '1px solid #e5e7eb'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <div>
+                <h2 style={{ fontSize: '20px', fontWeight: '600', color: '#111827', margin: 0 }}>
+                  Estado del Sistema
+                </h2>
+                <p style={{ fontSize: '14px', color: '#6b7280', margin: '4px 0 0 0' }}>
+                  Ultima verificacion: {new Date(systemReadiness.snapshotAt).toLocaleString('es-ES')}
+                </p>
+              </div>
+              <button
+                style={buttonStyle('secondary', probing)}
+                onClick={probeSystem}
+                disabled={probing}
+              >
+                {probing ? 'Verificando...' : 'Verificar conexion'}
+              </button>
+            </div>
+
+            {/* Gateway Status */}
+            <div style={{
+              padding: '16px',
+              backgroundColor: systemReadiness.openclaw.state === 'ready' ? '#f0fdf4' :
+                systemReadiness.openclaw.state === 'not_configured' ? '#fffbeb' : '#fef2f2',
+              borderRadius: '12px',
+              marginBottom: '16px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{
+                  width: '12px', height: '12px', borderRadius: '50%',
+                  backgroundColor: systemReadiness.openclaw.state === 'ready' ? '#16a34a' :
+                    systemReadiness.openclaw.state === 'not_configured' ? '#d97706' : '#dc2626'
+                }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '15px', fontWeight: '600', color: '#111827' }}>
+                    OpenClaw Gateway
+                  </div>
+                  <div style={{ fontSize: '13px', color: '#6b7280' }}>
+                    {systemReadiness.openclaw.gateway.configured ?
+                      (systemReadiness.openclaw.gateway.reachable ?
+                        `Conectado ${systemReadiness.openclaw.gateway.latencyMs ? `(${systemReadiness.openclaw.gateway.latencyMs}ms)` : ''}` :
+                        systemReadiness.openclaw.gateway.error || 'No responde') :
+                      'No configurado - configura OPENCLAW_BASE_URL'}
+                  </div>
+                </div>
+                <span style={{
+                  fontSize: '11px', fontWeight: '600', padding: '4px 12px', borderRadius: '12px',
+                  backgroundColor: getReadinessStateStyle(systemReadiness.openclaw.state).bg,
+                  color: getReadinessStateStyle(systemReadiness.openclaw.state).text
+                }}>
+                  {getReadinessStateStyle(systemReadiness.openclaw.state).label}
+                </span>
+              </div>
+            </div>
+
+            {/* Capability Summary */}
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              <div style={{
+                flex: 1, minWidth: '140px', padding: '12px 16px',
+                backgroundColor: '#f0fdf4', borderRadius: '10px', textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '24px', fontWeight: '700', color: '#16a34a' }}>
+                  {systemReadiness.summary.ready}
+                </div>
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>Disponibles</div>
+              </div>
+              <div style={{
+                flex: 1, minWidth: '140px', padding: '12px 16px',
+                backgroundColor: '#fef2f2', borderRadius: '10px', textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '24px', fontWeight: '700', color: '#dc2626' }}>
+                  {systemReadiness.summary.unavailable}
+                </div>
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>No disponibles</div>
+              </div>
+              <div style={{
+                flex: 1, minWidth: '140px', padding: '12px 16px',
+                backgroundColor: '#fffbeb', borderRadius: '10px', textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '24px', fontWeight: '700', color: '#d97706' }}>
+                  {systemReadiness.summary.notConfigured + systemReadiness.summary.degraded}
+                </div>
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>Requieren config</div>
+              </div>
+            </div>
+
+            {/* Capability List (collapsed by default, shown on expand) */}
+            <details style={{ marginTop: '16px' }}>
+              <summary style={{
+                cursor: 'pointer', fontSize: '14px', fontWeight: '500', color: '#4b5563',
+                padding: '8px 0'
+              }}>
+                Ver detalle de {systemReadiness.capabilities.length} capacidades
+              </summary>
+              <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {systemReadiness.capabilities.map(cap => (
+                  <div key={cap.capability} style={{
+                    display: 'flex', alignItems: 'center', gap: '10px',
+                    padding: '10px 14px', backgroundColor: '#f9fafb', borderRadius: '8px'
+                  }}>
+                    <div style={{
+                      width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
+                      backgroundColor: cap.state === 'ready' ? '#16a34a' :
+                        cap.state === 'unavailable' ? '#dc2626' : '#d97706'
+                    }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: '14px', fontWeight: '500', color: '#111827' }}>
+                        {cap.displayName}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#6b7280' }}>
+                        {cap.statusMessage}
+                      </div>
+                    </div>
+                    <span style={{
+                      fontSize: '10px', fontWeight: '600', padding: '2px 8px', borderRadius: '10px',
+                      backgroundColor: getReadinessStateStyle(cap.state).bg,
+                      color: getReadinessStateStyle(cap.state).text
+                    }}>
+                      {getReadinessStateStyle(cap.state).label}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          </div>
+        )}
 
         {loading ? (
           <div style={{ textAlign: 'center', padding: '60px 20px', color: '#6b7280' }}>

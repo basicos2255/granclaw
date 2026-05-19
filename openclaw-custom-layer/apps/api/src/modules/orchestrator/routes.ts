@@ -37,7 +37,7 @@ import type { RunTaskInput, StreamTaskInput } from './types'
 import type { AuthContext } from '../auth'
 import { getGranClawHubService } from '../granclaw-hub'
 import { ExecutionTraceBuilder, type DebugSnapshot } from './trace'
-import { createTask, completeTask, type TaskStatus } from '../tasks'
+import { createTask, completeTask, updateTask, buildCapabilityGateFailureExplanation, buildCapabilityGateResult, type TaskStatus } from '../tasks'
 import { detectMissingCapability, createToolProposal, findExistingProposal, countDuplicateProposals } from '../tool-proposals'
 import { getEnabledCapabilityByKey, getCapabilityByKey, normalizeCapabilityKey, countCapabilitiesByKey, dispatchCapabilityExecution, type ExecutionMode } from '../capabilities'
 // FEATURE 110: OS Tools - keeping imports for whitelist check
@@ -59,8 +59,12 @@ import { enqueueCompositeTask, type EnqueueResult } from '../runtime-queue/execu
 import { emitTaskEvent } from '../runtime-ws'
 // P6.9: Composite task planning for proper plan structure
 import { buildCompositeExecutionPlan } from '../composite-tasks/planner'
+// P6.18D4: CapabilityReadinessSummary for streaming truth parity
+import type { CapabilityReadinessSummary } from '../composite-tasks/types'
 // FIX 124: Final Execution Status Resolution
 import { resolveFinalExecutionStatus, type ResolvedExecutionStatus } from '../execution-status'
+// P6.18D: Capability gate check for all capability-backed intents
+import { getCapabilityGateReadiness, type CapabilityGateCheckResult } from '../capabilities'
 // FEATURE 130: Task memory integration for pattern reuse
 import {
   checkTaskMemory,
@@ -73,6 +77,216 @@ import {
  * FIX 111: Capability execution is now handled by capability-dispatcher.ts
  * This removes the large switch statement and centralizes execution logic.
  */
+
+// ============================================================================
+// P6.18D: INTENT TO CAPABILITY MAPPING
+// P6.18D4: Enhanced normalization and robust patterns
+// ============================================================================
+
+/**
+ * P6.18D4: Normalize text by removing accents/diacritics and normalizing whitespace
+ * This ensures patterns match variants like "página" and "pagina"
+ */
+function normalizeForPatternMatch(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // Remove diacritics
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * P6.18D4: Deterministic patterns for search/web intents
+ * These MUST be checked to block mock success
+ * ALL patterns now work on normalized text (no accents)
+ */
+const SEARCH_WEB_PATTERNS = [
+  /\b(busca|buscar|busqueda|search)\b.*\b(internet|web|google|online)\b/i,
+  /\b(internet|web|google|online)\b.*\b(busca|buscar|busqueda|search)\b/i,
+  /\b(busca|buscar)\s+(info|informacion|datos|sobre|acerca)/i,
+  /\b(investiga|investigar|encuentra|encontrar)\s+.*(web|internet|online)/i,
+  /\b(web\s+search|google\s+search|internet\s+search)\b/i,
+  // P6.18D4: Catch simple search requests without internet/web qualifier
+  /^busca\s+info\s+de\s+/i,
+  /^buscar\s+info\s+de\s+/i,
+  /^busca\s+informacion\s+(de|sobre)\s+/i
+]
+
+/**
+ * P6.18D4: Enhanced browser patterns
+ * Now works on normalized text and catches more variants
+ */
+const BROWSER_PATTERNS = [
+  // Patterns with page/site qualifier (pagina normalized from página)
+  /\b(abre|abrir|open|navega|navegar)\b.*\b(web|pagina|sitio|url|http|browser|navegador)\b/i,
+  /\b(navega|navegar|browse)\b.*\b(a|to)\b/i,
+  // URLs
+  /^https?:\/\//i,
+  // P6.18D4: Simple "abre X" patterns for opening destinations
+  /^abre\s+(el\s+)?(sitio|navegador|browser)/i,
+  /^abrir\s+(el\s+)?(sitio|navegador|browser)/i,
+  // P6.18D4: "abre + known site" patterns (google, facebook, etc.)
+  /^abre\s+(la\s+)?(pagina\s+)?(de\s+)?(google|facebook|twitter|youtube|instagram|linkedin|amazon|github|gmail)/i,
+  /^abrir\s+(la\s+)?(pagina\s+)?(de\s+)?(google|facebook|twitter|youtube|instagram|linkedin|amazon|github|gmail)/i,
+  // P6.18D4: "usa el navegador para" patterns
+  /\busa\s+(el\s+)?navegador\s+(para|y)\b/i,
+  // P6.18D4: Simple "abre google" without "la pagina de"
+  /^abre\s+google$/i,
+  /^abrir\s+google$/i,
+  // P6.18D4: "navega a X" patterns
+  /^navega\s+a\s+\S+/i,
+  /^navegar\s+a\s+\S+/i
+]
+
+const DOWNLOAD_PATTERNS = [
+  /\b(descarga|descargar|download|baja|bajar)\b/i
+]
+
+const INSTALL_PATTERNS = [
+  /\b(instala|instalar|install|setup)\b/i
+]
+
+/**
+ * P6.18D4: Get required capability for an intent
+ * CRITICAL: This maps user intents to required capabilities to block mock success
+ * Uses normalized text to match accented and non-accented variants
+ *
+ * @returns capability key or undefined if no specific capability required
+ */
+function getRequiredCapabilityForIntent(
+  intent: IntentClassification,
+  message: string
+): string | undefined {
+  // P6.18D4: Normalize message for pattern matching (remove accents, lowercase)
+  const normalizedMessage = normalizeForPatternMatch(message)
+
+  // Check explicit intent types first
+  if (intent.kind === 'web_action') {
+    // Web action could be search or browser
+    if (SEARCH_WEB_PATTERNS.some(p => p.test(normalizedMessage))) {
+      return 'web_search'
+    }
+    if (BROWSER_PATTERNS.some(p => p.test(normalizedMessage))) {
+      return 'browser'
+    }
+    // Default to web_search for generic web actions
+    return 'web_search'
+  }
+
+  if (intent.kind === 'install_download_action') {
+    // Check if download or install
+    if (INSTALL_PATTERNS.some(p => p.test(normalizedMessage))) {
+      return 'install_app'
+    }
+    if (DOWNLOAD_PATTERNS.some(p => p.test(normalizedMessage))) {
+      return 'download'
+    }
+    // Default to download for generic install/download
+    return 'download'
+  }
+
+  // Check message patterns for intents that might not be explicitly classified
+  // P6.18D4: CRITICAL - Use normalized message for all pattern checks
+  if (SEARCH_WEB_PATTERNS.some(p => p.test(normalizedMessage))) {
+    return 'web_search'
+  }
+
+  if (BROWSER_PATTERNS.some(p => p.test(normalizedMessage))) {
+    return 'browser'
+  }
+
+  if (DOWNLOAD_PATTERNS.some(p => p.test(normalizedMessage))) {
+    return 'download'
+  }
+
+  if (INSTALL_PATTERNS.some(p => p.test(normalizedMessage))) {
+    return 'install_app'
+  }
+
+  // No specific capability required
+  return undefined
+}
+
+/**
+ * P6.18D3: Shared capability gate check result interface
+ */
+interface CapabilityGateResult {
+  blocked: boolean
+  capabilityKey: string
+  gateCheck?: CapabilityGateCheckResult
+  response?: {
+    success: false
+    error: string
+    message: string
+    capabilityGate: true
+    meta: Record<string, unknown>
+  }
+}
+
+/**
+ * P6.18D3: Check capability gate for a given intent and message
+ * Used by both normal (/run) and streaming (/run-stream) routes
+ *
+ * CRITICAL: This is the SINGLE authoritative gate check to avoid mock success
+ */
+async function checkCapabilityGate(
+  tenantId: string,
+  intent: IntentClassification,
+  message: string,
+  trace: ExecutionTraceBuilder,
+  taskId: string
+): Promise<CapabilityGateResult> {
+  const requiredCapability = getRequiredCapabilityForIntent(intent, message)
+
+  if (!requiredCapability) {
+    return { blocked: false, capabilityKey: '' }
+  }
+
+  const gateCheck = await getCapabilityGateReadiness(tenantId, requiredCapability)
+
+  if (gateCheck.canProceed) {
+    return { blocked: false, capabilityKey: requiredCapability, gateCheck }
+  }
+
+  // Capability is NOT ready - must block
+  console.log(`[GranClaw P6.18D3] Capability gate BLOCKED: ${requiredCapability} - ${gateCheck.message}`)
+
+  trace.addStep({
+    stage: 'orchestrator',
+    status: 'blocked',
+    label: 'Capability gate check',
+    detail: `${requiredCapability}: ${gateCheck.state} - ${gateCheck.message}`
+  })
+
+  const debugSnapshot = trace.getDebugSnapshot()
+  debugSnapshot.source = 'validation'
+  debugSnapshot.executionConfirmed = false
+  debugSnapshot.error = `Capability not ready: ${requiredCapability}`
+
+  return {
+    blocked: true,
+    capabilityKey: requiredCapability,
+    gateCheck,
+    response: {
+      success: false,
+      error: `Capability not ready: ${requiredCapability}`,
+      message: gateCheck.message,
+      capabilityGate: true,
+      meta: {
+        requestId: trace.requestId,
+        taskId,
+        capabilityKey: requiredCapability,
+        capabilityState: gateCheck.state,
+        source: gateCheck.source,
+        blockingCapabilities: gateCheck.blockingCapabilities,
+        recoveryActions: gateCheck.recoveryActions,
+        checkedAt: gateCheck.checkedAt,
+        debugSnapshot
+      }
+    }
+  }
+}
 
 /**
  * FEATURE 075: Logs sanitizados de debug
@@ -373,20 +587,42 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           debugSnapshot.error = 'Capability not available'
           logDebug(debugSnapshot)
 
+          // P6.17R5: Build complete result with plan evidence
+          const capabilityGateResult = buildCapabilityGateResult({
+            blockingCapabilities: planResult.blockingCapabilities,
+            plan: planResult.plan ? {
+              id: planResult.plan.id,
+              sourceInput: planResult.plan.sourceInput,
+              steps: planResult.plan.steps.map(s => ({
+                stepId: s.stepId,
+                order: s.order,
+                actionType: s.actionType,
+                targetEntity: s.targetEntity,
+                capabilityKey: s.capabilityKey,
+                description: s.description
+              }))
+            } : undefined,
+            reason: `Capacidades no disponibles: ${blockedCaps}`
+          })
+
           completeTask(
             task.id,
             'blocked',
-            {
-              capabilityGate: true,
-              blockingCapabilities: planResult.blockingCapabilities,
-              reason: `Capacidades no disponibles: ${blockedCaps}`
-            },
+            capabilityGateResult,
             'validation',
             trace.getSteps(),
             debugSnapshot,
             trace.getTotalDurationMs(),
             `La tarea requiere capacidades que no están disponibles: ${blockedCaps}`
           )
+
+          // P6.17R4: Set proper failureExplanation using blockingCapabilities data
+          const capabilityFailureExplanation = buildCapabilityGateFailureExplanation({
+            blockingCapabilities: planResult.blockingCapabilities,
+            taskInput: input.message,
+            provider: 'validation'
+          })
+          updateTask(task.id, { failureExplanation: capabilityFailureExplanation })
 
           ok(res, {
             success: false,
@@ -673,6 +909,128 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           label: 'Delegado a OpenClaw',
           detail: routeDecision.reason
         })
+
+        // =====================================================================
+        // P6.18D: CAPABILITY GATE CHECK FOR ALL CAPABILITY-BACKED INTENTS
+        // CRITICAL: This prevents mock success for search/browser/download
+        // =====================================================================
+        const requiredCapability = getRequiredCapabilityForIntent(intent, input.message)
+
+        if (requiredCapability) {
+          console.log(`[P6.18D] Intent ${intent.kind} requires capability: ${requiredCapability}`)
+
+          const capabilityGate = await getCapabilityGateReadiness(context.tenant.id, requiredCapability)
+
+          if (!capabilityGate.canProceed) {
+            console.log(`[P6.18D] Capability gate BLOCKED: ${requiredCapability} state=${capabilityGate.state}`)
+
+            trace.addStep({
+              stage: 'orchestrator',
+              status: 'error',
+              label: 'Capability no disponible',
+              detail: `Capacidad requerida: ${requiredCapability} - ${capabilityGate.message}`
+            })
+
+            const debugSnapshot = trace.getDebugSnapshot()
+            debugSnapshot.source = 'validation'
+            debugSnapshot.executionConfirmed = false
+            debugSnapshot.error = 'Capability not available'
+            logDebug(debugSnapshot)
+
+            // Build capability gate result with proper structure
+            const blockingCaps = capabilityGate.blockingCapabilities || [{
+              capability: requiredCapability,
+              capabilityKey: requiredCapability,
+              available: false,
+              configured: false,
+              implemented: capabilityGate.state !== 'unavailable',
+              statusMessage: capabilityGate.message
+            }]
+
+            const capabilityGateResult = buildCapabilityGateResult({
+              blockingCapabilities: blockingCaps.map(c => ({
+                capability: c.capability || requiredCapability,
+                capabilityKey: c.capabilityKey || requiredCapability,
+                available: false,
+                configured: false,
+                implemented: capabilityGate.state !== 'unavailable',
+                statusMessage: c.statusMessage || capabilityGate.message
+              })),
+              reason: capabilityGate.message
+            })
+
+            completeTask(
+              task.id,
+              'blocked',
+              capabilityGateResult,
+              'capability_gate',
+              trace.getSteps(),
+              debugSnapshot,
+              trace.getTotalDurationMs(),
+              capabilityGate.message
+            )
+
+            // Build failure explanation for UI
+            const failureExplanation = buildCapabilityGateFailureExplanation({
+              blockingCapabilities: blockingCaps.map(c => ({
+                capability: c.capability || requiredCapability,
+                capabilityKey: c.capabilityKey || requiredCapability,
+                available: false,
+                configured: false,
+                implemented: capabilityGate.state !== 'unavailable',
+                statusMessage: c.statusMessage || capabilityGate.message
+              })),
+              taskInput: input.message,
+              provider: 'capability_gate'
+            })
+            updateTask(task.id, { failureExplanation })
+
+            const statusResolution = resolveFinalExecutionStatus({
+              hubAllowed: true,
+              hubBlocked: false,
+              result: { success: false, executionStatus: 'capability_blocked' },
+              error: capabilityGate.message,
+              source: 'capability_gate',
+              meta: { executionConfirmed: false }
+            })
+
+            ok(res, {
+              success: false,
+              error: capabilityGate.message,
+              capabilityGate: true,
+              blockingCapabilities: blockingCaps,
+              statusResolution,
+              meta: {
+                requestId: trace.requestId,
+                taskId: task.id,
+                intentKind: intent.kind,
+                requiredCapability,
+                capabilityState: capabilityGate.state,
+                hubDecision: hubResult.decisionLog,
+                executionTrace: trace.getSteps(),
+                executionDurationMs: trace.getTotalDurationMs(),
+                tenantId: context.tenant.id,
+                adapterStatus,
+                debugSnapshot,
+                routerDecision: {
+                  provider: 'capability_gate',
+                  reason: capabilityGate.message,
+                  intentKind: intent.kind
+                }
+              }
+            })
+            return
+          }
+
+          // Capability gate passed
+          console.log(`[P6.18D] Capability gate PASSED: ${requiredCapability} state=${capabilityGate.state}`)
+          trace.addStep({
+            stage: 'orchestrator',
+            status: 'success',
+            label: 'Capability disponible',
+            detail: `${requiredCapability}: ${capabilityGate.state}`
+          })
+        }
 
         // FEATURE 130: Check task memory for reusable pattern BEFORE calling OpenClaw
         const taskMemoryCheck = checkTaskMemory({
@@ -1182,6 +1540,125 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
         return
       }
 
+      // =====================================================================
+      // P6.18D5: CAPABILITY GATE CHECK BEFORE PROPOSAL
+      // CRITICAL: Check if message matches capability-backed intent BEFORE
+      // falling into proposal. "abre google" must block with capabilityGate,
+      // not create proposal open_web_browser.
+      // =====================================================================
+      const proposalRequiredCapability = getRequiredCapabilityForIntent(intent, input.message)
+
+      if (proposalRequiredCapability) {
+        console.log(`[P6.18D5] Pre-proposal capability gate check: ${proposalRequiredCapability}`)
+
+        const proposalCapabilityGate = await getCapabilityGateReadiness(context.tenant.id, proposalRequiredCapability)
+
+        if (!proposalCapabilityGate.canProceed) {
+          console.log(`[P6.18D5] Capability gate BLOCKED (pre-proposal): ${proposalRequiredCapability} state=${proposalCapabilityGate.state}`)
+
+          trace.addStep({
+            stage: 'orchestrator',
+            status: 'blocked',
+            label: 'Capability gate (pre-proposal)',
+            detail: `${proposalRequiredCapability}: ${proposalCapabilityGate.state} - ${proposalCapabilityGate.message}`
+          })
+
+          const debugSnapshot = trace.getDebugSnapshot()
+          debugSnapshot.source = 'capability_gate'
+          debugSnapshot.executionConfirmed = false
+          debugSnapshot.error = `Capability not ready: ${proposalRequiredCapability}`
+          logDebug(debugSnapshot)
+
+          // Build blocking caps for result
+          const preProposalBlockingCaps = proposalCapabilityGate.blockingCapabilities || [{
+            capability: proposalRequiredCapability,
+            capabilityKey: proposalRequiredCapability,
+            available: false,
+            configured: false,
+            implemented: proposalCapabilityGate.state !== 'unavailable',
+            statusMessage: proposalCapabilityGate.message
+          }]
+
+          const preProposalGateResult = buildCapabilityGateResult({
+            blockingCapabilities: preProposalBlockingCaps.map(c => ({
+              capability: c.capability || proposalRequiredCapability,
+              capabilityKey: c.capabilityKey || proposalRequiredCapability,
+              available: false,
+              configured: false,
+              implemented: proposalCapabilityGate.state !== 'unavailable',
+              statusMessage: c.statusMessage || proposalCapabilityGate.message
+            })),
+            reason: proposalCapabilityGate.message
+          })
+
+          completeTask(
+            task.id,
+            'blocked',
+            preProposalGateResult,
+            'capability_gate',
+            trace.getSteps(),
+            debugSnapshot,
+            trace.getTotalDurationMs(),
+            proposalCapabilityGate.message
+          )
+
+          // Build failure explanation for truth endpoint
+          const preProposalFailureExplanation = buildCapabilityGateFailureExplanation({
+            blockingCapabilities: preProposalBlockingCaps.map(c => ({
+              capability: c.capability || proposalRequiredCapability,
+              capabilityKey: c.capabilityKey || proposalRequiredCapability,
+              available: false,
+              configured: false,
+              implemented: proposalCapabilityGate.state !== 'unavailable',
+              statusMessage: c.statusMessage || proposalCapabilityGate.message
+            })),
+            taskInput: input.message,
+            provider: 'capability_gate'
+          })
+          updateTask(task.id, { failureExplanation: preProposalFailureExplanation })
+
+          const preProposalStatusResolution = resolveFinalExecutionStatus({
+            hubAllowed: true,
+            hubBlocked: false,
+            result: { success: false, executionStatus: 'capability_blocked' },
+            error: proposalCapabilityGate.message,
+            source: 'capability_gate',
+            meta: { executionConfirmed: false }
+          })
+
+          ok(res, {
+            success: false,
+            error: proposalCapabilityGate.message,
+            capabilityGate: true,
+            blockingCapabilities: preProposalBlockingCaps,
+            statusResolution: preProposalStatusResolution,
+            meta: {
+              requestId: trace.requestId,
+              taskId: task.id,
+              intentKind: intent.kind,
+              requiredCapability: proposalRequiredCapability,
+              capabilityKey: proposalRequiredCapability,
+              capabilityState: proposalCapabilityGate.state,
+              hubDecision: hubResult.decisionLog,
+              executionTrace: trace.getSteps(),
+              executionDurationMs: trace.getTotalDurationMs(),
+              tenantId: context.tenant.id,
+              adapterStatus,
+              debugSnapshot,
+              routerDecision: {
+                provider: 'capability_gate',
+                reason: proposalCapabilityGate.message,
+                intentKind: intent.kind
+              }
+            }
+          })
+          return
+        }
+
+        // Capability gate passed - continue (should not happen often in proposal path)
+        console.log(`[P6.18D5] Capability gate PASSED (pre-proposal): ${proposalRequiredCapability}`)
+      }
+
       // FIX 121: Provider 'proposal' - create tool proposal
       if (routeDecision.provider === 'proposal' && capabilityKey && missingCapability) {
         console.log(`[GranClaw] Creating proposal for capabilityKey: ${capabilityKey}`)
@@ -1337,6 +1814,128 @@ export function handleOrchestratorRun(req: IncomingMessage, res: ServerResponse,
           }
         })
         return
+      }
+
+      // =====================================================================
+      // P6.18D: CAPABILITY GATE CHECK FOR FALLBACK PATH
+      // CRITICAL: Prevents mock success for search/browser/download
+      // =====================================================================
+      const fallbackRequiredCapability = getRequiredCapabilityForIntent(intent, input.message)
+
+      if (fallbackRequiredCapability) {
+        console.log(`[P6.18D Fallback] Intent ${intent.kind} requires capability: ${fallbackRequiredCapability}`)
+
+        const fallbackCapabilityGate = await getCapabilityGateReadiness(context.tenant.id, fallbackRequiredCapability)
+
+        if (!fallbackCapabilityGate.canProceed) {
+          console.log(`[P6.18D Fallback] Capability gate BLOCKED: ${fallbackRequiredCapability} state=${fallbackCapabilityGate.state}`)
+
+          trace.addStep({
+            stage: 'orchestrator',
+            status: 'error',
+            label: 'Capability no disponible (fallback)',
+            detail: `Capacidad requerida: ${fallbackRequiredCapability} - ${fallbackCapabilityGate.message}`
+          })
+
+          const debugSnapshotFallbackGate = trace.getDebugSnapshot()
+          debugSnapshotFallbackGate.source = 'validation'
+          debugSnapshotFallbackGate.executionConfirmed = false
+          debugSnapshotFallbackGate.error = 'Capability not available'
+          logDebug(debugSnapshotFallbackGate)
+
+          // Build capability gate result
+          const fallbackBlockingCaps = fallbackCapabilityGate.blockingCapabilities || [{
+            capability: fallbackRequiredCapability,
+            capabilityKey: fallbackRequiredCapability,
+            available: false,
+            configured: false,
+            implemented: fallbackCapabilityGate.state !== 'unavailable',
+            statusMessage: fallbackCapabilityGate.message
+          }]
+
+          const fallbackCapabilityGateResult = buildCapabilityGateResult({
+            blockingCapabilities: fallbackBlockingCaps.map(c => ({
+              capability: c.capability || fallbackRequiredCapability,
+              capabilityKey: c.capabilityKey || fallbackRequiredCapability,
+              available: false,
+              configured: false,
+              implemented: fallbackCapabilityGate.state !== 'unavailable',
+              statusMessage: c.statusMessage || fallbackCapabilityGate.message
+            })),
+            reason: fallbackCapabilityGate.message
+          })
+
+          completeTask(
+            task.id,
+            'blocked',
+            fallbackCapabilityGateResult,
+            'capability_gate',
+            trace.getSteps(),
+            debugSnapshotFallbackGate,
+            trace.getTotalDurationMs(),
+            fallbackCapabilityGate.message
+          )
+
+          // Build failure explanation for UI
+          const fallbackFailureExplanation = buildCapabilityGateFailureExplanation({
+            blockingCapabilities: fallbackBlockingCaps.map(c => ({
+              capability: c.capability || fallbackRequiredCapability,
+              capabilityKey: c.capabilityKey || fallbackRequiredCapability,
+              available: false,
+              configured: false,
+              implemented: fallbackCapabilityGate.state !== 'unavailable',
+              statusMessage: c.statusMessage || fallbackCapabilityGate.message
+            })),
+            taskInput: input.message,
+            provider: 'capability_gate'
+          })
+          updateTask(task.id, { failureExplanation: fallbackFailureExplanation })
+
+          const fallbackStatusResolution = resolveFinalExecutionStatus({
+            hubAllowed: true,
+            hubBlocked: false,
+            result: { success: false, executionStatus: 'capability_blocked' },
+            error: fallbackCapabilityGate.message,
+            source: 'capability_gate',
+            meta: { executionConfirmed: false }
+          })
+
+          ok(res, {
+            success: false,
+            error: fallbackCapabilityGate.message,
+            capabilityGate: true,
+            blockingCapabilities: fallbackBlockingCaps,
+            statusResolution: fallbackStatusResolution,
+            meta: {
+              requestId: trace.requestId,
+              taskId: task.id,
+              intentKind: intent.kind,
+              requiredCapability: fallbackRequiredCapability,
+              capabilityState: fallbackCapabilityGate.state,
+              hubDecision: hubResult.decisionLog,
+              executionTrace: trace.getSteps(),
+              executionDurationMs: trace.getTotalDurationMs(),
+              tenantId: context.tenant.id,
+              adapterStatus,
+              debugSnapshot: debugSnapshotFallbackGate,
+              routerDecision: {
+                provider: 'capability_gate',
+                reason: fallbackCapabilityGate.message,
+                intentKind: intent.kind
+              }
+            }
+          })
+          return
+        }
+
+        // Capability gate passed in fallback
+        console.log(`[P6.18D Fallback] Capability gate PASSED: ${fallbackRequiredCapability} state=${fallbackCapabilityGate.state}`)
+        trace.addStep({
+          stage: 'orchestrator',
+          status: 'success',
+          label: 'Capability disponible (fallback)',
+          detail: `${fallbackRequiredCapability}: ${fallbackCapabilityGate.state}`
+        })
       }
 
       trace.addStep({
@@ -1702,6 +2301,91 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
       const hubConfig = hub.getConfig(context.tenant.id)
       const executionPolicy = getExecutionPolicy(context.tenant.id)
 
+      // P6.18D3: CRITICAL - Capability gate check BEFORE any execution
+      // This ensures web_search, browser, download, install_app cannot mock success
+      const streamCapabilityGate = await checkCapabilityGate(
+        context.tenant.id,
+        intent,
+        input.message,
+        trace,
+        task.id
+      )
+
+      if (streamCapabilityGate.blocked && streamCapabilityGate.response) {
+        console.log(`[GranClaw Stream P6.18D4] Capability gate blocked: ${streamCapabilityGate.capabilityKey}`)
+
+        const debugSnapshot = trace.getDebugSnapshot()
+        debugSnapshot.source = 'capability_gate'
+        debugSnapshot.executionConfirmed = false
+        debugSnapshot.error = 'Capability not available'
+        logDebug(debugSnapshot)
+
+        // P6.18D4: Convert ExtendedCapabilityReadiness[] to CapabilityReadinessSummary[] for helpers
+        const streamBlockingCapabilities: CapabilityReadinessSummary[] = (
+          streamCapabilityGate.gateCheck?.blockingCapabilities || []
+        ).map(bc => ({
+          capability: bc.capability,
+          capabilityKey: bc.capabilityKey,
+          implemented: bc.state !== 'not_configured' && bc.state !== 'unavailable',
+          configured: bc.state !== 'not_configured',
+          available: bc.canUseNow,
+          statusMessage: bc.statusMessage,
+          reason: bc.statusMessage
+        }))
+
+        // P6.18D4: If no blockingCapabilities from gateCheck, build from the gate result
+        if (streamBlockingCapabilities.length === 0) {
+          streamBlockingCapabilities.push({
+            capability: streamCapabilityGate.capabilityKey,
+            capabilityKey: streamCapabilityGate.capabilityKey,
+            implemented: streamCapabilityGate.gateCheck?.state !== 'not_configured',
+            configured: streamCapabilityGate.gateCheck?.state !== 'not_configured',
+            available: false,
+            statusMessage: streamCapabilityGate.gateCheck?.message || streamCapabilityGate.response.message
+          })
+        }
+
+        // P6.18D4: Build proper result with capabilityGate and blockingCapabilities for truth endpoint
+        const streamCapabilityGateResult = buildCapabilityGateResult({
+          blockingCapabilities: streamBlockingCapabilities,
+          reason: streamCapabilityGate.response.message
+        })
+
+        completeTask(
+          task.id,
+          'blocked',
+          streamCapabilityGateResult,
+          'capability_gate',
+          trace.getSteps(),
+          debugSnapshot,
+          trace.getTotalDurationMs(),
+          streamCapabilityGate.response.message
+        )
+
+        // P6.18D4: Build and set proper failureExplanation for truth endpoint
+        const streamFailureExplanation = buildCapabilityGateFailureExplanation({
+          blockingCapabilities: streamBlockingCapabilities,
+          taskInput: input.message,
+          provider: 'capability_gate'
+        })
+        updateTask(task.id, { failureExplanation: streamFailureExplanation })
+
+        ok(res, {
+          ...streamCapabilityGate.response,
+          blockingCapabilities: streamBlockingCapabilities,
+          meta: {
+            ...streamCapabilityGate.response.meta,
+            hubDecision: hubResult.decisionLog,
+            executionTrace: trace.getSteps(),
+            executionDurationMs: trace.getTotalDurationMs(),
+            tenantId: context.tenant.id,
+            adapterStatus,
+            blockingCapabilities: streamBlockingCapabilities
+          }
+        })
+        return
+      }
+
       // FIX 121: STEP 2 - Capability detection (only provides signals)
       const missingCapability = detectMissingCapability(input.message)
       const capabilityKey = missingCapability?.capabilityKey || (missingCapability ? normalizeCapabilityKey(missingCapability.proposedToolName) : undefined)
@@ -1832,31 +2516,53 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
           debugSnapshot.executionConfirmed = false
           logDebug(debugSnapshot)
 
+          // P6.17R5: Build complete result with plan evidence
+          const capabilityGateResult = buildCapabilityGateResult({
+            blockingCapabilities: planResult.blockingCapabilities,
+            plan: planResult.plan ? {
+              id: planResult.plan.id,
+              sourceInput: planResult.plan.sourceInput,
+              steps: planResult.plan.steps.map(s => ({
+                stepId: s.stepId,
+                order: s.order,
+                actionType: s.actionType,
+                targetEntity: s.targetEntity,
+                capabilityKey: s.capabilityKey,
+                description: s.description
+              }))
+            } : undefined,
+            reason: `Capacidades no disponibles: ${blockedCaps}`
+          })
+
           // Complete task as blocked
+          // P6.17R4: Use consistent schema with blockingCapabilities (not blockedCapabilities)
           completeTask(
             task.id,
             'blocked',
-            {
-              blocked: true,
-              reason: 'capability_gate',
-              blockedCapabilities: planResult.blockingCapabilities,
-              planId: planResult.plan?.id,
-              executionMode: executionMode.mode
-            },
-            'granclaw',
+            capabilityGateResult,
+            'validation',
             trace.getSteps(),
             debugSnapshot,
-            trace.getTotalDurationMs()
+            trace.getTotalDurationMs(),
+            `La tarea requiere capacidades que no están disponibles: ${blockedCaps}`
           )
+
+          // P6.17R4: Set proper failureExplanation using blockingCapabilities data
+          const capabilityFailureExplanation = buildCapabilityGateFailureExplanation({
+            blockingCapabilities: planResult.blockingCapabilities,
+            taskInput: input.message,
+            provider: 'validation'
+          })
+          updateTask(task.id, { failureExplanation: capabilityFailureExplanation })
 
           ok(res, {
             success: false,
-            blocked: true,
-            message: `Ejecución bloqueada: capacidades no disponibles (${blockedCaps})`,
+            capabilityGate: true,
+            error: `Capacidades requeridas no disponibles: ${blockedCaps}`,
             meta: {
               requestId: trace.requestId,
               taskId: task.id,
-              blockedCapabilities: planResult.blockingCapabilities,
+              blockingCapabilities: planResult.blockingCapabilities,
               planId: planResult.plan?.id,
               executionMode: executionMode.mode,
               intentKind: intent.kind,
@@ -2190,7 +2896,24 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
           result.error
         )
 
-        // Response already sent by runStreamingTask
+        // P6.18D3: FIX - runStreamingTask does NOT send response, we must send it here
+        ok(res, {
+          success: result.success,
+          result: result.result,
+          mode: result.mode,
+          error: result.error,
+          meta: {
+            requestId: trace.requestId,
+            taskId: task.id,
+            hubDecision: hubResult.decisionLog,
+            executionTrace: trace.getSteps(),
+            executionDurationMs: trace.getTotalDurationMs(),
+            tenantId: context.tenant.id,
+            source: 'openclaw',
+            adapterStatus,
+            debugSnapshot
+          }
+        })
         return
       }
 
@@ -2346,6 +3069,107 @@ export function handleOrchestratorRunStream(req: IncomingMessage, res: ServerRes
           }
         })
         return
+      }
+
+      // =====================================================================
+      // P6.18D5: CAPABILITY GATE CHECK BEFORE PROPOSAL (STREAMING)
+      // CRITICAL: Same as normal route - check capability gate before proposal
+      // =====================================================================
+      const streamProposalReqCap = getRequiredCapabilityForIntent(intent, input.message)
+
+      if (streamProposalReqCap) {
+        console.log(`[P6.18D5 Stream] Pre-proposal capability gate check: ${streamProposalReqCap}`)
+
+        const streamProposalGate = await getCapabilityGateReadiness(context.tenant.id, streamProposalReqCap)
+
+        if (!streamProposalGate.canProceed) {
+          console.log(`[P6.18D5 Stream] Capability gate BLOCKED (pre-proposal): ${streamProposalReqCap} state=${streamProposalGate.state}`)
+
+          trace.addStep({
+            stage: 'orchestrator',
+            status: 'blocked',
+            label: 'Capability gate (pre-proposal stream)',
+            detail: `${streamProposalReqCap}: ${streamProposalGate.state} - ${streamProposalGate.message}`
+          })
+
+          const debugSnapshot = trace.getDebugSnapshot()
+          debugSnapshot.source = 'capability_gate'
+          debugSnapshot.executionConfirmed = false
+          debugSnapshot.error = `Capability not ready: ${streamProposalReqCap}`
+          logDebug(debugSnapshot)
+
+          // Build blocking caps
+          const streamPrePropBlockCaps = streamProposalGate.blockingCapabilities || [{
+            capability: streamProposalReqCap,
+            capabilityKey: streamProposalReqCap,
+            available: false,
+            configured: false,
+            implemented: streamProposalGate.state !== 'unavailable',
+            statusMessage: streamProposalGate.message
+          }]
+
+          const streamPrePropGateResult = buildCapabilityGateResult({
+            blockingCapabilities: streamPrePropBlockCaps.map(c => ({
+              capability: c.capability || streamProposalReqCap,
+              capabilityKey: c.capabilityKey || streamProposalReqCap,
+              available: false,
+              configured: false,
+              implemented: streamProposalGate.state !== 'unavailable',
+              statusMessage: c.statusMessage || streamProposalGate.message
+            })),
+            reason: streamProposalGate.message
+          })
+
+          completeTask(
+            task.id,
+            'blocked',
+            streamPrePropGateResult,
+            'capability_gate',
+            trace.getSteps(),
+            debugSnapshot,
+            trace.getTotalDurationMs(),
+            streamProposalGate.message
+          )
+
+          // Build failure explanation for truth
+          const streamPrePropFailExp = buildCapabilityGateFailureExplanation({
+            blockingCapabilities: streamPrePropBlockCaps.map(c => ({
+              capability: c.capability || streamProposalReqCap,
+              capabilityKey: c.capabilityKey || streamProposalReqCap,
+              available: false,
+              configured: false,
+              implemented: streamProposalGate.state !== 'unavailable',
+              statusMessage: c.statusMessage || streamProposalGate.message
+            })),
+            taskInput: input.message,
+            provider: 'capability_gate'
+          })
+          updateTask(task.id, { failureExplanation: streamPrePropFailExp })
+
+          ok(res, {
+            success: false,
+            error: streamProposalGate.message,
+            capabilityGate: true,
+            blockingCapabilities: streamPrePropBlockCaps,
+            meta: {
+              requestId: trace.requestId,
+              taskId: task.id,
+              intentKind: intent.kind,
+              requiredCapability: streamProposalReqCap,
+              capabilityKey: streamProposalReqCap,
+              capabilityState: streamProposalGate.state,
+              debugSnapshot,
+              routerDecision: {
+                provider: 'capability_gate',
+                reason: streamProposalGate.message,
+                intentKind: intent.kind
+              }
+            }
+          })
+          return
+        }
+
+        console.log(`[P6.18D5 Stream] Capability gate PASSED (pre-proposal): ${streamProposalReqCap}`)
       }
 
       // FIX 121: Provider 'proposal' - create tool proposal

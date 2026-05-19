@@ -196,7 +196,9 @@ export function TaskDetailPage({ taskId }: TaskDetailPageProps) {
           </div>
 
           <div style={{ display: 'flex', gap: '8px' }}>
-            {(task.status === 'error' || task.status === 'blocked') && (
+            {/* P6.17R4: Only show retry if canRetry is not explicitly false */}
+            {(task.status === 'error' || task.status === 'blocked') &&
+             task.failureExplanation?.canRetry !== false && (
               <button
                 onClick={handleRetry}
                 disabled={actionLoading}

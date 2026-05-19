@@ -52,6 +52,7 @@ export type RecoveryActionType =
   | 'repair_connection'
   | 'contact_support'
   | 'view_details'
+  | 'view_roadmap'  // P6.17R3: For not-implemented capabilities
   | 'cancel'
 
 /**
@@ -192,7 +193,7 @@ export interface TaskReconciliation {
   phase: string
   isSuccess: boolean
   reason: string
-  executionStatus?: 'completed' | 'partial' | 'failed' | 'blocked' | 'validation_failed'
+  executionStatus?: 'completed' | 'partial' | 'failed' | 'blocked' | 'validation_failed' | 'dead'  // P6.17R3: dead = exhausted retries
   validationFailedSteps?: string[]
   validatedSteps?: string[]
   completedSteps?: string[]

@@ -72,6 +72,16 @@ async function handleJobCancelled(event: QueueEvent): Promise<void> {
 }
 
 /**
+ * P6.17R3: Handle job dead-lettered event
+ * When a job exceeds max retries or is moved to dead letter queue
+ */
+async function handleJobDeadLettered(event: QueueEvent): Promise<void> {
+  const { jobId, jobType, data } = event
+  if (!jobId) return
+  await onJobDeadLettered(jobId, jobType || '', data || {})
+}
+
+/**
  * P6.16: CompositeExecutionResult type for proper validation
  */
 interface CompositeExecutionResultFields {
@@ -104,19 +114,35 @@ function createFailureExplanation(
   const recoveryActions: RecoveryAction[] = []
 
   if (executionStatus === 'blocked') {
-    // Check reason for specific blocking cause
-    if (reason.includes('capability') || reason.includes('Capacidad')) {
-      code = 'capability_not_configured'
-      title = 'Capacidad no configurada'
-      humanMessage = 'La tarea requiere una capacidad que no está disponible o configurada.'
-      recoveryActions.push({
-        type: 'configure_capability',
-        label: 'Configurar capacidad',
-        description: 'Ir a configuración de capacidades',
-        navigateTo: '/settings/capabilities',
-        primary: true
-      })
-    } else if (reason.includes('pairing') || reason.includes('OpenClaw')) {
+    // P6.17R3: Check reason for specific blocking cause with better detection
+    const lowerReason = reason.toLowerCase()
+    if (lowerReason.includes('capability') || lowerReason.includes('capacidad') || lowerReason.includes('capacidades')) {
+      // P6.17R3: Distinguish between not implemented and not configured
+      // P6.17R7: Use real route /control/tools instead of non-existent /settings/capabilities
+      if (lowerReason.includes('not implemented') || lowerReason.includes('no está implementada') || lowerReason.includes('aún no está implementada')) {
+        code = 'capability_not_implemented'
+        title = 'Capacidad no implementada'
+        humanMessage = 'La tarea requiere una capacidad que aún no está implementada en GranClaw.'
+        recoveryActions.push({
+          type: 'view_roadmap',
+          label: 'Ver roadmap',
+          description: 'Ver el estado de implementación de capacidades',
+          navigateTo: '/control/tools',
+          primary: true
+        })
+      } else {
+        code = 'capability_not_configured'
+        title = 'Capacidad no configurada'
+        humanMessage = 'La tarea requiere una capacidad que no está configurada para tu cuenta.'
+        recoveryActions.push({
+          type: 'configure_capability',
+          label: 'Configurar capacidad',
+          description: 'Ir a configuración de capacidades',
+          navigateTo: '/control/tools',
+          primary: true
+        })
+      }
+    } else if (lowerReason.includes('pairing') || lowerReason.includes('openclaw')) {
       code = 'pairing_required'
       title = 'Conexión requerida'
       humanMessage = 'La tarea requiere conexión con OpenClaw Desktop.'
@@ -127,7 +153,7 @@ function createFailureExplanation(
         navigateTo: '/runtime',
         primary: true
       })
-    } else if (reason.includes('permission') || reason.includes('permiso')) {
+    } else if (lowerReason.includes('permission') || lowerReason.includes('permiso')) {
       code = 'permission_required'
       title = 'Permiso requerido'
       humanMessage = 'La tarea requiere permisos adicionales.'
@@ -190,6 +216,23 @@ function createFailureExplanation(
       description: 'Crear un nuevo plan y ejecutar',
       primary: true
     })
+  } else if (executionStatus === 'dead') {
+    // P6.17R3: Job was moved to dead letter queue after exhausting retries
+    code = 'execution_timeout'  // Use execution_timeout as closest match
+    title = 'Tarea fallida permanentemente'
+    humanMessage = 'La tarea falló después de agotar todos los reintentos automáticos.'
+    // No retry for dead jobs - they need manual review
+    recoveryActions.push({
+      type: 'view_details',
+      label: 'Ver detalles',
+      description: 'Ver información técnica del error',
+      primary: true
+    })
+    recoveryActions.push({
+      type: 'retry_with_replan',
+      label: 'Crear nueva tarea',
+      description: 'Intentar de nuevo con una nueva tarea'
+    })
   }
 
   // Always add cancel and view details
@@ -199,6 +242,19 @@ function createFailureExplanation(
     description: 'Ver información técnica del error'
   })
 
+  // P6.17R3: Determine canRetry, canRepair, canReplan based on code
+  const canRetry = code !== 'capability_not_implemented' &&
+                   code !== 'capability_not_configured' &&
+                   executionStatus !== 'blocked' &&
+                   executionStatus !== 'dead'  // P6.17R3: Dead jobs exhausted retries
+  const canRepair = code === 'capability_not_configured' ||
+                    code === 'pairing_required' ||
+                    code === 'permission_required'
+  const canReplan = executionStatus === 'partial' ||
+                    executionStatus === 'validation_failed' ||
+                    executionStatus === 'dead' ||  // P6.17R3: Dead jobs can be replanned
+                    code === 'capability_not_configured'
+
   return {
     code,
     title,
@@ -207,9 +263,9 @@ function createFailureExplanation(
     failedStep: jobResult?.failedStep?.stepId,
     capability: jobResult?.blockedCapability,
     recoveryActions,
-    canRetry: executionStatus !== 'blocked',
-    canRepair: executionStatus === 'blocked',
-    canReplan: executionStatus === 'partial' || executionStatus === 'validation_failed'
+    canRetry,
+    canRepair,
+    canReplan
   }
 }
 
@@ -575,9 +631,145 @@ async function onJobCancelled(jobId: string, jobType: string, meta: Record<strin
 }
 
 /**
+ * P6.17R3: Handle job moved to dead letter queue
+ * This happens when a job fails after exhausting all retries
+ */
+async function onJobDeadLettered(jobId: string, jobType: string, meta: Record<string, unknown>): Promise<void> {
+  console.log(`[TaskReconciliation P6.17R3] Job dead-lettered: ${jobId} (${jobType})`)
+
+  const queue = getQueue()
+  const job = queue.get(jobId)
+
+  if (!job) {
+    console.log(`[TaskReconciliation P6.17R3] Dead-lettered job ${jobId} not found in queue`)
+    return
+  }
+
+  const taskId = extractTaskId(job)
+  if (!taskId) {
+    console.log(`[TaskReconciliation P6.17R3] Job ${jobId} has no taskId, skipping dead-letter reconciliation`)
+    return
+  }
+
+  console.log(`[TaskReconciliation P6.17R3] Reconciling dead-lettered job ${jobId} with task ${taskId}`)
+
+  try {
+    const { completeTask, getTask, updateTask } = await import('../tasks/service')
+    const { syncThreadWithTask } = await import('../task-threads/service')
+
+    const task = getTask(taskId)
+    if (!task) {
+      console.error(`[TaskReconciliation P6.17R3] Task ${taskId} not found`)
+      return
+    }
+
+    // Don't update if task is already in terminal error or blocked state
+    if (task.status === 'error' || task.status === 'blocked') {
+      console.log(`[TaskReconciliation P6.17R4] Task ${taskId} already in terminal state: ${task.status}`)
+      return
+    }
+
+    // P6.17R4: Check if task was originally blocked by capability gate
+    // If so, preserve capability info and don't overwrite with generic dead error
+    const taskResult = task.result as Record<string, unknown> | undefined
+    const hasCapabilityGate = taskResult?.capabilityGate === true
+    const blockingCapabilities = taskResult?.blockingCapabilities as Array<{ capability?: string; capabilityKey?: string }> | undefined
+
+    if (hasCapabilityGate && blockingCapabilities?.length) {
+      console.log(`[TaskReconciliation P6.17R4] Task ${taskId} has capability gate - preserving capability info`)
+      // Keep existing capability-related failure explanation, just mark as reconciled
+      const existingFailure = task.failureExplanation
+      if (existingFailure && existingFailure.code !== 'unknown') {
+        console.log(`[TaskReconciliation P6.17R4] Task ${taskId} already has valid failureExplanation: ${existingFailure.code}`)
+        return
+      }
+    }
+
+    const errorMessage = job.lastError?.message || meta?.error?.toString() || 'Job moved to dead letter queue after exhausting retries'
+    const errorCategory = job.lastError?.category || 'fatal'
+
+    console.log(`[TaskReconciliation P6.17R4] Updating task ${taskId} status: ${task.status} → error (dead)`)
+    console.log(`[TaskReconciliation P6.17R4] Error: ${errorMessage} (${errorCategory})`)
+
+    // P6.17R4: Create reconciliation for dead-lettered job
+    const reconciliation: TaskReconciliation = {
+      phase: 'P6.17R4',
+      isSuccess: false,
+      reason: errorMessage,
+      executionStatus: 'dead',  // Distinct from 'failed' - indicates exhausted retries
+      totalDurationMs: job.startedAt && job.completedAt
+        ? new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()
+        : undefined
+    }
+
+    // P6.17R4: Create failure explanation for dead job
+    // Preserve capability info if present
+    const failureExplanation = hasCapabilityGate
+      ? createFailureExplanation('blocked', `Capability gate: ${blockingCapabilities?.map(c => c.capability || c.capabilityKey).join(', ')}`)
+      : createFailureExplanation('dead', errorMessage)
+
+    completeTask(
+      taskId,
+      'error',
+      {
+        jobId,
+        error: errorMessage,
+        errorCategory,
+        retryCount: job.retryCount,
+        errorHistory: job.errorHistory,
+        deadLettered: true,
+        _reconciliation: reconciliation
+      },
+      'queue',
+      undefined,
+      undefined,
+      reconciliation.totalDurationMs,
+      errorMessage
+    )
+
+    // P6.17R3: Save reconciliation and failure explanation at top-level
+    updateTask(taskId, {
+      reconciliation,
+      failureExplanation
+    })
+
+    // Sync thread with error
+    console.log(`[TaskReconciliation P6.17R3] Syncing thread for dead-lettered task ${taskId}`)
+    syncThreadWithTask(taskId, 'error', errorMessage)
+
+    // P6.17R3: Emit task failed event for live monitoring
+    const duration = job.startedAt && job.completedAt
+      ? new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()
+      : undefined
+
+    emitTaskEvent(
+      task.tenantId,
+      task.userId,
+      'task:failed',
+      {
+        taskId,
+        threadId: extractThreadId(job),
+        jobId,
+        status: 'error',
+        message: `[DEAD] ${errorMessage}`,
+        error: errorMessage,
+        executionStatus: 'dead',
+        duration
+      }
+    )
+
+    console.log(`[TaskReconciliation P6.17R3] Dead-lettered task ${taskId} reconciled`)
+
+  } catch (err) {
+    console.error(`[TaskReconciliation P6.17R3] Error reconciling dead-lettered task ${taskId}:`, err)
+  }
+}
+
+/**
  * Initialize task reconciliation listeners
  * Call this after queue is initialized
  * P6.16: Updated with validation authority
+ * P6.17R3: Added dead-lettered listener
  */
 export function initializeTaskReconciliation(): void {
   if (initialized) {
@@ -591,9 +783,10 @@ export function initializeTaskReconciliation(): void {
   queue.on('job:completed', handleJobCompleted)
   queue.on('job:failed', handleJobFailed)
   queue.on('job:cancelled', handleJobCancelled)
+  queue.on('job:dead-lettered', handleJobDeadLettered)  // P6.17R3
 
   initialized = true
-  console.log('[TaskReconciliation P6.16] Task reconciliation listeners initialized (validation authority enabled)')
+  console.log('[TaskReconciliation P6.17R3] Task reconciliation listeners initialized (validation authority + dead-letter support)')
 }
 
 /**

@@ -11,7 +11,7 @@
 import type { IncomingMessage, ServerResponse } from 'http'
 import { ok, badRequest, unauthorized, notFound, serverError } from '../../shared/response'
 import type { AuthContext } from '../auth'
-import { listTasks, getTask, updateTask } from './service'
+import { listTasks, getTask, updateTask, buildCapabilityGateFailureExplanation, buildCapabilityGateResult } from './service'
 import { getTaskResult } from '../task-results'
 import { runSimpleAgentTask } from '../orchestrator/service'
 import type { TaskStepInfo, ExecuteStepsResult } from '../orchestrator/types'
@@ -470,6 +470,65 @@ export function handleRetryTask(
           return
         }
 
+        // P6.17R4: Check for capability gate BEFORE enqueueing
+        // If blockingCapabilities exist, DO NOT enqueue - keep task blocked
+        if (planResult.blockingCapabilities && planResult.blockingCapabilities.length > 0) {
+          const blockedCaps = planResult.blockingCapabilities.map(c => c.capability || c.capabilityKey).join(', ')
+          console.log(`[TaskRetry P6.17R4] Retry BLOCKED by capability gate: ${blockedCaps}`)
+
+          // Build failure explanation from capability data
+          const failureExplanation = buildCapabilityGateFailureExplanation({
+            blockingCapabilities: planResult.blockingCapabilities,
+            taskInput: originalInput,
+            provider: 'validation'
+          })
+
+          // P6.17R5: Build complete result with plan evidence
+          const capabilityGateResultObj = buildCapabilityGateResult({
+            blockingCapabilities: planResult.blockingCapabilities,
+            plan: planResult.plan ? {
+              id: planResult.plan.id,
+              sourceInput: planResult.plan.sourceInput,
+              steps: planResult.plan.steps.map(s => ({
+                stepId: s.stepId,
+                order: s.order,
+                actionType: s.actionType,
+                targetEntity: s.targetEntity,
+                capabilityKey: s.capabilityKey,
+                description: s.description
+              }))
+            } : undefined,
+            reason: `Capacidades no disponibles: ${blockedCaps}`
+          })
+
+          // Update task - keep blocked status, update failureExplanation
+          updateTask(taskId, {
+            status: 'blocked',
+            source: 'validation',
+            result: capabilityGateResultObj,
+            error: `Retry blocked: capabilities not available (${blockedCaps})`,
+            retryCount: (task.retryCount || 0) + 1,
+            failureExplanation
+          })
+
+          ok(res, {
+            success: false,
+            retryBlocked: true,
+            capabilityGate: true,
+            blockingCapabilities: planResult.blockingCapabilities,
+            error: `Reintento bloqueado: capacidades no disponibles (${blockedCaps})`,
+            taskId,
+            retryMode,
+            // No jobId - task was not enqueued
+            failureExplanation: {
+              code: failureExplanation.code,
+              title: failureExplanation.title,
+              canRetry: failureExplanation.canRetry
+            }
+          })
+          return
+        }
+
         // Enqueue composite task
         const queueResult = enqueueCompositeTask(
           {
@@ -798,6 +857,9 @@ export function handleGetTaskTruth(
   const queue = getQueue()
   const job = task.lastRetryJobId ? queue.get(task.lastRetryJobId) : null
 
+  // P6.17R5: Extract capability gate data from task.result
+  const taskResultData = task.result as Record<string, unknown> | undefined
+
   // P6.17: Enhanced truth response with reconciliation and execution details
   ok(res, {
     success: true,
@@ -812,7 +874,9 @@ export function handleGetTaskTruth(
         retryCount: task.retryCount || 0,
         error: task.error,
         createdAt: task.createdAt,
-        updatedAt: task.updatedAt
+        updatedAt: task.updatedAt,
+        // P6.17R5: Include task.result for capability gate evidence
+        result: taskResultData
       },
       // P6.17: Reconciliation (top-level for direct access)
       reconciliation: task.reconciliation || null,
@@ -850,7 +914,16 @@ export function handleGetTaskTruth(
         }))
       } : null,
       // P6.17: Failure explanation for UI
-      failureExplanation: task.failureExplanation || null
+      failureExplanation: task.failureExplanation || null,
+      // P6.17R3: Include blockingCapabilities for capability-gated tasks
+      blockingCapabilities: taskResultData?.blockingCapabilities || null,
+      // P6.17R3: Include capabilityGate flag
+      capabilityGate: taskResultData?.capabilityGate || false,
+      // P6.17R5: Include targetEntity and planSummary for capability-gated tasks
+      targetEntity: taskResultData?.targetEntity || null,
+      planSummary: taskResultData?.planSummary || null,
+      planId: taskResultData?.planId || null,
+      sourceInput: taskResultData?.sourceInput || null
     }
   })
 }

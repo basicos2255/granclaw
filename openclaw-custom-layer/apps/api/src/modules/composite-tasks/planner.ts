@@ -49,16 +49,70 @@ const SPLIT_PATTERNS = [
 
 /**
  * Action chain patterns (common workflows)
+ * P6.17R3: ORDERED BY LENGTH DESCENDING for longest-match-first
+ * The patterns MUST be ordered from longest to shortest to ensure
+ * "descargar e instalar" matches before "instalar"
  */
 const ACTION_CHAINS: Record<string, TaskActionType[]> = {
-  'instalar': ['download_file', 'install_app'],
-  'install': ['download_file', 'install_app'],
+  // 3-action chains (longest)
+  'descargar, instalar y abrir': ['download_file', 'install_app', 'open_app'],
+  'download, install and open': ['download_file', 'install_app', 'open_app'],
+  // 2-action compound chains (medium)
   'descargar e instalar': ['download_file', 'install_app'],
   'download and install': ['download_file', 'install_app'],
   'instalar y abrir': ['download_file', 'install_app', 'open_app'],
   'install and open': ['download_file', 'install_app', 'open_app'],
-  'descargar, instalar y abrir': ['download_file', 'install_app', 'open_app'],
-  'download, install and open': ['download_file', 'install_app', 'open_app'],
+  // Simple action implied chains (shortest - MUST BE LAST)
+  'instalar': ['download_file', 'install_app'],
+  'install': ['download_file', 'install_app'],
+}
+
+/**
+ * P6.17R3: Get ACTION_CHAINS entries sorted by key length descending
+ * This ensures longest patterns are matched first
+ */
+function getActionChainsSortedByLength(): Array<[string, TaskActionType[]]> {
+  return Object.entries(ACTION_CHAINS).sort((a, b) => b[0].length - a[0].length)
+}
+
+/**
+ * P6.17R3: Connectors that should NOT be treated as target entities
+ */
+const INVALID_TARGET_CONNECTORS = ['e', 'y', 'and', 'then', 'luego', 'después', 'o', 'or']
+
+/**
+ * P6.17R3: Mapping from TaskActionType to required capability base
+ * This is used to check capability readiness for multistep plans
+ */
+const ACTION_TYPE_TO_CAPABILITY: Record<string, string> = {
+  'download_file': 'download',
+  'install_app': 'install_app',
+  'open_app': 'filesystem',
+  'close_app': 'filesystem',
+  'uninstall_app': 'install_app',
+  'search_web': 'web_search',
+  'navigate_url': 'browser',
+  'file_operation': 'filesystem',
+  'folder_operation': 'filesystem',
+  'create_file': 'filesystem',
+  'write_file': 'filesystem',
+  'read_file': 'filesystem',
+  'delete_file': 'filesystem',
+  'list_directory': 'filesystem',
+  'system_command': 'command_execution',
+  'script_execution': 'command_execution',
+  'play_media': 'media',
+  'control_media': 'media',
+  'clipboard_action': 'clipboard',
+  'keyboard_action': 'input',
+  'mouse_action': 'input'
+}
+
+/**
+ * P6.17R3: Get required capability for an action type
+ */
+function getRequiredCapabilityForAction(actionType: TaskActionType): string | undefined {
+  return ACTION_TYPE_TO_CAPABILITY[actionType]
 }
 
 /**
@@ -186,11 +240,13 @@ export function splitInputIntoSteps(input: string): string[] {
 
 /**
  * Detect if input implies a chain action
+ * P6.17R3: Uses longest-match-first to correctly detect compound patterns
  */
 function detectActionChain(input: string): TaskActionType[] | null {
   const lower = input.toLowerCase()
 
-  for (const [pattern, chain] of Object.entries(ACTION_CHAINS)) {
+  // P6.17R3: Use sorted entries (longest first) for correct matching
+  for (const [pattern, chain] of getActionChainsSortedByLength()) {
     if (lower.includes(pattern)) {
       return chain
     }
@@ -240,10 +296,59 @@ function detectSingleAction(input: string): { actionType: TaskActionType; capabi
 
 /**
  * Extract target entity from input
+ * P6.17R3: Enhanced to handle compound inputs like "Descargar e instalar VLC"
  */
 function extractTargetFromInput(input: string): string | undefined {
+  const lower = input.toLowerCase().trim()
+
+  // P6.17R3: First check if this is a compound action chain
+  // If so, extract target AFTER the action chain pattern
+  for (const [pattern] of getActionChainsSortedByLength()) {
+    const idx = lower.indexOf(pattern)
+    if (idx !== -1) {
+      // Extract everything after the action pattern
+      const afterPattern = input.substring(idx + pattern.length).trim()
+      const target = extractValidTarget(afterPattern)
+      if (target) {
+        console.log(`[CompositePlanner P6.17R3] Extracted target '${target}' from compound input`)
+        return target
+      }
+    }
+  }
+
+  // Fallback to standard normalization for simple inputs
   const normalized = normalizeTaskInput(input)
   return normalized.targetEntity
+}
+
+/**
+ * P6.17R3: Extract valid target from remaining text after action phrase
+ * Filters out invalid connectors and returns clean target
+ */
+function extractValidTarget(text: string): string | undefined {
+  if (!text || text.length < 2) return undefined
+
+  // Clean up the text
+  let cleaned = text
+    .replace(/^[,\s]+/, '')  // Remove leading commas/spaces
+    .replace(/[,\s]+$/, '')  // Remove trailing commas/spaces
+    .replace(/^(el|la|los|las|un|una|the|a|an)\s+/i, '')  // Remove articles
+
+  // Split into words and find first valid target
+  const words = cleaned.split(/\s+/).filter(w => w.length > 0)
+
+  for (const word of words) {
+    const lowerWord = word.toLowerCase()
+    // Skip invalid connectors
+    if (INVALID_TARGET_CONNECTORS.includes(lowerWord)) continue
+    // Skip common prepositions
+    if (['de', 'del', 'en', 'con', 'por', 'para', 'desde', 'hasta', 'of', 'in', 'with', 'for', 'from', 'to'].includes(lowerWord)) continue
+
+    // Found valid target word - return it cleaned
+    return word.replace(/[.,;:!?]$/, '').toLowerCase()
+  }
+
+  return undefined
 }
 
 /**
@@ -591,18 +696,26 @@ export function buildCompositeExecutionPlan(
 
   console.log(`[CompositePlanner] Built plan with ${steps.length} steps: ${stepsFromTaskMemory} task-memory, ${stepsFromCapabilities} capability, ${stepsRequiringAi} openclaw`)
 
-  // P6.17R: Check capability readiness for ALL steps with capability keys
-  // This ensures multistep plans also get blocked if capabilities are not available
-  // Using CapabilityReadinessSummary to match BuildCompositePlanResult types
+  // P6.17R3: Check capability readiness for ALL steps based on actionType
+  // This ensures multistep plans get blocked if required capabilities are not available
+  // CRITICAL: Use getRequiredCapabilityForAction() to derive capability base from actionType
+  // CRITICAL: Use correct argument order: getCapabilityReadiness(tenantId, capabilityType)
   const capabilityReadinessResults: CapabilityReadinessSummary[] = []
   const blockingCapabilities: CapabilityReadinessSummary[] = []
+  const checkedCapabilities = new Set<string>() // Avoid duplicate checks
 
   for (const step of steps) {
-    if (step.capabilityKey) {
-      const readiness = getCapabilityReadiness(step.capabilityKey, tenantId)
+    // P6.17R3: Derive required capability from actionType (NOT from capabilityKey)
+    const requiredCapability = getRequiredCapabilityForAction(step.actionType)
+
+    if (requiredCapability && !checkedCapabilities.has(requiredCapability)) {
+      checkedCapabilities.add(requiredCapability)
+
+      // P6.17R3: CORRECT argument order: (tenantId, capabilityType)
+      const readiness = getCapabilityReadiness(tenantId, requiredCapability)
       const summary: CapabilityReadinessSummary = {
         capability: readiness.capability as string,
-        capabilityKey: step.capabilityKey,
+        capabilityKey: requiredCapability, // Use base capability, not compound key
         available: readiness.available,
         implemented: readiness.implemented,
         configured: readiness.configured,
@@ -613,12 +726,13 @@ export function buildCompositeExecutionPlan(
 
       if (!readiness.available) {
         blockingCapabilities.push(summary)
+        console.log(`[CompositePlanner P6.17R3] Step "${step.description}" blocked: capability '${requiredCapability}' not available (implemented=${readiness.implemented}, configured=${readiness.configured})`)
       }
     }
   }
 
   if (blockingCapabilities.length > 0) {
-    console.log(`[CompositePlanner P6.17R] Multistep plan has ${blockingCapabilities.length} blocking capabilities: ${blockingCapabilities.map(c => c.capabilityKey || c.capability).join(', ')}`)
+    console.log(`[CompositePlanner P6.17R3] Multistep plan BLOCKED by ${blockingCapabilities.length} capabilities: ${blockingCapabilities.map(c => c.capability).join(', ')}`)
   }
 
   return {

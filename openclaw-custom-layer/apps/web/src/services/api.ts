@@ -586,6 +586,114 @@ export interface ApproveProposalResponse {
   message: string
 }
 
+// ============================================================================
+// P6.18: REAL READINESS MODEL TYPES
+// ============================================================================
+
+/**
+ * P6.18C: Evidence-based readiness state
+ */
+export type ReadinessState =
+  | 'ready'
+  | 'unavailable'
+  | 'not_installed'
+  | 'not_configured'
+  | 'not_authorized'
+  | 'gateway_unreachable'
+  | 'cli_unavailable'
+  | 'cli_not_running'   // Legacy alias
+  | 'plugin_missing'
+  | 'tool_missing'
+  | 'policy_blocked'
+  | 'sandbox_blocked'
+  | 'auth_expired'
+  | 'rate_limited'
+  | 'unknown'
+
+/**
+ * P6.18: Probe evidence
+ */
+export interface ProbeEvidence {
+  probedAt: string
+  latencyMs: number
+  target: string
+  httpStatus?: number
+  responseSummary?: string
+  error?: string
+}
+
+/**
+ * P6.18: Recovery action for blocked capability
+ */
+export interface ProbeRecoveryAction {
+  id: string
+  label: string
+  type: 'navigate' | 'retry' | 'external' | 'approve'
+  target?: string
+  requiresConfirmation?: boolean
+}
+
+/**
+ * P6.18: Real capability readiness with evidence
+ */
+export interface RealCapabilityReadiness {
+  capability: string
+  displayName: string
+  state: ReadinessState
+  evidence?: ProbeEvidence
+  isCore: boolean
+  providerChain: string[]
+  activeProvider?: string
+  statusMessage: string
+  recoveryActions?: ProbeRecoveryAction[]
+  lastSuccessfulProbe?: string
+}
+
+/**
+ * P6.18: OpenClaw system probe result
+ */
+export interface OpenClawProbeResult {
+  state: ReadinessState
+  gateway: {
+    configured: boolean
+    reachable: boolean
+    latencyMs?: number
+    version?: string
+    error?: string
+  }
+  websocket: {
+    configured: boolean
+    connected: boolean
+    handshakeComplete: boolean
+    error?: string
+  }
+  cli?: {
+    detected: boolean
+    running: boolean
+    version?: string
+    error?: string
+  }
+  probedAt: string
+}
+
+/**
+ * P6.18: Full system readiness snapshot
+ * P6.18D: Added unknown count for unverified capabilities
+ */
+export interface SystemReadinessSnapshot {
+  openclaw: OpenClawProbeResult
+  capabilities: RealCapabilityReadiness[]
+  summary: {
+    total: number
+    ready: number
+    unavailable: number
+    notConfigured: number
+    degraded: number
+    unknown: number  // P6.18D: Unverified capabilities (gateway alive but tool not confirmed)
+  }
+  snapshotAt: string
+}
+
 /**
  * P6.6: Human Interaction Layer - Task Threads
  * P6.7: Added execution evidence states
@@ -838,6 +946,29 @@ export const api = {
     }
     const response = await postRequest<ApiResponse<CleanupResult>>('/tool-proposals/cleanup', {})
     return response
+  },
+
+  // P6.18: Capability probes (real connectivity checks)
+  probeGateway: async (): Promise<ApiResponse<OpenClawProbeResult>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<OpenClawProbeResult>('/capabilities/probe/gateway')
+  },
+
+  probeCapability: async (capabilityKey: string): Promise<ApiResponse<RealCapabilityReadiness>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    return requestProtected<RealCapabilityReadiness>(`/capabilities/probe/${capabilityKey}`)
+  },
+
+  probeAllCapabilities: async (forceRefresh = false): Promise<ApiResponse<SystemReadinessSnapshot>> => {
+    if (!isAuthenticated()) {
+      return { success: false, data: null, error: 'Debes iniciar sesion' }
+    }
+    const url = forceRefresh ? '/capabilities/probe/all?refresh=true' : '/capabilities/probe/all'
+    return requestProtected<SystemReadinessSnapshot>(url)
   },
 
   // FIX 111: OS Tools confirmation

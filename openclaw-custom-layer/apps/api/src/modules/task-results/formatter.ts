@@ -14,6 +14,7 @@ import type {
 
 /**
  * Extract summary from raw result
+ * P6.17R5: Added capabilityGate handling for blocked tasks
  */
 function extractSummary(rawResult: unknown, status: string, provider?: string): string {
   if (!rawResult) {
@@ -26,6 +27,16 @@ function extractSummary(rawResult: unknown, status: string, provider?: string): 
   // Check if result has message field
   if (typeof rawResult === 'object' && rawResult !== null) {
     const obj = rawResult as Record<string, unknown>
+
+    // P6.17R5: Capability gate blocked - generate semantic summary
+    if (obj.capabilityGate === true) {
+      const blockingCaps = obj.blockingCapabilities as Array<{ capability?: string; capabilityKey?: string }> | undefined
+      if (blockingCaps && blockingCaps.length > 0) {
+        const capNames = blockingCaps.map(c => c.capability || c.capabilityKey).filter(Boolean).join(', ')
+        return `Bloqueado: capacidades no disponibles (${capNames})`
+      }
+      return 'Bloqueado por capability gate'
+    }
 
     // Direct message
     if (typeof obj.message === 'string') {
@@ -66,6 +77,11 @@ function extractSummary(rawResult: unknown, status: string, provider?: string): 
   // String result
   if (typeof rawResult === 'string') {
     return rawResult.length > 200 ? rawResult.substring(0, 197) + '...' : rawResult
+  }
+
+  // P6.17R5: For blocked status, don't say "Ejecutado via"
+  if (status === 'blocked') {
+    return 'Tarea bloqueada'
   }
 
   // Default based on provider

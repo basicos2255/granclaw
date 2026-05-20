@@ -1,6 +1,7 @@
 /**
  * Task Result Formatter
  * P6.3: Operational UX, Result Visibility & Real Task Outcomes
+ * P6.18D6: Simple task output visibility - ChatCompletionResponse support
  *
  * Transforms raw execution results into structured TaskResult.
  */
@@ -36,6 +37,20 @@ function extractSummary(rawResult: unknown, status: string, provider?: string): 
         return `Bloqueado: capacidades no disponibles (${capNames})`
       }
       return 'Bloqueado por capability gate'
+    }
+
+    // P6.18D6: OpenClaw ChatCompletionResponse format
+    // Structure: { choices: [{ message: { role: 'assistant', content: 'response' } }] }
+    if (Array.isArray(obj.choices) && obj.choices.length > 0) {
+      const firstChoice = obj.choices[0] as Record<string, unknown> | undefined
+      if (firstChoice && typeof firstChoice === 'object') {
+        const msg = firstChoice.message as Record<string, unknown> | undefined
+        if (msg && typeof msg.content === 'string') {
+          const content = msg.content
+          // Truncate long responses
+          return content.length > 300 ? content.substring(0, 297) + '...' : content
+        }
+      }
     }
 
     // Direct message
@@ -106,6 +121,21 @@ function extractOutputs(rawResult: unknown): TaskOutput[] {
   }
 
   const obj = rawResult as Record<string, unknown>
+
+  // P6.18D6: OpenClaw ChatCompletionResponse format
+  if (Array.isArray(obj.choices) && obj.choices.length > 0) {
+    const firstChoice = obj.choices[0] as Record<string, unknown> | undefined
+    if (firstChoice && typeof firstChoice === 'object') {
+      const msg = firstChoice.message as Record<string, unknown> | undefined
+      if (msg && typeof msg.content === 'string') {
+        outputs.push({
+          type: 'text',
+          label: 'Respuesta',
+          value: msg.content
+        })
+      }
+    }
+  }
 
   // Response text
   if (typeof obj.response === 'string') {

@@ -1,7 +1,7 @@
 /**
  * P6.18 Harness - OpenClaw Capability Probe Test Suite
  *
- * Tests the P6.18, P6.18C, P6.18D, P6.18D3, P6.18D4, and P6.18D5 probe system:
+ * Tests the P6.18, P6.18C, P6.18D, P6.18D3, P6.18D4, P6.18D5, P6.18D6, and P6.18D6B probe system:
  * 1. Gateway probe returns correct state
  * 2. Capability probe returns evidence-based readiness
  * 3. Full system snapshot includes all capabilities
@@ -11,6 +11,8 @@
  * 7. P6.18D3: Streaming route capability gate and mock safety
  * 8. P6.18D4: Pattern normalization (accents), /tools probe, streaming truth parity
  * 9. P6.18D5: Pre-proposal capability gate, /tools shape normalization (array/object)
+ * 10. P6.18D6: Simple task output visibility - ChatCompletionResponse parsing
+ * 11. P6.18D6B: Terminal task thread hydration - completed thread for finished tasks
  */
 
 import {
@@ -27,6 +29,19 @@ import type {
   RealCapabilityReadiness,
   SystemReadinessSnapshot
 } from '../../capabilities/types'
+
+// P6.18D6B: Import task-threads service for thread hydration tests
+import {
+  createThread,
+  getThreadByTaskId,
+  syncThreadWithTask
+} from '../../task-threads/service'
+
+// P6.18D6B: Import tasks service for test task creation
+import {
+  createTask,
+  completeTask
+} from '../../tasks/service'
 
 // ============================================================================
 // TEST CONFIGURATION
@@ -1498,7 +1513,7 @@ async function testProbeGatewayToolsResponseShape(): Promise<TestResult> {
 
 export async function runP618Harness(): Promise<HarnessResult> {
   console.log('====================================')
-  console.log('P6.18D5 HARNESS - OpenClaw Capability Probe & Gate')
+  console.log('P6.18D6B HARNESS - OpenClaw Capability Probe & Gate')
   console.log('====================================')
 
   const startTime = Date.now()
@@ -1539,7 +1554,15 @@ export async function runP618Harness(): Promise<HarnessResult> {
     testToolsObjectWrappedShape,
     testToolMatchingAlternativeKeys,
     testEmptyToolsNoFalseReady,
-    testProbeGatewayToolsResponseShape
+    testProbeGatewayToolsResponseShape,
+    // P6.18D6: Simple task output visibility tests
+    testChatCompletionResponseParsing,
+    testSimpleMockResponseFormat,
+    testBlockedTaskNoEjecutadoVia,
+    // P6.18D6B: Terminal task thread hydration tests
+    testCompletedTaskCreatesTerminalThreadIfMissing,
+    testCreateThreadForTerminalTaskDoesNotThink,
+    testNoDuplicateAssistantMessagesOnRepeatedSync
   ]
 
   for (const testFn of testFunctions) {
@@ -1565,6 +1588,377 @@ export async function runP618Harness(): Promise<HarnessResult> {
     failed,
     tests,
     executionTime: Date.now() - startTime
+  }
+}
+
+// ============================================================================
+// P6.18D6: SIMPLE TASK OUTPUT VISIBILITY TESTS
+// ============================================================================
+
+import { formatTaskResult } from '../../task-results/formatter'
+
+/**
+ * P6.18D6: Test ChatCompletionResponse parsing in formatter
+ * Verifies that the formatter correctly extracts response from OpenClaw format
+ */
+async function testChatCompletionResponseParsing(): Promise<TestResult> {
+  const startTime = Date.now()
+  const details: string[] = []
+  let passed = true
+
+  try {
+    // Simulate ChatCompletionResponse from OpenClaw
+    const mockOpenClawResponse = {
+      id: 'chatcmpl-123',
+      object: 'chat.completion',
+      created: Date.now(),
+      model: 'openclaw/default',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: 'La hora actual en Brasil es 14:30 BRT'
+        },
+        finish_reason: 'stop'
+      }]
+    }
+
+    const result = formatTaskResult({
+      taskId: 'test-123',
+      status: 'success',
+      rawResult: mockOpenClawResponse,
+      provider: 'openclaw'
+    })
+
+    // Summary should contain the actual response, not "Ejecutado via openclaw"
+    if (result.summary.includes('Ejecutado via')) {
+      passed = false
+      details.push(`CRITICAL: Summary is generic "${result.summary}" instead of real response`)
+    } else if (result.summary.includes('Brasil') || result.summary.includes('14:30')) {
+      details.push(`Summary correctly extracted: "${result.summary.substring(0, 50)}..."`)
+    } else {
+      passed = false
+      details.push(`Summary doesn't contain expected response: "${result.summary}"`)
+    }
+
+    // Outputs should include the response text
+    if (result.outputs && result.outputs.length > 0) {
+      const textOutput = result.outputs.find(o => o.type === 'text')
+      if (textOutput && String(textOutput.value).includes('Brasil')) {
+        details.push('Output text correctly extracted')
+      } else {
+        details.push('WARNING: Output text may not contain full response')
+      }
+    } else {
+      passed = false
+      details.push('No outputs extracted from ChatCompletionResponse')
+    }
+
+  } catch (error) {
+    passed = false
+    details.push(`Exception: ${(error as Error).message}`)
+  }
+
+  return {
+    name: 'P6.18D6 ChatCompletionResponse Parsing',
+    passed,
+    details: details.join('; '),
+    duration: Date.now() - startTime
+  }
+}
+
+/**
+ * P6.18D6: Test that simple mock response is correctly formatted
+ */
+async function testSimpleMockResponseFormat(): Promise<TestResult> {
+  const startTime = Date.now()
+  const details: string[] = []
+  let passed = true
+
+  try {
+    // Simulate a simple mock response
+    const mockSimpleResponse = {
+      response: 'Hola! Como puedo ayudarte hoy?',
+      source: 'mock'
+    }
+
+    const result = formatTaskResult({
+      taskId: 'test-456',
+      status: 'success',
+      rawResult: mockSimpleResponse,
+      provider: 'mock'
+    })
+
+    // Summary should be the response
+    if (result.summary === 'Hola! Como puedo ayudarte hoy?') {
+      details.push('Summary correctly extracted from response field')
+    } else if (result.summary.includes('Hola')) {
+      details.push(`Summary extracted (truncated): "${result.summary}"`)
+    } else {
+      passed = false
+      details.push(`Summary incorrect: "${result.summary}"`)
+    }
+
+  } catch (error) {
+    passed = false
+    details.push(`Exception: ${(error as Error).message}`)
+  }
+
+  return {
+    name: 'P6.18D6 Simple Mock Response Format',
+    passed,
+    details: details.join('; '),
+    duration: Date.now() - startTime
+  }
+}
+
+/**
+ * P6.18D6: Test that blocked task doesn't show "Ejecutado via"
+ * Verifies P6.17R5 is still working
+ */
+async function testBlockedTaskNoEjecutadoVia(): Promise<TestResult> {
+  const startTime = Date.now()
+  const details: string[] = []
+  let passed = true
+
+  try {
+    const blockedResult = {
+      capabilityGate: true,
+      blockingCapabilities: [{ capability: 'web_search', capabilityKey: 'web_search' }]
+    }
+
+    const result = formatTaskResult({
+      taskId: 'test-blocked',
+      status: 'blocked',
+      rawResult: blockedResult,
+      provider: 'capability_gate'
+    })
+
+    // Summary should mention blocked/capability, NOT "Ejecutado via"
+    if (result.summary.includes('Ejecutado via')) {
+      passed = false
+      details.push(`CRITICAL: Blocked task shows "Ejecutado via": "${result.summary}"`)
+    } else if (result.summary.includes('Bloqueado') || result.summary.includes('capacidad')) {
+      details.push(`Blocked summary correct: "${result.summary}"`)
+    } else {
+      details.push(`Blocked summary: "${result.summary}"`)
+    }
+
+  } catch (error) {
+    passed = false
+    details.push(`Exception: ${(error as Error).message}`)
+  }
+
+  return {
+    name: 'P6.18D6 Blocked Task No Ejecutado Via',
+    passed,
+    details: details.join('; '),
+    duration: Date.now() - startTime
+  }
+}
+
+// ============================================================================
+// P6.18D6B: TERMINAL TASK THREAD HYDRATION TESTS
+// ============================================================================
+
+/**
+ * P6.18D6B: Test that completed task creates terminal thread if missing
+ * When createThread() is called for a success task, thread.status should be 'completed'
+ */
+async function testCompletedTaskCreatesTerminalThreadIfMissing(): Promise<TestResult> {
+  const startTime = Date.now()
+  const details: string[] = []
+  let passed = true
+
+  try {
+    // Create a task and mark it as success
+    const task = createTask({
+      input: 'Test task for P6.18D6B hydration',
+      tenantId: TEST_TENANT_ID
+    })
+
+    // Complete task with a mock ChatCompletionResponse result
+    const mockResult = {
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: 'Test response for P6.18D6B'
+        },
+        finish_reason: 'stop'
+      }]
+    }
+    completeTask(task.id, 'success', mockResult, 'test')
+
+    // Now create a thread for this already-completed task
+    const thread = createThread({
+      taskId: task.id,
+      tenantId: TEST_TENANT_ID,
+      title: 'Test thread P6.18D6B',
+      initialMessage: 'Test task for P6.18D6B hydration'
+    })
+
+    // Thread should be created with 'completed' status, not 'thinking'
+    if (thread.status === 'completed') {
+      details.push(`Thread created with status='completed' (correct hydration)`)
+    } else if (thread.status === 'thinking') {
+      passed = false
+      details.push(`CRITICAL: Thread has status='thinking' but task is success - no hydration`)
+    } else {
+      details.push(`Thread status='${thread.status}'`)
+    }
+
+    // Thread should have assistant message
+    const assistantMsg = thread.messages.find(m => m.role === 'assistant')
+    if (assistantMsg) {
+      details.push(`Assistant message found: "${assistantMsg.content.substring(0, 30)}..."`)
+    } else {
+      details.push('WARNING: No assistant message in hydrated thread')
+    }
+
+  } catch (error) {
+    passed = false
+    details.push(`Exception: ${(error as Error).message}`)
+  }
+
+  return {
+    name: 'P6.18D6B Completed Task Creates Terminal Thread',
+    passed,
+    details: details.join('; '),
+    duration: Date.now() - startTime
+  }
+}
+
+/**
+ * P6.18D6B: Test that createThread for terminal task does NOT return 'thinking'
+ * This is the core invariant: terminal task -> terminal thread
+ */
+async function testCreateThreadForTerminalTaskDoesNotThink(): Promise<TestResult> {
+  const startTime = Date.now()
+  const details: string[] = []
+  let passed = true
+
+  try {
+    // Create task and mark it error
+    const task = createTask({
+      input: 'Test error task for P6.18D6B',
+      tenantId: TEST_TENANT_ID
+    })
+
+    // Complete task with error status
+    completeTask(task.id, 'error', { error: 'Test error' }, 'test', undefined, undefined, undefined, undefined, 'Test error')
+
+    // Create thread for errored task
+    const thread = createThread({
+      taskId: task.id,
+      tenantId: TEST_TENANT_ID,
+      title: 'Test error thread',
+      initialMessage: 'Test error task'
+    })
+
+    // Thread should be 'failed', not 'thinking'
+    if (thread.status === 'failed') {
+      details.push(`Thread correctly created with status='failed'`)
+    } else if (thread.status === 'thinking') {
+      passed = false
+      details.push(`CRITICAL: Thread has 'thinking' but task is error`)
+    } else {
+      details.push(`Thread status='${thread.status}'`)
+    }
+
+    // Verify task status -> thread status mapping
+    const task2 = createTask({
+      input: 'Test success task',
+      tenantId: TEST_TENANT_ID
+    })
+    completeTask(task2.id, 'success', { response: 'OK' }, 'test')
+
+    const thread2 = createThread({
+      taskId: task2.id,
+      tenantId: TEST_TENANT_ID,
+      title: 'Test success thread'
+    })
+
+    if (thread2.status !== 'completed') {
+      passed = false
+      details.push(`Success task should create 'completed' thread, got '${thread2.status}'`)
+    } else {
+      details.push(`Success task correctly creates 'completed' thread`)
+    }
+
+  } catch (error) {
+    passed = false
+    details.push(`Exception: ${(error as Error).message}`)
+  }
+
+  return {
+    name: 'P6.18D6B Terminal Task Thread Does Not Think',
+    passed,
+    details: details.join('; '),
+    duration: Date.now() - startTime
+  }
+}
+
+/**
+ * P6.18D6B: Test that repeated sync doesn't create duplicate assistant messages
+ * syncThreadWithTask should be idempotent for terminal states
+ */
+async function testNoDuplicateAssistantMessagesOnRepeatedSync(): Promise<TestResult> {
+  const startTime = Date.now()
+  const details: string[] = []
+  let passed = true
+
+  try {
+    // Create task, make it running, create thread, then complete
+    const task = createTask({
+      input: 'Test duplicate message prevention',
+      tenantId: TEST_TENANT_ID
+    })
+
+    // Create thread while task is still pending/running
+    const thread = createThread({
+      taskId: task.id,
+      tenantId: TEST_TENANT_ID,
+      title: 'Test duplicate prevention',
+      initialMessage: 'Test message'
+    })
+
+    const initialMsgCount = thread.messages.length
+    details.push(`Initial messages: ${initialMsgCount}`)
+
+    // Complete the task
+    completeTask(task.id, 'success', { response: 'Final answer' }, 'test')
+
+    // Sync once
+    syncThreadWithTask(task.id, 'success')
+    const afterFirstSync = getThreadByTaskId(task.id)
+    const msgCountAfter1 = afterFirstSync?.messages.length || 0
+    details.push(`After first sync: ${msgCountAfter1} messages`)
+
+    // Sync again (should NOT add duplicate message)
+    syncThreadWithTask(task.id, 'success')
+    const afterSecondSync = getThreadByTaskId(task.id)
+    const msgCountAfter2 = afterSecondSync?.messages.length || 0
+    details.push(`After second sync: ${msgCountAfter2} messages`)
+
+    // Message count should not increase on second sync
+    if (msgCountAfter2 > msgCountAfter1) {
+      passed = false
+      details.push(`CRITICAL: Second sync added duplicate messages (${msgCountAfter1} -> ${msgCountAfter2})`)
+    } else {
+      details.push('No duplicate messages on repeated sync (correct)')
+    }
+
+  } catch (error) {
+    passed = false
+    details.push(`Exception: ${(error as Error).message}`)
+  }
+
+  return {
+    name: 'P6.18D6B No Duplicate Messages on Repeated Sync',
+    passed,
+    details: details.join('; '),
+    duration: Date.now() - startTime
   }
 }
 

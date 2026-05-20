@@ -1,12 +1,17 @@
 /**
  * Task Threads Service
  * P6.6: Human Interaction Layer, Task Threads & Conversational Control
+ * P6.18D6: Simple task output visibility - assistant message with real response
+ * P6.18D6B: Terminal task thread hydration - create completed thread for finished tasks
  *
  * Service for managing conversational task threads.
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
+
+// P6.18D6: Import getTask to retrieve task result for assistant message
+import { getTask } from '../tasks/service'
 import type {
   TaskThread,
   ThreadMessage,
@@ -102,9 +107,31 @@ function generateId(prefix: string): string {
 
 /**
  * Create a new thread
+ * P6.18D6B: If taskId corresponds to a terminal task, create hydrated thread
  */
 export function createThread(input: CreateThreadInput): TaskThread {
   const now = new Date().toISOString()
+
+  // P6.18D6B: Check if task is already terminal - hydrate thread from task result
+  let initialStatus: HumanTaskState = 'thinking'
+  let assistantResponse: string | null = null
+
+  if (input.taskId) {
+    const task = getTask(input.taskId)
+    if (task) {
+      if (task.status === 'success') {
+        // Task already completed - create completed thread
+        initialStatus = 'completed'
+        assistantResponse = task.result ? extractAssistantResponseFromResult(task.result) : null
+        console.log(`[TaskThreads] P6.18D6B: Task ${input.taskId} is success, creating completed thread`)
+      } else if (task.status === 'error') {
+        // Task errored - create failed thread
+        initialStatus = 'failed'
+        console.log(`[TaskThreads] P6.18D6B: Task ${input.taskId} is error, creating failed thread`)
+      }
+      // Note: blocked tasks should NOT auto-create threads (P6.17R7B)
+    }
+  }
 
   const thread: TaskThread = {
     id: generateId('thread'),
@@ -112,7 +139,7 @@ export function createThread(input: CreateThreadInput): TaskThread {
     tenantId: input.tenantId,
     userId: input.userId,
     title: input.title,
-    status: 'thinking',
+    status: initialStatus,
     messages: [],
     activeContext: { ...DEFAULT_THREAD_CONTEXT },
     pendingApprovals: [],
@@ -132,10 +159,39 @@ export function createThread(input: CreateThreadInput): TaskThread {
     thread.lastUserIntent = input.initialMessage
   }
 
+  // P6.18D6B: Add assistant message for completed tasks
+  if (initialStatus === 'completed' && assistantResponse) {
+    thread.messages.push({
+      id: generateId('msg'),
+      role: 'assistant',
+      content: assistantResponse,
+      timestamp: now
+    })
+    console.log(`[TaskThreads] P6.18D6B: Added assistant message to hydrated thread`)
+  } else if (initialStatus === 'completed' && !assistantResponse) {
+    // Fallback: system message if no response extracted
+    thread.messages.push({
+      id: generateId('msg'),
+      role: 'system',
+      content: 'Tarea completada exitosamente',
+      timestamp: now
+    })
+  } else if (initialStatus === 'failed') {
+    // Add error message for failed tasks
+    const task = input.taskId ? getTask(input.taskId) : null
+    const errorMsg = task?.error || task?.reason || 'La tarea falló'
+    thread.messages.push({
+      id: generateId('msg'),
+      role: 'system',
+      content: `Tarea finalizada: ${errorMsg}`,
+      timestamp: now
+    })
+  }
+
   state.threads.push(thread)
   saveState()
 
-  console.log(`[TaskThreads] Created thread ${thread.id} for task ${input.taskId}`)
+  console.log(`[TaskThreads] Created thread ${thread.id} for task ${input.taskId} with status ${initialStatus}`)
   return thread
 }
 
@@ -820,14 +876,88 @@ export function getOrCreateThreadForTask(input: GetOrCreateThreadInput): {
 }
 
 /**
+ * P6.18D6: Extract assistant response from task result
+ *
+ * Handles multiple result formats:
+ * - ChatCompletionResponse: { choices: [{ message: { content: 'response' } }] }
+ * - Direct response: { response: 'response' }
+ * - Summary: { summary: 'response' }
+ * - Mock result: { result: { message: 'response' } }
+ */
+function extractAssistantResponseFromResult(result: unknown): string | null {
+  if (!result || typeof result !== 'object') {
+    if (typeof result === 'string' && result.length > 0) {
+      return result
+    }
+    return null
+  }
+
+  const obj = result as Record<string, unknown>
+
+  // ChatCompletionResponse from OpenClaw
+  if (Array.isArray(obj.choices) && obj.choices.length > 0) {
+    const firstChoice = obj.choices[0] as Record<string, unknown> | undefined
+    if (firstChoice && typeof firstChoice === 'object') {
+      const msg = firstChoice.message as Record<string, unknown> | undefined
+      if (msg && typeof msg.content === 'string' && msg.content.length > 0) {
+        return msg.content
+      }
+    }
+  }
+
+  // Direct response field
+  if (typeof obj.response === 'string' && obj.response.length > 0) {
+    return obj.response
+  }
+
+  // Summary field
+  if (typeof obj.summary === 'string' && obj.summary.length > 0) {
+    return obj.summary
+  }
+
+  // Message field
+  if (typeof obj.message === 'string' && obj.message.length > 0) {
+    return obj.message
+  }
+
+  // Nested result.message
+  if (obj.result && typeof obj.result === 'object') {
+    const nested = obj.result as Record<string, unknown>
+    if (typeof nested.message === 'string' && nested.message.length > 0) {
+      return nested.message
+    }
+  }
+
+  return null
+}
+
+/**
  * P6.8: Sync thread status with task status
+ * P6.18D6: Adds assistant message with real response for completed tasks
+ * P6.18D6B: Creates hydrated thread if missing for terminal success tasks
  *
  * This is the FIX for zombie threads. When a task completes,
  * this function updates the thread to match.
  */
 export function syncThreadWithTask(taskId: string, taskStatus: string, taskError?: string): TaskThread | null {
-  const thread = getThreadByTaskId(taskId)
+  let thread = getThreadByTaskId(taskId)
+
+  // P6.18D6B: If no thread exists and task is terminal success, create hydrated thread
   if (!thread) {
+    if (taskStatus === 'success') {
+      const task = getTask(taskId)
+      if (task) {
+        console.log(`[TaskThreads] P6.18D6B: No thread for success task ${taskId}, creating hydrated thread`)
+        thread = createThread({
+          taskId: taskId,
+          tenantId: task.tenantId,
+          title: task.input?.substring(0, 100) || 'Tarea completada',
+          initialMessage: task.input
+        })
+        // Thread was already created with completed status by createThread P6.18D6B
+        return thread
+      }
+    }
     console.log(`[TaskThreads] P6.8: No thread found for task ${taskId}, skipping sync`)
     return null
   }
@@ -867,17 +997,39 @@ export function syncThreadWithTask(taskId: string, taskStatus: string, taskError
 
     // Add sync message
     if (isTerminalThreadStatus(newThreadStatus)) {
-      const message = taskError
-        ? `Tarea finalizada: ${taskError}`
-        : newThreadStatus === 'completed'
-          ? 'Tarea completada exitosamente'
+      // P6.18D6: For successful completion, add assistant message with real response
+      if (newThreadStatus === 'completed') {
+        const task = getTask(taskId)
+        const assistantResponse = task?.result ? extractAssistantResponseFromResult(task.result) : null
+
+        if (assistantResponse) {
+          // Add assistant message with the actual response
+          addMessage({
+            threadId: thread.id,
+            role: 'assistant',
+            content: assistantResponse
+          })
+          console.log(`[TaskThreads] P6.18D6: Added assistant response for task ${taskId}`)
+        } else {
+          // Fallback: system message if no response extracted
+          addMessage({
+            threadId: thread.id,
+            role: 'system',
+            content: 'Tarea completada exitosamente'
+          })
+        }
+      } else {
+        // For other terminal states (failed, cancelled), use system message
+        const message = taskError
+          ? `Tarea finalizada: ${taskError}`
           : `Tarea finalizada (${newThreadStatus})`
 
-      addMessage({
-        threadId: thread.id,
-        role: 'system',
-        content: message
-      })
+        addMessage({
+          threadId: thread.id,
+          role: 'system',
+          content: message
+        })
+      }
     }
 
     saveState()

@@ -125,6 +125,29 @@ export function ConversationalTaskDetail({ taskId }: ConversationalTaskDetailPro
     }
   }, [task?.status, loadTaskOnly])
 
+  // P6.18D6: Reload thread when task transitions to terminal state
+  // This ensures assistant message is visible after completion
+  const prevStatusRef = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    const prevStatus = prevStatusRef.current
+    const currentStatus = task?.status
+
+    // If task just transitioned to a terminal state, reload the thread
+    if (prevStatus && currentStatus &&
+        (prevStatus === 'running' || prevStatus === 'queued') &&
+        (currentStatus === 'success' || currentStatus === 'error' || currentStatus === 'blocked')) {
+      // Reload thread to get assistant message
+      api.getThreadByTask(taskId).then(response => {
+        if (response.success && response.data) {
+          setThread(response.data)
+          console.log('[P6.18D6] Thread reloaded after task completion')
+        }
+      })
+    }
+
+    prevStatusRef.current = currentStatus
+  }, [task?.status, taskId])
+
   // Auto-scroll timeline on new messages
   useEffect(() => {
     if (timelineRef.current && thread?.messages) {

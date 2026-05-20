@@ -10577,3 +10577,188 @@ Tests P6.18D5: 5 (nuevo)
 ### Conclusión
 
 P6.18D5 cierra los 3 gaps críticos. Todos los paths de ejecución (normal, streaming, proposal, fallback) ahora verifican capability gate ANTES de proceder. `/tools` acepta múltiples shapes.
+
+---
+
+## P6.18D6 — Simple Task Output Visibility & OpenClaw Mask
+
+**Fecha:** 2026-05-20
+
+### Problema
+
+1. `/tasks` mostraba "Ejecutado via openclaw" en vez de respuesta real
+2. `/tasks/:id` mostraba "Pensando..." aunque tarea completada
+3. Thread no tenía mensaje de assistant con respuesta
+
+### Root Cause
+
+1. `formatter.ts` no reconocía `ChatCompletionResponse` de OpenClaw
+2. `syncThreadWithTask` añadía mensaje `system` genérico, no `assistant`
+3. Frontend no recargaba thread al completar tarea
+
+### Solución P6.18D6
+
+| Archivo | Cambio |
+|---------|--------|
+| `formatter.ts` | +20 líneas ChatCompletionResponse support |
+| `task-threads/service.ts` | +70 líneas extractAssistantResponseFromResult |
+| `ConversationalTaskDetail.tsx` | +20 líneas thread reload on terminal |
+| `p6-18-harness.ts` | +3 tests P6.18D6 (total: 32) |
+
+### ChatCompletionResponse Parsing
+
+```typescript
+// P6.18D6: OpenClaw format
+if (Array.isArray(obj.choices) && obj.choices.length > 0) {
+  const msg = obj.choices[0].message
+  if (msg && typeof msg.content === 'string') {
+    return msg.content.length > 300 ? msg.content.substring(0, 297) + '...' : msg.content
+  }
+}
+```
+
+### Assistant Message in Thread
+
+```typescript
+// P6.18D6: Add real response as assistant message
+if (newThreadStatus === 'completed') {
+  const task = getTask(taskId)
+  const assistantResponse = extractAssistantResponseFromResult(task.result)
+  if (assistantResponse) {
+    addMessage({ threadId, role: 'assistant', content: assistantResponse })
+  }
+}
+```
+
+### Harness P6.18D6 (32 tests)
+
+```
+Tests base: 6
+Tests P6.18C: 3
+Tests P6.18D: 6
+Tests P6.18D3: 4
+Tests P6.18D4: 5
+Tests P6.18D5: 5
+Tests P6.18D6: 3 (nuevo)
+- testChatCompletionResponseParsing
+- testSimpleMockResponseFormat
+- testBlockedTaskNoEjecutadoVia
+```
+
+### Contrato de Tarea Simple
+
+A partir de P6.18D6:
+- `task.summary` = respuesta real (no "Ejecutado via X")
+- `task.outputs[0]` = { type: 'text', value: 'respuesta' }
+- Thread tiene mensaje `role: 'assistant'`
+- No "Pensando..." en tareas terminales
+
+### Self Audit
+
+```
+  - ChatCompletionResponse parsing → ✅
+  - extractAssistantResponseFromResult → ✅
+  - Thread reload on terminal → ✅
+  - P6.18D5 intacto → ✅
+  - 32 tests en harness → ✅
+  - Check/Build pass → ✅
+```
+
+### Conclusión
+
+P6.18D6 cierra el gap de UX donde tareas simples completadas no mostraban la respuesta real. La visión "máscara bonita" de GranClaw sobre OpenClaw ahora es operativa: entrada simple, resultado visible, truth accesible.
+
+---
+
+## P6.18D6B — Terminal Task Thread Hydration
+
+**Fecha:** 2026-05-20
+
+### Problema
+
+Cuando una tarea completa ANTES de que exista un thread, el frontend auto-crea un thread con `status: 'thinking'`, causando badge "Pensando..." aunque la tarea está completada.
+
+### Root Cause
+
+1. `createThread()` siempre creaba threads con `status: 'thinking'`
+2. `syncThreadWithTask()` no creaba thread si no existía
+3. Frontend esperaba que backend creara thread en estado correcto
+
+### Solución P6.18D6B
+
+| Archivo | Cambio |
+|---------|--------|
+| `task-threads/service.ts` | createThread detecta tarea terminal y crea thread hydrated |
+| `task-threads/service.ts` | syncThreadWithTask crea thread hydrated si falta para success |
+| `p6-18-harness.ts` | +3 tests P6.18D6B (total: 35) |
+
+### Thread Hydration en createThread
+
+```typescript
+// P6.18D6B: Check if task is already terminal
+if (input.taskId) {
+  const task = getTask(input.taskId)
+  if (task?.status === 'success') {
+    initialStatus = 'completed'
+    assistantResponse = extractAssistantResponseFromResult(task.result)
+  } else if (task?.status === 'error') {
+    initialStatus = 'failed'
+  }
+}
+```
+
+### Thread Hydration en syncThreadWithTask
+
+```typescript
+// P6.18D6B: If no thread exists and task is terminal success, create hydrated thread
+if (!thread && taskStatus === 'success') {
+  const task = getTask(taskId)
+  if (task) {
+    thread = createThread({
+      taskId, tenantId: task.tenantId, title: task.input
+    })
+    // Thread created with completed status by createThread P6.18D6B
+    return thread
+  }
+}
+```
+
+### Harness P6.18D6B (35 tests)
+
+```
+Tests base: 6
+Tests P6.18C: 3
+Tests P6.18D: 6
+Tests P6.18D3: 4
+Tests P6.18D4: 5
+Tests P6.18D5: 5
+Tests P6.18D6: 3
+Tests P6.18D6B: 3 (nuevo)
+- testCompletedTaskCreatesTerminalThreadIfMissing
+- testCreateThreadForTerminalTaskDoesNotThink
+- testNoDuplicateAssistantMessagesOnRepeatedSync
+```
+
+### Contrato Obligatorio
+
+A partir de P6.18D6B:
+- Si `task.status === 'success'` y no existe thread, `createThread()` crea thread con `status: 'completed'`
+- Si `task.status === 'error'` y no existe thread, `createThread()` crea thread con `status: 'failed'`
+- Thread hydrated incluye mensaje de assistant con la respuesta real
+- `syncThreadWithTask()` es idempotente para estados terminales (no duplica mensajes)
+
+### Self Audit
+
+| Check | Resultado |
+|-------|-----------|
+| P6.17R7B markers intactos | OK (4 markers) |
+| P6.18D5 markers intactos | OK (30+ markers) |
+| P6.18D6B markers añadidos | OK (30+ markers) |
+| npm run check (api) | PASS |
+| npm run check (web) | PASS |
+| npm run build (api) | PASS |
+| npm run build (web) | PASS |
+
+### Conclusión
+
+P6.18D6B completa el ciclo de UX para tareas que completan antes de tener thread. Ahora no importa si el thread se crea antes o después de que la tarea termine: siempre reflejará el estado terminal correcto y mostrará la respuesta del asistente.
